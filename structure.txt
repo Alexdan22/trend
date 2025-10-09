@@ -1,0 +1,9 @@
+File	Role
+main.js	Entry point — connects MetaApi, polls ticks, passes to candle aggregator
+core/account.js	Connection, price, and balance handling
+core/orderHandler.js	Robust order execution (place/modify/close/fetch)
+core/utils.js	General helpers (logging, rounding, risk sizing, cooldowns)
+core/indicators.js	RSI, Stoch, BB, ATR, trend detection
+core/strategy.js	Entry logic (buy/sell triggers, position entry)
+core/tradeManager.js	Partial close, trailing SL, and trade synchronization
+core/candleAggregator.js	Converts ticks to candles and calls strategy
