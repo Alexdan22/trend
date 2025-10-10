@@ -252,6 +252,17 @@ async function safeGetPositions() {
 }
 
 // --------------------- CANDLE HANDLER ---------------------
+
+let lastStrategyRun = 0;
+const STRATEGY_COOLDOWN_MS = 60_000; // 1 minute
+
+function safeRunStrategy(candleTime) {
+  const now = Date.now();
+  if (now - lastStrategyRun < STRATEGY_COOLDOWN_MS) return; // skip if too soon
+  lastStrategyRun = now;
+  checkStrategy(candleTime).catch(err => console.error('checkStrategy err:', err));
+}
+
 function pushAndTrim(arr, value, maxLen = 400) {
   arr.push(value);
   if (arr.length > maxLen) arr.shift();
@@ -285,10 +296,10 @@ function onCandle(candle) {
     closesM1.length >= 30
   ) {
     // Only pass m5 candle time when 5m candle closes
-    const m5Time = tf === '5m' ? candle.time : null;
-    checkStrategy(m5Time).catch(err =>
-      console.error('checkStrategy err:', err)
-    );
+    if (tf === '5m' && closesM30.length >= 30 && closesM5.length >= 30 && closesM1.length >= 30) {
+      safeRunStrategy(candle.time);
+    }
+
   }
 }
 
