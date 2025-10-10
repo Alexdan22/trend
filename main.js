@@ -12,6 +12,7 @@ const MetaStats = require('metaapi.cloud-metastats-sdk').default;
 const ti = require('technicalindicators');
 const fetch = (...args) => import('node-fetch').then(({ default: fetch }) => fetch(...args));
 const { setTimeout: delay } = require('timers/promises');
+const CandleAggregator = require('./core/aggregator');
 
 // --------------------- CONFIG ---------------------
 const METAAPI_TOKEN = process.env.METAAPI_TOKEN || "REPLACE_WITH_TOKEN";
@@ -261,15 +262,36 @@ function onCandle(candle) {
   if (candle.symbol !== SYMBOL) return;
   const tf = candle.timeframe;
   const { high, low, close } = candle;
-  if (tf === '30m') { pushAndTrim(closesM30, close); pushAndTrim(highsM30, high); pushAndTrim(lowsM30, low); }
-  else if (tf === '5m') { pushAndTrim(closesM5, close); pushAndTrim(highsM5, high); pushAndTrim(lowsM5, low); }
-  else if (tf === '1m') { pushAndTrim(closesM1, close); pushAndTrim(highsM1, high); pushAndTrim(lowsM1, low); }
 
-  if (closesM30.length >= 30 && closesM5.length >= 30 && closesM1.length >= 30) {
-    const m5Time = (tf === '5m') ? candle.time : null;
-    checkStrategy(m5Time).catch(err => console.error('checkStrategy err:', err));
+  // ✅ Update local arrays for each timeframe
+  if (tf === '30m') {
+    pushAndTrim(closesM30, close);
+    pushAndTrim(highsM30, high);
+    pushAndTrim(lowsM30, low);
+  } else if (tf === '5m') {
+    pushAndTrim(closesM5, close);
+    pushAndTrim(highsM5, high);
+    pushAndTrim(lowsM5, low);
+  } else if (tf === '1m') {
+    pushAndTrim(closesM1, close);
+    pushAndTrim(highsM1, high);
+    pushAndTrim(lowsM1, low);
+  }
+
+  // ✅ Only trigger strategy when a full set of candles exists
+  if (
+    closesM30.length >= 30 &&
+    closesM5.length >= 30 &&
+    closesM1.length >= 30
+  ) {
+    // Only pass m5 candle time when 5m candle closes
+    const m5Time = tf === '5m' ? candle.time : null;
+    checkStrategy(m5Time).catch(err =>
+      console.error('checkStrategy err:', err)
+    );
   }
 }
+
 
 // --------------------- CORE: Strategy & Execution ---------------------
 async function checkStrategy(m5CandleTime = null) {
@@ -438,9 +460,6 @@ async function checkStrategy(m5CandleTime = null) {
 }
 
 // --------------------- GUARDS & RECORDING ---------------------
-async function getOpenPositions() {
-  return await safeGetPositions();
-}
 
 function canTakeTrade(type, m5CandleTime) {
   if (!lastSignal) return true;
@@ -671,72 +690,26 @@ async function monitorOpenTrades(ind30, ind5, ind1) {
   }
 }
 
-// --------------------- TICK → CANDLE AGGREGATOR ---------------------
-const aggregators = {
-  '1m': null,
-  '5m': null,
-  '30m': null
-};
-
-function floorTime(date, timeframe) {
-  const d = new Date(date);
-  if (timeframe === '1m') d.setSeconds(0, 0);
-  if (timeframe === '5m') d.setMinutes(Math.floor(d.getMinutes() / 5) * 5, 0, 0);
-  if (timeframe === '30m') d.setMinutes(Math.floor(d.getMinutes() / 30) * 30, 0, 0);
-  return d.getTime();
-}
+// --------------------- NEW AGGREGATOR SETUP ---------------------
+const candleAgg = new CandleAggregator(SYMBOL);
 
 function handleTick(tick) {
-  const mid = (tick.bid + tick.ask) / 2;
-  const now = new Date(tick.time);
-
-   // --- Save tick to local cache ---
   try {
-    const entry = { bid: tick.bid, ask: tick.ask, time: tick.time };
-    let existing = [];
-    if (fs.existsSync(TICK_CACHE_FILE)) {
-      existing = JSON.parse(fs.readFileSync(TICK_CACHE_FILE, 'utf8'));
-    }
-    existing.push(entry);
-    if (existing.length > 5000) existing.splice(0, existing.length - 5000); // keep last 5k ticks
+    candleAgg.update(tick);
 
-    // Ensure directory exists before writing
-    const dir = path.dirname(TICK_CACHE_FILE);
-    if (!fs.existsSync(dir)) {
-      fs.mkdirSync(dir, { recursive: true });
-    }
+    // On each finalized 1m candle, call onCandle() for strategy checks
+    const last1m = candleAgg.getLastClosed('1m');
+    const last5m = candleAgg.getLastClosed('5m');
+    const last30m = candleAgg.getLastClosed('30m');
 
-    fs.writeFileSync(TICK_CACHE_FILE, JSON.stringify(existing));
+    if (last1m) onCandle({ symbol: SYMBOL, timeframe: '1m', ...last1m, time: new Date(last1m.timestamp * 1000).toISOString() });
+    if (last5m) onCandle({ symbol: SYMBOL, timeframe: '5m', ...last5m, time: new Date(last5m.timestamp * 1000).toISOString() });
+    if (last30m) onCandle({ symbol: SYMBOL, timeframe: '30m', ...last30m, time: new Date(last30m.timestamp * 1000).toISOString() });
   } catch (e) {
-    console.warn(`[CACHE] Failed to write tick cache: ${e.message}`);
+    console.warn('[TICK] Aggregation error:', e.message);
   }
-
-  ['1m', '5m', '30m'].forEach(tf => {
-    const bucketTime = floorTime(now, tf);
-
-    if (!aggregators[tf] || aggregators[tf].time !== bucketTime) {
-      // Finalize previous candle
-      if (aggregators[tf]) {
-        onCandle({ 
-          symbol: SYMBOL, 
-          timeframe: tf, 
-          time: new Date(aggregators[tf].time).toISOString(),
-          open: aggregators[tf].open, 
-          high: aggregators[tf].high, 
-          low: aggregators[tf].low, 
-          close: aggregators[tf].close 
-        });
-      }
-      // Start new candle
-      aggregators[tf] = { time: bucketTime, open: mid, high: mid, low: mid, close: mid };
-    } else {
-      // Update current candle
-      aggregators[tf].close = mid;
-      if (mid > aggregators[tf].high) aggregators[tf].high = mid;
-      if (mid < aggregators[tf].low) aggregators[tf].low = mid;
-    }
-  });
 }
+
 
 async function preloadHistoricalCandlesFromTwelveData(symbol = 'XAU/USD') {
   console.log(`[INIT] Fetching historical candles for ${symbol} from Twelve Data...`);
