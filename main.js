@@ -291,10 +291,6 @@ function onCandle(candle) {
   const lastLow    = lastLows.at(-1);
 
 
-  // ✅ Optional: show a compact summary of last 5 candles
-  const slice = arr => arr.slice(-5).map(v => v.toFixed(2));
-  console.log(`   Last 5 Closes: ${slice(lastCloses).join(', ')}`);
-
   // ✅ Trigger strategy only on a new 5m candle and when data is sufficient
   if (tf === '5m' && closesM30.length >= 30 && closesM5.length >= 30 && closesM1.length >= 30) {
     checkStrategy(candle.time).catch(err => console.error('checkStrategy error:', err));
