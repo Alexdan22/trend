@@ -15,25 +15,40 @@ class CandleAggregator {
   }
 
   update(tick) {
-    const mid = (tick.bid + tick.ask) / 2;
-    const ts = Math.floor(new Date(tick.time).getTime() / 1000);
+  // Ensure tick has both price + server time
+  if (!tick || tick.bid == null || tick.ask == null || !tick.time) return;
 
-    for (const tf of Object.keys(TIMEFRAMES)) {
-      const bucket = this.getBucket(ts, tf);
-      const current = this.current[tf];
-      if (!current || current.timestamp !== bucket) {
-        // finalize previous candle
-        if (current) this._finalize(tf, current);
-        // start new
-        this.current[tf] = { timestamp: bucket, open: mid, high: mid, low: mid, close: mid };
-      } else {
-        // update current
-        current.close = mid;
-        if (mid > current.high) current.high = mid;
-        if (mid < current.low) current.low = mid;
+  const mid = (tick.bid + tick.ask) / 2;
+  const ts = Math.floor(new Date(tick.time).getTime() / 1000);
+
+  for (const tf of Object.keys(TIMEFRAMES)) {
+    const bucket = this.getBucket(ts, tf);
+    const current = this.current[tf];
+
+    // ✅ If bucket changes → finalize previous candle once
+    if (!current || current.timestamp !== bucket) {
+      if (current && !current._finalized) {
+        this._finalize(tf, current);
+        current._finalized = true;
       }
+
+      // ✅ Start new candle
+      this.current[tf] = {
+        timestamp: bucket,
+        open: mid,
+        high: mid,
+        low: mid,
+        close: mid
+      };
+    } else {
+      // ✅ Update current open candle
+      current.close = mid;
+      if (mid > current.high) current.high = mid;
+      if (mid < current.low) current.low = mid;
     }
   }
+}
+
 
   _finalize(tf, candle) {
     const arr = this.candles[tf];
@@ -52,9 +67,19 @@ class CandleAggregator {
   }
 
   getLastClosed(tf) {
-    const arr = this.candles[tf];
-    return arr.length > 0 ? arr[arr.length - 1] : null;
+  const arr = this.candles[tf];
+  if (!arr.length) return null;
+
+  // Return and remove the oldest unconsumed closed candle
+  for (let i = 0; i < arr.length; i++) {
+    if (!arr[i]._consumed) {
+      arr[i]._consumed = true;
+      return arr[i];
+    }
   }
+  return null;
+}
+
 }
 
 module.exports = CandleAggregator;

@@ -15,8 +15,8 @@ const { setTimeout: delay } = require('timers/promises');
 const CandleAggregator = require('./core/aggregator');
 
 // --------------------- CONFIG ---------------------
-const METAAPI_TOKEN = process.env.METAAPI_TOKEN || "REPLACE_WITH_TOKEN";
-const ACCOUNT_ID = process.env.METAAPI_ACCOUNT_ID || "REPLACE_WITH_ACCOUNT_ID";
+const METAAPI_TOKEN = process.env.METAAPI_TOKEN;
+const ACCOUNT_ID = process.env.METAAPI_ACCOUNT_ID;
 const SYMBOL = process.env.SYMBOL || "XAUUSDm"; // change to XAUUSDm/GOLD/etc. per broker
 const TICK_CACHE_FILE = path.join(__dirname, `data/tick_cache_${SYMBOL}.json`);
 
@@ -28,7 +28,7 @@ const MIN_LOT = 0.01;
 const LOT_ROUND = 2;
 const ATR_PERIOD = 14;
 const ATR_SL_MULTIPLIER = 1.2;
-const STRONG_TREND_BBW = 0.035;
+const STRONG_TREND_BBW = 0.004;
 const CHECK_INTERVAL_MS = 10_000;
 
 // --------------------- TELEGRAM SETUP ---------------------
@@ -87,10 +87,8 @@ function determineMarketTypeFromBB(values, bbArray) {
   }
   const percentAbove = closeAboveMid / Math.min(values.length, bbArray.length);
   const bbw = (lastBB.upper - lastBB.lower) / lastBB.middle;
-  if (bbw > STRONG_TREND_BBW && percentAbove > 0.6) return "uptrend";
-  if (bbw > STRONG_TREND_BBW && percentAbove < 0.4) return "downtrend";
-  if (bbw > 0.02 && percentAbove > 0.6) return "uptrend";
-  if (bbw > 0.02 && percentAbove < 0.4) return "downtrend";
+  if (bbw > STRONG_TREND_BBW && percentAbove > 0.55) return "uptrend";
+  if (bbw > STRONG_TREND_BBW && percentAbove < 0.45) return "downtrend";
   return "sideways";
 }
 
@@ -256,12 +254,7 @@ async function safeGetPositions() {
 let lastStrategyRun = 0;
 const STRATEGY_COOLDOWN_MS = 60_000; // 1 minute
 
-function safeRunStrategy(candleTime) {
-  const now = Date.now();
-  if (now - lastStrategyRun < STRATEGY_COOLDOWN_MS) return; // skip if too soon
-  lastStrategyRun = now;
-  checkStrategy(candleTime).catch(err => console.error('checkStrategy err:', err));
-}
+
 
 function pushAndTrim(arr, value, maxLen = 400) {
   arr.push(value);
@@ -270,38 +263,44 @@ function pushAndTrim(arr, value, maxLen = 400) {
 
 function onCandle(candle) {
   if (!candle) return;
-  if (candle.symbol !== SYMBOL) return;
-  const tf = candle.timeframe;
-  const { high, low, close } = candle;
 
-  // ✅ Update local arrays for each timeframe
-  if (tf === '30m') {
-    pushAndTrim(closesM30, close);
-    pushAndTrim(highsM30, high);
-    pushAndTrim(lowsM30, low);
+  const { timeframe: tf, high, low, close, timestamp } = candle;
+
+  // Push new candle data into respective arrays
+  if (tf === '1m') {
+    pushAndTrim(closesM1, close);
+    pushAndTrim(highsM1, high);
+    pushAndTrim(lowsM1, low);
   } else if (tf === '5m') {
     pushAndTrim(closesM5, close);
     pushAndTrim(highsM5, high);
     pushAndTrim(lowsM5, low);
-  } else if (tf === '1m') {
-    pushAndTrim(closesM1, close);
-    pushAndTrim(highsM1, high);
-    pushAndTrim(lowsM1, low);
+  } else if (tf === '30m') {
+    pushAndTrim(closesM30, close);
+    pushAndTrim(highsM30, high);
+    pushAndTrim(lowsM30, low);
   }
 
-  // ✅ Only trigger strategy when a full set of candles exists
-  if (
-    closesM30.length >= 30 &&
-    closesM5.length >= 30 &&
-    closesM1.length >= 30
-  ) {
-    // Only pass m5 candle time when 5m candle closes
-    if (tf === '5m' && closesM30.length >= 30 && closesM5.length >= 30 && closesM1.length >= 30) {
-      safeRunStrategy(candle.time);
-    }
+  // ✅ Log only when a new candle is closed (each candle once)
+  const lastCloses = tf === '1m' ? closesM1 : tf === '5m' ? closesM5 : closesM30;
+  const lastHighs  = tf === '1m' ? highsM1  : tf === '5m' ? highsM5  : highsM30;
+  const lastLows   = tf === '1m' ? lowsM1   : tf === '5m' ? lowsM5   : lowsM30;
 
+  const lastClose  = lastCloses.at(-1);
+  const lastHigh   = lastHighs.at(-1);
+  const lastLow    = lastLows.at(-1);
+
+
+  // ✅ Optional: show a compact summary of last 5 candles
+  const slice = arr => arr.slice(-5).map(v => v.toFixed(2));
+  console.log(`   Last 5 Closes: ${slice(lastCloses).join(', ')}`);
+
+  // ✅ Trigger strategy only on a new 5m candle and when data is sufficient
+  if (tf === '5m' && closesM30.length >= 30 && closesM5.length >= 30 && closesM1.length >= 30) {
+    checkStrategy(candle.time).catch(err => console.error('checkStrategy error:', err));
   }
 }
+
 
 
 // --------------------- CORE: Strategy & Execution ---------------------
@@ -342,10 +341,11 @@ async function checkStrategy(m5CandleTime = null) {
   }
 
   // Define M5 triggers
-  const buyM5Trigger = (prevStoch_M5.k < 20 && lastStoch_M5.k >= 20 && lastRSI_M5 < 40);
-  const buyM1Confirm = (lastRSI_M1 < 40 && lastStoch_M1.k < 20);
-  const sellM5Trigger = (prevStoch_M5.k > 80 && lastStoch_M5.k <= 80 && lastRSI_M5 > 60);
-  const sellM1Confirm = (lastRSI_M1 > 60 && lastStoch_M1.k > 80);
+  const buyM5Trigger = (prevStoch_M5.k < 25 && lastStoch_M5.k >= 25 && lastRSI_M5 < 50);
+  const buyM1Confirm = (lastRSI_M1 < 55); // RSI only
+  const sellM5Trigger = (prevStoch_M5.k > 75 && lastStoch_M5.k <= 75 && lastRSI_M5 > 50);
+  const sellM1Confirm = (lastRSI_M1 > 45); // RSI only
+
 
   // --- POTENTIAL ZONE ALERTS ---
   // BUY Zone
@@ -722,37 +722,6 @@ function handleTick(tick) {
 }
 
 
-async function preloadHistoricalCandlesFromTwelveData(symbol = 'XAU/USD') {
-  console.log(`[INIT] Fetching historical candles for ${symbol} from Twelve Data...`);
-  const API_KEY = process.env.TWELVE_DATA_KEY; // get your free key from twelvedata.com
-  const tfMap = { '1m': '1min', '5m': '5min', '30m': '30min' };
-
-  for (const [tf, apiTf] of Object.entries(tfMap)) {
-    try {
-      const url = `https://api.twelvedata.com/time_series?symbol=${symbol}&interval=${apiTf}&outputsize=200&apikey=${API_KEY}`;
-      const res = await fetch(url);
-      const data = await res.json();
-      const candles = data?.values?.reverse(); // oldest → newest
-
-      if (Array.isArray(candles) && candles.length > 0) {
-        const closes = candles.map(c => parseFloat(c.close));
-        const highs = candles.map(c => parseFloat(c.high));
-        const lows = candles.map(c => parseFloat(c.low));
-
-        if (tf === '1m') { closesM1 = closes; highsM1 = highs; lowsM1 = lows; }
-        if (tf === '5m') { closesM5 = closes; highsM5 = highs; lowsM5 = lows; }
-        if (tf === '30m') { closesM30 = closes; highsM30 = highs; lowsM30 = lows; }
-
-        console.log(`[PRELOAD] ${symbol} | ${tf} | Loaded ${candles.length} candles from Twelve Data`);
-      }
-    } catch (e) {
-      console.warn(`[PRELOAD] Failed to load ${tf} data: ${e.message}`);
-    }
-  }
-
-  console.log('[PRELOAD] External data preload complete.');
-}
-
 // --------------------- MAIN LOOP ---------------------
 (async () => {
   try {
@@ -773,8 +742,6 @@ async function preloadHistoricalCandlesFromTwelveData(symbol = 'XAU/USD') {
     if (typeof connection.waitSynchronized === 'function') {
       await connection.waitSynchronized();
     }
-
-    await preloadHistoricalCandlesFromTwelveData('XAU/USD');
 
     // Fetch account info
     const terminalState = connection.terminalState;

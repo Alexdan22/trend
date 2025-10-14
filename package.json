@@ -135,6 +135,7 @@
     "mime-types": "^2.1.35",
     "minimalistic-assert": "^1.0.1",
     "minimalistic-crypto-utils": "^1.0.1",
+    "minimist": "^1.2.8",
     "moment": "^2.29.4",
     "ms": "^2.0.0",
     "node-fetch": "^3.3.2",
@@ -206,5 +207,13 @@
   },
   "keywords": [],
   "author": "",
-  "license": "ISC"
+  "license": "ISC",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/Alexdan22/trend.git"
+  },
+  "bugs": {
+    "url": "https://github.com/Alexdan22/trend/issues"
+  },
+  "homepage": "https://github.com/Alexdan22/trend#readme"
 }
