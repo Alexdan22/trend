@@ -12,7 +12,6 @@ const MetaStats = require('metaapi.cloud-metastats-sdk').default;
 const ti = require('technicalindicators');
 const fetch = (...args) => import('node-fetch').then(({ default: fetch }) => fetch(...args));
 const { setTimeout: delay } = require('timers/promises');
-const CandleAggregator = require('./core/aggregator');
 
 // --------------------- CONFIG ---------------------
 const METAAPI_TOKEN = process.env.METAAPI_TOKEN;
@@ -59,9 +58,9 @@ async function sendTelegram(message, options = {}) {
 // --------------------- STATE ---------------------
 let api, account, connection, metastatsApi;
 let accountBalance = 0;
-let closesM30 = [], highsM30 = [], lowsM30 = [];
-let closesM5 = [], highsM5 = [], lowsM5 = [];
-let closesM1 = [], highsM1 = [], lowsM1 = [];
+let candlesM1 = []
+let candlesM5 = []
+let candlesM30 = []
 let lastSignal = null; // {type, m5CandleTime, time}
 let openTradeRecords = {}; // ticket -> metadata
 
@@ -256,54 +255,114 @@ const STRATEGY_COOLDOWN_MS = 60_000; // 1 minute
 
 
 
-function pushAndTrim(arr, value, maxLen = 400) {
-  arr.push(value);
-  if (arr.length > maxLen) arr.shift();
-}
 
 function onCandle(candle) {
   if (!candle) return;
 
-  const { timeframe: tf, high, low, close, timestamp } = candle;
+  const { timeframe, high, low, close, timestamp } = candle;
 
-  // Push new candle data into respective arrays
-  if (tf === '1m') {
-    pushAndTrim(closesM1, close);
-    pushAndTrim(highsM1, high);
-    pushAndTrim(lowsM1, low);
-  } else if (tf === '5m') {
-    pushAndTrim(closesM5, close);
-    pushAndTrim(highsM5, high);
-    pushAndTrim(lowsM5, low);
-  } else if (tf === '30m') {
-    pushAndTrim(closesM30, close);
-    pushAndTrim(highsM30, high);
-    pushAndTrim(lowsM30, low);
-  }
+  //   // Pick the right candle array
+  // const arr =
+  //   timeframe === '1m'
+  //     ? candlesM1
+  //     : timeframe === '5m'
+  //     ? candlesM5
+  //     : candlesM30;
 
-  // ✅ Log only when a new candle is closed (each candle once)
-  const lastCloses = tf === '1m' ? closesM1 : tf === '5m' ? closesM5 : closesM30;
-  const lastHighs  = tf === '1m' ? highsM1  : tf === '5m' ? highsM5  : highsM30;
-  const lastLows   = tf === '1m' ? lowsM1   : tf === '5m' ? lowsM5   : lowsM30;
+  // // Grab the last 5 candles for debugging
+  // const recent = arr.slice(-5);
+  // console.log(`\n[CANDLE CLOSE] ${timeframe} — ${new Date(timestamp * 1000).toLocaleTimeString()}`);
+  // recent.forEach((c, i) => {
+  //   console.log(
+  //     `#${arr.length - 5 + i + 1}: O=${c.open.toFixed(2)} H=${c.high.toFixed(2)} L=${c.low.toFixed(2)} C=${c.close.toFixed(2)}`
+  //   );
+  // });
 
-  const lastClose  = lastCloses.at(-1);
-  const lastHigh   = lastHighs.at(-1);
-  const lastLow    = lastLows.at(-1);
-
-
-  // ✅ Trigger strategy only on a new 5m candle and when data is sufficient
-  if (tf === '5m' && closesM30.length >= 30 && closesM5.length >= 30 && closesM1.length >= 30) {
-    checkStrategy(candle.time).catch(err => console.error('checkStrategy error:', err));
+  // Only trigger strategy on a new 5-minute candle,
+  // and only if we have enough data for all timeframes
+  if (
+    timeframe === '5m' &&
+    candlesM30.length >= 22 &&
+    candlesM5.length >= 22 &&
+    candlesM1.length >= 22
+  ) {
+    checkStrategy(new Date(timestamp * 1000).toISOString())
+      .catch(err => console.error('checkStrategy error:', err));
   }
 }
+
+
+function updateCandle(tf, tickPrice, tickTime) {
+  const tfSeconds = tf === '1m' ? 60 : tf === '5m' ? 300 : 1800;
+  const ts = Math.floor(tickTime / tfSeconds) * tfSeconds;
+  const arr = tf === '1m' ? candlesM1 : tf === '5m' ? candlesM5 : candlesM30;
+  const last = arr[arr.length - 1];
+
+  if (last && last.timestamp === ts) {
+    // Update the existing candle
+    last.high = Math.max(last.high, tickPrice);
+    last.low = Math.min(last.low, tickPrice);
+    last.close = tickPrice;
+  } else {
+    // Close previous candle
+    if (last) {
+      onCandle({
+        timeframe: tf,
+        ...last,
+        time: new Date(last.timestamp * 1000).toISOString()
+      });
+    }
+
+    // Start a new candle
+    arr.push({
+      timestamp: ts,
+      open: tickPrice,
+      high: tickPrice,
+      low: tickPrice,
+      close: tickPrice
+    });
+
+    if (arr.length > 500) arr.shift();
+  }
+}
+
+function handleTick(tick) {
+  try {
+    const tickPrice = tick.bid ?? tick.ask ?? tick.price;
+    const tickTime = Math.floor(Date.now() / 1000);
+
+    updateCandle('1m', tickPrice, tickTime);
+    updateCandle('5m', tickPrice, tickTime);
+    updateCandle('30m', tickPrice, tickTime);
+  } catch (e) {
+    console.warn('[TICK] Candle update error:', e.message);
+  }
+}
+
 
 
 
 // --------------------- CORE: Strategy & Execution ---------------------
 async function checkStrategy(m5CandleTime = null) {
-  const ind30 = calculateIndicators(closesM30, highsM30, lowsM30);
-  const ind5 = calculateIndicators(closesM5, highsM5, lowsM5);
+
+  const closesM1 = candlesM1.map(c => c.close);
+  const highsM1 = candlesM1.map(c => c.high);
+  const lowsM1  = candlesM1.map(c => c.low);
+
   const ind1 = calculateIndicators(closesM1, highsM1, lowsM1);
+
+  const closesM5 = candlesM5.map(c => c.close);
+  const highsM5 = candlesM5.map(c => c.high);
+  const lowsM5  = candlesM5.map(c => c.low);
+
+  const ind5 = calculateIndicators(closesM5, highsM5, lowsM5);
+
+  const closesM30 = candlesM30.map(c => c.close);
+  const highsM30 = candlesM30.map(c => c.high);
+  const lowsM30  = candlesM30.map(c => c.low);
+
+  const ind30 = calculateIndicators(closesM30, highsM30, lowsM30);
+
 
   const higherTrend = determineMarketTypeFromBB(closesM30, ind30.bb || []);
   const lastRSI_M5 = ind5.rsi.at(-1);
@@ -560,7 +619,20 @@ async function monitorOpenTrades(ind30, ind5, ind1) {
     // sync first
     await syncOpenTradeRecordsWithPositions(positions);
 
-    // recompute higherTrend and a measure of strength
+    // derive closes/highs/lows from unified candle arrays (fix leftover variable references)
+    const closesM30 = candlesM30.map(c => c.close);
+    const highsM30  = candlesM30.map(c => c.high);
+    const lowsM30   = candlesM30.map(c => c.low);
+
+    const closesM5 = candlesM5.map(c => c.close);
+    const highsM5  = candlesM5.map(c => c.high);
+    const lowsM5   = candlesM5.map(c => c.low);
+
+    const closesM1 = candlesM1.map(c => c.close);
+    const highsM1  = candlesM1.map(c => c.high);
+    const lowsM1   = candlesM1.map(c => c.low);
+
+    // recompute higherTrend and a measure of strength (use existing ind30.bb if available)
     const higherTrend = determineMarketTypeFromBB(closesM30, ind30.bb || []);
     const trendStrong = higherTrend !== 'sideways';
 
@@ -597,15 +669,15 @@ async function monitorOpenTrades(ind30, ind5, ind1) {
             console.log(`Partial close executed for ${ticket}: closed ${halfVolume}`);
 
             await sendTelegram(
-            `🟠 *PARTIAL CLOSE EXECUTED*\n` +
-            `━━━━━━━━━━━━━━━\n` +
-            `🎫 *Ticket:* ${ticket}\n` +
-            `📉 *Closed:* ${halfVolume}\n` +
-            `📈 *Remaining:* ${rec?.lot}\n` +
-            `💰 *Side:* ${rec?.side}\n` +
-            `🕒 ${new Date().toLocaleTimeString()}`,
-            { parse_mode: 'Markdown' }
-          );
+              `🟠 *PARTIAL CLOSE EXECUTED*\n` +
+              `━━━━━━━━━━━━━━━\n` +
+              `🎫 *Ticket:* ${ticket}\n` +
+              `📉 *Closed:* ${halfVolume}\n` +
+              `📈 *Remaining:* ${rec?.lot}\n` +
+              `💰 *Side:* ${rec?.side}\n` +
+              `🕒 ${new Date().toLocaleTimeString()}`,
+              { parse_mode: 'Markdown' }
+            );
 
           } else {
             console.warn('Partial close failed for', ticket, closeRes.error && closeRes.error.message);
@@ -629,14 +701,14 @@ async function monitorOpenTrades(ind30, ind5, ind1) {
                 console.log(`Tightened SL for ${ticket} to ${targetSl}`);
 
                 await sendTelegram(
-                `🔄 *TRAILING STOP UPDATED*\n` +
-                `━━━━━━━━━━━━━━━\n` +
-                `🎫 *Ticket:* ${ticket}\n` +
-                `📈 *Side:* ${rec?.side}\n` +
-                `🆕 *New SL:* ${targetSl.toFixed(3)}\n` +
-                `🕒 ${new Date().toLocaleTimeString()}`,
-                { parse_mode: 'Markdown' }
-              );
+                  `🔄 *TRAILING STOP UPDATED*\n` +
+                  `━━━━━━━━━━━━━━━\n` +
+                  `🎫 *Ticket:* ${ticket}\n` +
+                  `📈 *Side:* ${rec?.side}\n` +
+                  `🆕 *New SL:* ${targetSl.toFixed(3)}\n` +
+                  `🕒 ${new Date().toLocaleTimeString()}`,
+                  { parse_mode: 'Markdown' }
+                );
 
               } catch (e) {
                 // ignore if modify not supported
@@ -651,14 +723,14 @@ async function monitorOpenTrades(ind30, ind5, ind1) {
                 console.log(`Tightened SL for ${ticket} to ${targetSl}`);
 
                 await sendTelegram(
-                `🔄 *TRAILING STOP UPDATED*\n` +
-                `━━━━━━━━━━━━━━━\n` +
-                `🎫 *Ticket:* ${ticket}\n` +
-                `📈 *Side:* ${rec?.side}\n` +
-                `🆕 *New SL:* ${targetSl.toFixed(3)}\n` +
-                `🕒 ${new Date().toLocaleTimeString()}`,
-                { parse_mode: 'Markdown' }
-              );
+                  `🔄 *TRAILING STOP UPDATED*\n` +
+                  `━━━━━━━━━━━━━━━\n` +
+                  `🎫 *Ticket:* ${ticket}\n` +
+                  `📈 *Side:* ${rec?.side}\n` +
+                  `🆕 *New SL:* ${targetSl.toFixed(3)}\n` +
+                  `🕒 ${new Date().toLocaleTimeString()}`,
+                  { parse_mode: 'Markdown' }
+                );
 
               } catch (e) {}
             }
@@ -673,14 +745,14 @@ async function monitorOpenTrades(ind30, ind5, ind1) {
               console.log(`Closed ${ticket} due to trend weakening.`);
 
               await sendTelegram(
-              `🔻 *TRADE CLOSED (TREND WEAKENED)*\n` +
-              `━━━━━━━━━━━━━━━\n` +
-              `🎫 *Ticket:* ${ticket}\n` +
-              `📈 *Side:* ${rec?.side}\n` +
-              `💵 *Lot Closed:* ${rec?.lot}\n` +
-              `🕒 ${new Date().toLocaleTimeString()}`,
-              { parse_mode: 'Markdown' }
-            );
+                `🔻 *TRADE CLOSED (TREND WEAKENED)*\n` +
+                `━━━━━━━━━━━━━━━\n` +
+                `🎫 *Ticket:* ${ticket}\n` +
+                `📈 *Side:* ${rec?.side}\n` +
+                `💵 *Lot Closed:* ${rec?.lot}\n` +
+                `🕒 ${new Date().toLocaleTimeString()}`,
+                { parse_mode: 'Markdown' }
+              );
 
               delete openTradeRecords[ticket];
             } else {
@@ -697,25 +769,22 @@ async function monitorOpenTrades(ind30, ind5, ind1) {
   }
 }
 
+
 // --------------------- NEW AGGREGATOR SETUP ---------------------
-const candleAgg = new CandleAggregator(SYMBOL);
 
 function handleTick(tick) {
   try {
-    candleAgg.update(tick);
+    const tickPrice = tick.bid ?? tick.ask ?? tick.price;
+    const tickTime = Math.floor(Date.now() / 1000);
 
-    // On each finalized 1m candle, call onCandle() for strategy checks
-    const last1m = candleAgg.getLastClosed('1m');
-    const last5m = candleAgg.getLastClosed('5m');
-    const last30m = candleAgg.getLastClosed('30m');
-
-    if (last1m) onCandle({ symbol: SYMBOL, timeframe: '1m', ...last1m, time: new Date(last1m.timestamp * 1000).toISOString() });
-    if (last5m) onCandle({ symbol: SYMBOL, timeframe: '5m', ...last5m, time: new Date(last5m.timestamp * 1000).toISOString() });
-    if (last30m) onCandle({ symbol: SYMBOL, timeframe: '30m', ...last30m, time: new Date(last30m.timestamp * 1000).toISOString() });
+    updateCandle('1m', tickPrice, tickTime);
+    updateCandle('5m', tickPrice, tickTime);
+    updateCandle('30m', tickPrice, tickTime);
   } catch (e) {
-    console.warn('[TICK] Aggregation error:', e.message);
+    console.warn('[TICK] Candle update error:', e.message);
   }
 }
+
 
 
 // --------------------- MAIN LOOP ---------------------
@@ -815,18 +884,33 @@ function handleTick(tick) {
 
     // --- Periodic trade monitor ---
     setInterval(async () => {
+      const closesM30 = candlesM30.map(c => c.close);
+      const highsM30 = candlesM30.map(c => c.high);
+      const lowsM30  = candlesM30.map(c => c.low);
+
+      const closesM5 = candlesM5.map(c => c.close);
+      const highsM5 = candlesM5.map(c => c.high);
+      const lowsM5  = candlesM5.map(c => c.low);
+
+      const closesM1 = candlesM1.map(c => c.close);
+      const highsM1 = candlesM1.map(c => c.high);
+      const lowsM1  = candlesM1.map(c => c.low);
+
       const ind30 = calculateIndicators(closesM30, highsM30, lowsM30);
-      const ind5 = calculateIndicators(closesM5, highsM5, lowsM5);
-      const ind1 = calculateIndicators(closesM1, highsM1, lowsM1);
+      const ind5  = calculateIndicators(closesM5, highsM5, lowsM5);
+      const ind1  = calculateIndicators(closesM1, highsM1, lowsM1);
+
       await monitorOpenTrades(ind30, ind5, ind1);
     }, CHECK_INTERVAL_MS);
 
+
     // Memory cleanup for long runs
     setInterval(() => {
-      closesM1.splice(0, closesM1.length - 200);
-      closesM5.splice(0, closesM5.length - 200);
-      closesM30.splice(0, closesM30.length - 200);
+      if (candlesM1.length > 500) candlesM1.splice(0, candlesM1.length - 300);
+      if (candlesM5.length > 500) candlesM5.splice(0, candlesM5.length - 300);
+      if (candlesM30.length > 500) candlesM30.splice(0, candlesM30.length - 300);
     }, 60 * 60 * 1000); // every hour
+
 
     // Hourly health monitor
     setInterval(async () => {
@@ -837,19 +921,18 @@ function handleTick(tick) {
         const tickHealth = new Date(Date.now() - lastTickTime).getSeconds();
 
         console.log(
-          `\n[HEALTH] ⏱️ Uptime: ${uptimeHours}h | 🟢 Candles: M1=${closesM1.length}, M5=${closesM5.length}, M30=${closesM30.length} | 📊 Open Trades: ${openPositions.length} (${totalTrades} tracked)`
+          `\n[HEALTH] ⏱️ Uptime: ${uptimeHours}h | 🟢 Candles: M1=${candlesM1.length}, M5=${candlesM5.length}, M30=${candlesM30.length} | 📊 Open Trades: ${openPositions.length} (${totalTrades} tracked)`
         );
 
         await sendTelegram(
-        `📊 *BOT HEALTH REPORT*\n` +
-        `━━━━━━━━━━━━━━━\n` +
-        `🕒 *Uptime:* ${uptimeHours}h\n` +
-        `📈 *Candles:* M1=${closesM1.length}, M5=${closesM5.length}, M30=${closesM30.length}\n` +
-        `📊 *Open Trades:* ${openPositions.length} (${totalTrades} tracked)\n` +
-        `💰 *Balance:* ${accountBalance?.toFixed(2)}`,
-        { parse_mode: 'Markdown' }
-      );
-
+          `📊 *BOT HEALTH REPORT*\n` +
+          `━━━━━━━━━━━━━━━\n` +
+          `🕒 *Uptime:* ${uptimeHours}h\n` +
+          `📈 *Candles:* M1=${candlesM1.length}, M5=${candlesM5.length}, M30=${candlesM30.length}\n` +
+          `📊 *Open Trades:* ${openPositions.length} (${totalTrades} tracked)\n` +
+          `💰 *Balance:* ${accountBalance?.toFixed(2)}`,
+          { parse_mode: 'Markdown' }
+        );
 
         if (Date.now() - lastTickTime > 30000) {
           console.warn(`⚠️ Health Check: No tick for 30s, last tick at ${new Date(lastTickTime).toLocaleTimeString()}`);
@@ -859,7 +942,7 @@ function handleTick(tick) {
       }
     }, 60 * 60 * 1000); // every hour
 
-    console.log('🤖 Bot ready and running. Listening to aggregated candles for', SYMBOL);
+    console.log('🤖 Bot ready and running. Listening to live tick stream for', SYMBOL);
 
   } catch (e) {
     console.error('❌ Fatal error:', e.message || e);
@@ -869,7 +952,9 @@ function handleTick(tick) {
 process.on('SIGINT', async () => {
   console.log('🛑 Gracefully shutting down...');
   try {
-    if (connection && typeof connection.unsubscribeFromMarketData === 'function') await connection.unsubscribeFromMarketData(SYMBOL);
+    if (connection && typeof connection.unsubscribeFromMarketData === 'function') {
+      await connection.unsubscribeFromMarketData(SYMBOL);
+    }
     process.exit(0);
   } catch {
     process.exit(0);
