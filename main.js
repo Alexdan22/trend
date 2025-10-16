@@ -27,7 +27,7 @@ const MIN_LOT = 0.01;
 const LOT_ROUND = 2;
 const ATR_PERIOD = 14;
 const ATR_SL_MULTIPLIER = 1.2;
-const STRONG_TREND_BBW = 0.004;
+const STRONG_TREND_BBW = 0.02;
 const CHECK_INTERVAL_MS = 10_000;
 
 // --------------------- TELEGRAM SETUP ---------------------
@@ -62,7 +62,7 @@ let candlesM1 = []
 let candlesM5 = []
 let candlesM30 = []
 let lastSignal = null; // {type, m5CandleTime, time}
-let openTradeRecords = {}; // ticket -> metadata
+let openPairs = {}; // ticket -> metadata
 
 // --------------------- HELPERS: Indicators & Trend ---------------------
 function calculateIndicators(values, highs, lows) {
@@ -77,19 +77,25 @@ function calculateIndicators(values, highs, lows) {
   return { rsi, stochastic, bb, atr };
 }
 
-function determineMarketTypeFromBB(values, bbArray) {
-  if (!bbArray.length || values.length === 0) return "sideways";
-  const lastBB = bbArray[bbArray.length - 1];
-  let closeAboveMid = 0;
-  for (let i = 0; i < Math.min(values.length, bbArray.length); i++) {
-    if (values[i] > bbArray[i].middle) closeAboveMid++;
+function determineMarketTypeFromBB(values, bbArray, lookback = 20) {
+  if (!bbArray.length || !values.length) return 'sideways';
+  const n = Math.min(lookback, values.length, bbArray.length);
+  let above = 0, below = 0;
+  for (let i = 0; i < n; i++) {
+    const vi = values[values.length - 1 - i];
+    const bbi = bbArray[bbArray.length - 1 - i];
+    if (!bbi) continue;
+    if (vi > bbi.middle) above++;
+    if (vi < bbi.middle) below++;
   }
-  const percentAbove = closeAboveMid / Math.min(values.length, bbArray.length);
-  const bbw = (lastBB.upper - lastBB.lower) / lastBB.middle;
-  if (bbw > STRONG_TREND_BBW && percentAbove > 0.55) return "uptrend";
-  if (bbw > STRONG_TREND_BBW && percentAbove < 0.45) return "downtrend";
-  return "sideways";
+  const pctAbove = above / n;
+  const bbw = (bbArray.at(-1).upper - bbArray.at(-1).lower) / bbArray.at(-1).middle;
+  const THRESH = 0.02;  // tune for XAU
+  if (bbw > THRESH && pctAbove > 0.6) return 'uptrend';
+  if (bbw > THRESH && pctAbove < 0.4) return 'downtrend';
+  return 'sideways';
 }
+
 
 // --------------------- HELPERS: Money & Lot sizing ---------------------
 function roundLot(lot) {
@@ -97,19 +103,22 @@ function roundLot(lot) {
 }
 
 function computeAllowedRiskForNewTrade(currentOpenCount) {
-  const used = Object.values(openTradeRecords).reduce((s, r) => s + (r.riskPercent || 0), 0);
+  const used = Object.values(openPairs).reduce((s, r) => s + (r.riskPercent || 0), 0);
   const remaining = Math.max(0, MAX_TOTAL_RISK - used);
   const remainingSlots = Math.max(1, MAX_OPEN_TRADES - currentOpenCount);
   // split remaining among remaining slots but cap by DEFAULT
   return Math.min(DEFAULT_RISK_PER_NEW_TRADE, remaining / remainingSlots);
 }
 
-function calculateLotFromRisk(balance, riskPercent, slPips, pipValue = 1.0) {
+// Corrected 2% risk-based lot sizing
+function calculateLotFromRisk(balance, riskPercent, slPriceDiff, contractSize = 100) {
+  // slPriceDiff: absolute price difference between entry and SL (in price units)
   const riskAmount = balance * riskPercent;
-  if (slPips <= 0) return MIN_LOT;
-  const lot = riskAmount / (slPips * pipValue);
+  if (!slPriceDiff || slPriceDiff <= 0) return MIN_LOT;
+  const lot = riskAmount / (slPriceDiff * contractSize);
   return roundLot(lot);
 }
+
 
 // --------------------- ROBUST EXECUTION HELPERS (from test_order_execution.js) ---------------------
 function safeLog(...args) { console.log(...args); }
@@ -139,21 +148,25 @@ async function safeGetPrice(symbol) {
 // safeGetAccountBalance - tolerant retrieval
 async function safeGetAccountBalance() {
   try {
-    if (connection?.terminalState?.accountInformation?.balance != null) {
+    if (connection?.terminalState?.accountInformation?.balance != null)
       return connection.terminalState.accountInformation.balance;
-    }
   } catch (e) {}
+
   try {
     if (account?._data?.balance != null) return account._data.balance;
   } catch (e) {}
+
   try {
     if (metastatsApi?.getMetrics) {
       const metrics = await metastatsApi.getMetrics(ACCOUNT_ID);
-      if (metrics?.balance || metrics?.equity) return metrics.balance || metrics.equity;
+      if (metrics?.balance || metrics?.equity)
+        return metrics.balance || metrics.equity;
     }
   } catch (e) {}
-  return 0;
+
+  return accountBalance || 0;
 }
+
 
 // safePlaceMarketOrder - robust attempts to call several API variants
 async function safePlaceMarketOrder(action, lot, sl, tp) {
@@ -184,17 +197,36 @@ async function safePlaceMarketOrder(action, lot, sl, tp) {
   throw new Error('No supported market order method found on connection');
 }
 
-// safeModifyPosition - attempt common modify methods
-async function safeModifyPosition(positionId, params) {
-  try {
-    if (connection && typeof connection.modifyPosition === 'function') return await connection.modifyPosition(positionId, params);
-    if (connection && typeof connection.modifyPositionByTicket === 'function') return await connection.modifyPositionByTicket(positionId, params);
-    if (account && typeof account.modifyPosition === 'function') return await account.modifyPosition(positionId, params);
-  } catch (e) {
-    safeLog(`[MODIFY] Failed for ${positionId}:`, e.message || e);
-    throw e;
+// safePlacePairedMarketOrder - robust attempts to call several API variants
+async function placePairedOrder(side, totalLot, slPrice, tpPrice, riskPercent) {
+  const lotEach = roundLot(totalLot / 2);
+  if (lotEach < MIN_LOT) {
+    console.log('[PAIR] Computed lot too small, aborting pair order');
+    return null;
   }
-  throw new Error('No supported modifyPosition method found');
+
+  const first = await safePlaceMarketOrder(side, lotEach, slPrice, tpPrice);
+  await new Promise(r => setTimeout(r, 400)); // small delay
+  const second = await safePlaceMarketOrder(side, lotEach, slPrice, tpPrice);
+
+  const pairId = `pair-${Date.now()}`;
+  openPairs[pairId] = {
+    pairId,
+    side,
+    riskPercent,
+    totalLot: lotEach * 2,
+    trades: {
+      PARTIAL: { ticket: first?.positionId || first?.orderId || null, lot: lotEach },
+      TRAILING: { ticket: second?.positionId || second?.orderId || null, lot: lotEach }
+    },
+    sl: slPrice,
+    tp: tpPrice,
+    internalTrailingSL: null,
+    partialClosed: false,
+    openedAt: new Date().toISOString()
+  };
+  console.log('[PAIR OPENED]', pairId, openPairs[pairId]);
+  return openPairs[pairId];
 }
 
 // safeClosePosition - tolerant close; treat "not found" as already-closed success
@@ -261,22 +293,6 @@ function onCandle(candle) {
 
   const { timeframe, high, low, close, timestamp } = candle;
 
-  //   // Pick the right candle array
-  // const arr =
-  //   timeframe === '1m'
-  //     ? candlesM1
-  //     : timeframe === '5m'
-  //     ? candlesM5
-  //     : candlesM30;
-
-  // // Grab the last 5 candles for debugging
-  // const recent = arr.slice(-5);
-  // console.log(`\n[CANDLE CLOSE] ${timeframe} — ${new Date(timestamp * 1000).toLocaleTimeString()}`);
-  // recent.forEach((c, i) => {
-  //   console.log(
-  //     `#${arr.length - 5 + i + 1}: O=${c.open.toFixed(2)} H=${c.high.toFixed(2)} L=${c.low.toFixed(2)} C=${c.close.toFixed(2)}`
-  //   );
-  // });
 
   // Only trigger strategy on a new 5-minute candle,
   // and only if we have enough data for all timeframes
@@ -379,7 +395,7 @@ async function checkStrategy(m5CandleTime = null) {
   // compute current open positions
   const openPositions = await safeGetPositions();
   // sync our tracking map with existing positions
-  await syncOpenTradeRecordsWithPositions(openPositions);
+  await syncOpenPairsWithPositions(openPositions);
 
   // allow new trade if open positions < MAX_OPEN_TRADES
   if (openPositions.length >= MAX_OPEN_TRADES) {
@@ -447,16 +463,17 @@ async function checkStrategy(m5CandleTime = null) {
   const minSlDistance = 20 * 0.1; // 20 pips * 0.1
   const effectiveSl = Math.max(slDistance || 0, minSlDistance);
 
-  // risk -> convert slDistance in price to pips estimate for lot sizing: pips = slPrice / 0.1
-  const slPips = effectiveSl / 0.1;
-
+  
   // ensure we have a reasonable accountBalance
   if (!accountBalance || accountBalance === 0) {
     accountBalance = await safeGetAccountBalance();
   }
+  
+  
+  const slPriceDiff = effectiveSl;           // effectiveSl is already in price units
+  const CONTRACT_SIZE = 100;                 // change if your broker uses a different value
+  const lot = calculateLotFromRisk(accountBalance, allowedRiskPercent, slPriceDiff, CONTRACT_SIZE);
 
-  // lot calculation
-  const lot = calculateLotFromRisk(accountBalance, allowedRiskPercent, slPips, 1.0);
 
   // extra TP rules: if M30 is strong (very strong), allow larger R:R
   const trr = (function() {
@@ -479,26 +496,37 @@ async function checkStrategy(m5CandleTime = null) {
   }
   const ask = price.ask, bid = price.bid;
 
-  // BUY path
-  if (higherTrend === 'uptrend' && buyM5Trigger && buyM1Confirm) {
-    const candleTime = m5CandleTime || new Date().toISOString();
-    if (!canTakeTrade('BUY', candleTime)) {
-      console.log('BUY blocked by cooldown/duplicate guard.');
-    } else {
-      const slPrice = ask - effectiveSl;
-      const tpPrice = ask + effectiveSl * trr;
-      if ((openPositions.length < MAX_OPEN_TRADES) && allowedRiskPercent > 0) {
-        try {
-          const res = await safePlaceMarketOrder('BUY', lot, slPrice, tpPrice);
-          console.log('BUY order placed:', res);
-          await registerNewOpenTrade(res, 'BUY', lot, slPrice, tpPrice, allowedRiskPercent);
-          lastSignal = { type: 'BUY', m5CandleTime: candleTime, time: new Date().toISOString() };
-        } catch (e) {
-          console.error('BUY place order failed:', e.message || e);
+    // BUY path
+    if (higherTrend === 'uptrend' && buyM5Trigger && buyM1Confirm) {
+      const candleTime = m5CandleTime || new Date().toISOString();
+      if (!canTakeTrade('BUY', candleTime)) {
+        console.log('BUY blocked by cooldown/duplicate guard.');
+      } else {
+        const slPrice = ask - effectiveSl;
+        const tpPrice = ask + effectiveSl * trr;
+        if ((openPositions.length < MAX_OPEN_TRADES) && allowedRiskPercent > 0) {
+          try {
+            try {
+              const pair = await placePairedOrder('BUY', lot, slPrice, tpPrice, allowedRiskPercent);
+              if (pair) {
+                console.log('BUY pair placed:', pair);
+                lastSignal = {
+                  type: 'BUY',
+                  m5CandleTime: candleTime,
+                  time: new Date().toISOString()
+                };
+              }
+            } catch (e) {
+              console.error('BUY place pair failed:', e.message || e);
+            }
+
+            lastSignal = { type: 'BUY', m5CandleTime: candleTime, time: new Date().toISOString() };
+          } catch (e) {
+            console.error('BUY place order failed:', e.message || e);
+          }
         }
       }
     }
-  }
 
   // SELL path
   if (higherTrend === 'downtrend' && sellM5Trigger && sellM1Confirm) {
@@ -510,9 +538,20 @@ async function checkStrategy(m5CandleTime = null) {
       const tpPrice = bid - effectiveSl * trr;
       if ((openPositions.length < MAX_OPEN_TRADES) && allowedRiskPercent > 0) {
         try {
-          const res = await safePlaceMarketOrder('SELL', lot, slPrice, tpPrice);
-          console.log('SELL order placed:', res);
-          await registerNewOpenTrade(res, 'SELL', lot, slPrice, tpPrice, allowedRiskPercent);
+          try {
+            const pair = await placePairedOrder('SELL', lot, slPrice, tpPrice, allowedRiskPercent);
+            if (pair) {
+              console.log('SELL pair placed:', pair);
+              lastSignal = {
+                type: 'SELL',
+                m5CandleTime: candleTime,
+                time: new Date().toISOString()
+              };
+            }
+          } catch (e) {
+            console.error('SELL place pair failed:', e.message || e);
+          }
+
           lastSignal = { type: 'SELL', m5CandleTime: candleTime, time: new Date().toISOString() };
         } catch (e) {
           console.error('SELL place order failed:', e.message || e);
@@ -539,251 +578,230 @@ function canTakeTrade(type, m5CandleTime) {
   return true;
 }
 
-async function registerNewOpenTrade(res, side, lot, sl, tp, riskPercent) {
-  // res should contain info about created order and/or position.
-  let ticket = (res && (res.orderId || res.positionId || res.ticket || res.id)) || `local-${Date.now()}`;
-  let entryPrice;
+
+ // --------------------- SYNC: reconcile broker positions with tracked pairs ---------------------
+
+ async function syncOpenPairsWithPositions(positions) {
   try {
-    entryPrice = (side === 'BUY') ? (res && res.price) || (await safeGetPrice(SYMBOL)).ask : (res && res.price) || (await safeGetPrice(SYMBOL)).bid;
-  } catch (e) {
-    entryPrice = null;
-  }
+    // Build a list of currently open tickets on broker side
+    const openTickets = new Set(
+      (positions || [])
+        .map(p => p.positionId || p.ticket || p.id)
+        .filter(Boolean)
+    );
 
-  openTradeRecords[ticket] = {
-    ticket,
-    side,
-    lot,
-    sl,
-    tp,
-    entryPrice,
-    riskPercent,
-    openedAt: new Date().toISOString(),
-    partialClosed: false,
-    trailedTo: null
-  };
+    // Step 1️⃣ — verify all locally tracked pairs
+    for (const [pairId, rec] of Object.entries(openPairs)) {
+      const pTicket = rec.trades?.PARTIAL?.ticket;
+      const tTicket = rec.trades?.TRAILING?.ticket;
 
-  console.log('Registered trade:', openTradeRecords[ticket]);
+      // if PARTIAL ticket missing on broker
+      if (pTicket && !openTickets.has(pTicket)) {
+        console.log(`[SYNC] PARTIAL trade ${pTicket} missing on broker — marking closed`);
+        rec.trades.PARTIAL.ticket = null;
+        rec.partialClosed = true;
+      }
 
-  await sendTelegram(
-  `🟩 *NEW TRADE OPENED*\n` +
-  `━━━━━━━━━━━━━━━\n` +
-  `📈 *Type:* ${side}\n` +
-  `💰 *Lot:* ${lot}\n` +
-  `💵 *Entry:* ${entryPrice?.toFixed(3)}\n` +
-  `🛑 *Stop Loss:* ${sl?.toFixed(3)}\n` +
-  `🎯 *Take Profit:* ${tp?.toFixed(3)}\n` +
-  `⚖️ *Risk:* ${(riskPercent * 100).toFixed(1)}%\n` +
-  `🕒 *Time:* ${new Date().toLocaleTimeString()}`,
-  { parse_mode: 'Markdown' }
-);
+      // if TRAILING ticket missing on broker
+      if (tTicket && !openTickets.has(tTicket)) {
+        console.log(`[SYNC] TRAILING trade ${tTicket} missing on broker — marking closed`);
+        rec.trades.TRAILING.ticket = null;
+      }
 
-}
-
-async function syncOpenTradeRecordsWithPositions(positions) {
-  const currentTickets = positions.map(p => p.positionId || p.ticket || p.id).filter(Boolean);
-
-  // remove local records that are no longer open
-  for (let t of Object.keys(openTradeRecords)) {
-    if (!currentTickets.includes(t)) {
-      console.log('Previously tracked trade closed externally:', t);
-      delete openTradeRecords[t];
+      // if both tickets gone → remove record
+      if (!rec.trades.PARTIAL.ticket && !rec.trades.TRAILING.ticket) {
+        console.log(`[SYNC] Both trades of pair ${pairId} closed — removing pair`);
+        delete openPairs[pairId];
+      }
     }
-  }
 
-  // add any positions we don't know about
-  for (let pos of positions) {
-    const ticket = pos.positionId || pos.ticket || pos.id;
-    if (!ticket) continue;
-    if (!openTradeRecords[ticket]) {
-      openTradeRecords[ticket] = {
-        ticket,
-        side: pos.side || (pos.type === 'buy' ? 'BUY' : 'SELL') || 'UNKNOWN',
-        lot: pos.volume || pos.lots || pos.size || 0,
+    // Step 2️⃣ — detect any new broker positions we’re not tracking
+    for (const pos of positions) {
+      const ticket = pos.positionId || pos.ticket || pos.id;
+      if (!ticket) continue;
+
+      // if already in openPairs somewhere, skip
+      const isTracked = Object.values(openPairs).some(
+        rec =>
+          rec.trades.PARTIAL?.ticket === ticket ||
+          rec.trades.TRAILING?.ticket === ticket
+      );
+      if (isTracked) continue;
+
+      // create singleton fallback record (in case of manual trades)
+      const singletonId = `ext-${ticket}`;
+      openPairs[singletonId] = {
+        pairId: singletonId,
+        side: pos.side || (pos.type === 'buy' ? 'BUY' : 'SELL'),
+        totalLot: pos.volume || pos.lots || pos.size || 0,
+        riskPercent: 0,
+        trades: {
+          PARTIAL: { ticket, lot: pos.volume || pos.lots || pos.size || 0 },
+          TRAILING: { ticket: null, lot: 0 }
+        },
+        entryPrice: pos.openPrice || pos.averagePrice || pos.price,
         sl: pos.stopLoss || null,
         tp: pos.takeProfit || null,
-        entryPrice: pos.openPrice || pos.averagePrice || null,
-        riskPercent: 0, // unknown
-        openedAt: pos.openTime || new Date().toISOString(),
+        internalTrailingSL: null,
         partialClosed: false,
-        trailedTo: null
+        external: true,
+        openedAt: pos.openTime || new Date().toISOString()
       };
-      console.log('Synced external position:', ticket, openTradeRecords[ticket]);
+
+      console.log(`[SYNC] Registered external singleton position: ${ticket}`);
     }
+  } catch (e) {
+    console.error('[SYNC] Error syncing positions:', e.message || e);
   }
 }
 
-// --------------------- MONITOR: partial close, trailing, close on trend-weaken ---------------------
+
+// --------------------- MONITOR: internal trailing + partial close + close on trend weaken ---------------------
 async function monitorOpenTrades(ind30, ind5, ind1) {
   try {
     const positions = await safeGetPositions();
-    // sync first
-    await syncOpenTradeRecordsWithPositions(positions);
+    await syncOpenPairsWithPositions(positions);
 
-    // derive closes/highs/lows from unified candle arrays (fix leftover variable references)
     const closesM30 = candlesM30.map(c => c.close);
-    const highsM30  = candlesM30.map(c => c.high);
-    const lowsM30   = candlesM30.map(c => c.low);
-
-    const closesM5 = candlesM5.map(c => c.close);
-    const highsM5  = candlesM5.map(c => c.high);
-    const lowsM5   = candlesM5.map(c => c.low);
-
-    const closesM1 = candlesM1.map(c => c.close);
-    const highsM1  = candlesM1.map(c => c.high);
-    const lowsM1   = candlesM1.map(c => c.low);
-
-    // recompute higherTrend and a measure of strength (use existing ind30.bb if available)
     const higherTrend = determineMarketTypeFromBB(closesM30, ind30.bb || []);
     const trendStrong = higherTrend !== 'sideways';
 
-    for (let pos of positions) {
-      // extract identifier
-      const ticket = pos.positionId || pos.ticket || pos.id;
-      const rec = openTradeRecords[ticket] || null;
-      const side = rec ? rec.side : (pos.side || (pos.type === 'buy' ? 'BUY' : 'SELL'));
-      const volume = rec ? rec.lot : (pos.volume || pos.lots || pos.size);
-      const entry = rec ? rec.entryPrice : (pos.openPrice || pos.averagePrice || pos.price);
-      const sl = rec ? rec.sl : pos.stopLoss;
-      const tp = rec ? rec.tp : pos.takeProfit;
+    // Iterate over all open trade records
+    for (const [pairId, rec] of Object.entries(openPairs)) {
+      const side = rec.side;
+      const partial = rec.trades?.PARTIAL;
+      const trailing = rec.trades?.TRAILING;
 
-      // compute current price & unrealized pips to TP
       const price = await safeGetPrice(SYMBOL);
       if (!price) continue;
-      const currentPrice = (side === 'BUY') ? price.bid : price.ask; // if long, profit at bid
-      if (!tp || !entry) continue;
 
-      const totalDistanceToTP = Math.abs(tp - entry);
-      const currentDistanceToTP = Math.abs(tp - currentPrice);
-      const progress = 1 - (currentDistanceToTP / totalDistanceToTP); // 0 -> not moved, 1 -> hit
+      const current = side === 'BUY' ? price.bid : price.ask;
 
-      // Partial close at 50% TP: if not yet partialClosed and progress >= 0.5
-      if (!rec?.partialClosed && progress >= 0.5) {
-        const halfVolume = Math.max(MIN_LOT, parseFloat((volume / 2).toFixed(LOT_ROUND)));
-        try {
-          const closeRes = await safeClosePosition(ticket, halfVolume);
-          if (closeRes.ok) {
-            if (rec) {
-              rec.partialClosed = true;
-              rec.lot = parseFloat((volume - halfVolume).toFixed(LOT_ROUND));
-            }
-            console.log(`Partial close executed for ${ticket}: closed ${halfVolume}`);
+      // --- PARTIAL CLOSE LOGIC (at 50% TP)
+      if (
+        !rec.partialClosed &&
+        rec.tp &&
+        rec.entryPrice &&
+        partial?.ticket
+      ) {
+        const totalDist = Math.abs(rec.tp - rec.entryPrice);
+        const currentDist = Math.abs(rec.tp - current);
+        const progress = 1 - currentDist / totalDist;
 
+        if (progress >= 0.5) {
+          console.log(`[PAIR] Partial close condition met for ${pairId}`);
+          try {
+            await safeClosePosition(partial.ticket, partial.lot);
+            rec.partialClosed = true;
+            rec.trades.PARTIAL.ticket = null;
             await sendTelegram(
-              `🟠 *PARTIAL CLOSE EXECUTED*\n` +
-              `━━━━━━━━━━━━━━━\n` +
-              `🎫 *Ticket:* ${ticket}\n` +
-              `📉 *Closed:* ${halfVolume}\n` +
-              `📈 *Remaining:* ${rec?.lot}\n` +
-              `💰 *Side:* ${rec?.side}\n` +
-              `🕒 ${new Date().toLocaleTimeString()}`,
-              { parse_mode: 'Markdown' }
+              `🟠 *PARTIAL CLOSED*\n━━━━━━━━━━━━━━━\n🎫 *Pair:* ${pairId}\n📈 *Side:* ${side}\n💰 *Lot Closed:* ${partial.lot}\n🕒 ${new Date().toLocaleTimeString()}`,
+              { parse_mode: "Markdown" }
             );
 
-          } else {
-            console.warn('Partial close failed for', ticket, closeRes.error && closeRes.error.message);
+            // ✅ Refresh balance after partial close
+            try {
+              const newBalance = await safeGetAccountBalance();
+              if (newBalance && newBalance !== accountBalance) {
+                accountBalance = newBalance;
+              }
+            } catch (err) {
+              console.warn('[BALANCE] Post-close update failed:', err.message);
+            }
+          } catch (e) {
+            console.warn(`[PAIR] Partial close failed for ${pairId}:`, e.message);
           }
-        } catch (e) {
-          console.warn('Partial close error:', e.message || e);
         }
       }
 
-      // Trailing logic: move SL up to protect profits while trend remains strong
-      if (trendStrong) {
-        const atr5 = ind5.atr.at(-1) || 0;
-        if (atr5 > 0) {
-          let targetSl;
-          if (side === 'BUY') {
-            targetSl = currentPrice - atr5 * 1.0;
-            if (sl == null || targetSl > sl + 1e-9) {
-              try {
-                await safeModifyPosition(ticket, { stopLoss: targetSl });
-                if (rec) { rec.sl = targetSl; rec.trailedTo = targetSl; }
-                console.log(`Tightened SL for ${ticket} to ${targetSl}`);
+      // --- INTERNAL TRAILING STOP UPDATE
+      const atr = ind5.atr.at(-1) || 0;
+      if (atr > 0) {
+        const newSL =
+          side === "BUY" ? current - atr * 1.0 : current + atr * 1.0;
 
-                await sendTelegram(
-                  `🔄 *TRAILING STOP UPDATED*\n` +
-                  `━━━━━━━━━━━━━━━\n` +
-                  `🎫 *Ticket:* ${ticket}\n` +
-                  `📈 *Side:* ${rec?.side}\n` +
-                  `🆕 *New SL:* ${targetSl.toFixed(3)}\n` +
-                  `🕒 ${new Date().toLocaleTimeString()}`,
-                  { parse_mode: 'Markdown' }
-                );
-
-              } catch (e) {
-                // ignore if modify not supported
-              }
-            }
-          } else {
-            targetSl = currentPrice + atr5 * 1.0;
-            if (sl == null || targetSl < sl - 1e-9) {
-              try {
-                await safeModifyPosition(ticket, { stopLoss: targetSl });
-                if (rec) { rec.sl = targetSl; rec.trailedTo = targetSl; }
-                console.log(`Tightened SL for ${ticket} to ${targetSl}`);
-
-                await sendTelegram(
-                  `🔄 *TRAILING STOP UPDATED*\n` +
-                  `━━━━━━━━━━━━━━━\n` +
-                  `🎫 *Ticket:* ${ticket}\n` +
-                  `📈 *Side:* ${rec?.side}\n` +
-                  `🆕 *New SL:* ${targetSl.toFixed(3)}\n` +
-                  `🕒 ${new Date().toLocaleTimeString()}`,
-                  { parse_mode: 'Markdown' }
-                );
-
-              } catch (e) {}
-            }
-          }
+        if (
+          !rec.internalTrailingSL ||
+          (side === "BUY"
+            ? newSL > rec.internalTrailingSL + 0.5
+            : newSL < rec.internalTrailingSL - 0.5)
+        ) {
+          rec.internalTrailingSL = newSL;
         }
-      } else {
-        // If trend is no longer strong -> close remaining lot (exit trade)
-        if (rec && rec.lot > 0) {
+      }
+
+      // --- INTERNAL TRAILING STOP BREACH
+      if (rec.internalTrailingSL && trailing?.ticket) {
+        const hit =
+          side === "BUY"
+            ? current <= rec.internalTrailingSL
+            : current >= rec.internalTrailingSL;
+
+        if (hit) {
+          console.log(`[PAIR] Internal SL hit for ${pairId} -> closing trailing trade`);
           try {
-            const closeRes = await safeClosePosition(ticket, rec.lot);
-            if (closeRes.ok) {
-              console.log(`Closed ${ticket} due to trend weakening.`);
+            await safeClosePosition(trailing.ticket, trailing.lot);
+            rec.trades.TRAILING.ticket = null;
 
-              await sendTelegram(
-                `🔻 *TRADE CLOSED (TREND WEAKENED)*\n` +
-                `━━━━━━━━━━━━━━━\n` +
-                `🎫 *Ticket:* ${ticket}\n` +
-                `📈 *Side:* ${rec?.side}\n` +
-                `💵 *Lot Closed:* ${rec?.lot}\n` +
-                `🕒 ${new Date().toLocaleTimeString()}`,
-                { parse_mode: 'Markdown' }
-              );
+            await sendTelegram(
+              `🔴 *TRAILING STOP HIT*\n━━━━━━━━━━━━━━━\n🎫 *Pair:* ${pairId}\n📈 *Side:* ${side}\n💰 *Lot Closed:* ${trailing.lot}\n🕒 ${new Date().toLocaleTimeString()}`,
+              { parse_mode: "Markdown" }
+            );
 
-              delete openTradeRecords[ticket];
-            } else {
-              console.warn('Error closing trade on trend weaken:', ticket, closeRes.error && closeRes.error.message);
+            // ✅ Refresh balance after partial close
+            try {
+              const newBalance = await safeGetAccountBalance();
+              if (newBalance && newBalance !== accountBalance) {
+                accountBalance = newBalance;
+              }
+            } catch (err) {
+              console.warn('[BALANCE] Post-close update failed:', err.message);
             }
+
+            // Remove record if both sides are now closed
+            if (!rec.trades.PARTIAL.ticket && !rec.trades.TRAILING.ticket)
+              delete openPairs[pairId];
+
           } catch (e) {
-            console.warn('Error closing trade on trend weaken:', e.message || e);
+            console.warn(`[PAIR] Failed to close trailing trade for ${pairId}:`, e.message);
           }
         }
+      }
+
+      // --- CLOSE ON TREND WEAKEN
+      if (!trendStrong) {
+        console.log(`[PAIR] Trend weakened -> closing all for ${pairId}`);
+        for (const key of ["PARTIAL", "TRAILING"]) {
+          const trade = rec.trades[key];
+          if (trade?.ticket) {
+            await safeClosePosition(trade.ticket, trade.lot);
+            trade.ticket = null;
+          }
+        }
+        delete openPairs[pairId];
+
+        await sendTelegram(
+          `🔻 *PAIR CLOSED (TREND WEAKENED)*\n━━━━━━━━━━━━━━━\n🎫 *Pair:* ${pairId}\n📈 *Side:* ${side}\n🕒 ${new Date().toLocaleTimeString()}`,
+          { parse_mode: "Markdown" }
+        );
+        
+        // ✅ Refresh balance after partial close
+        try {
+          const newBalance = await safeGetAccountBalance();
+          if (newBalance && newBalance !== accountBalance) {
+            accountBalance = newBalance;
+          }
+        } catch (err) {
+          console.warn('[BALANCE] Post-close update failed:', err.message);
+        }
+
       }
     }
   } catch (e) {
-    console.error('monitorOpenTrades error:', e.message || e);
+    console.error("monitorOpenTrades error:", e.message || e);
   }
 }
 
-
-// --------------------- NEW AGGREGATOR SETUP ---------------------
-
-function handleTick(tick) {
-  try {
-    const tickPrice = tick.bid ?? tick.ask ?? tick.price;
-    const tickTime = Math.floor(Date.now() / 1000);
-
-    updateCandle('1m', tickPrice, tickTime);
-    updateCandle('5m', tickPrice, tickTime);
-    updateCandle('30m', tickPrice, tickTime);
-  } catch (e) {
-    console.warn('[TICK] Candle update error:', e.message);
-  }
-}
 
 
 
@@ -911,13 +929,25 @@ function handleTick(tick) {
       if (candlesM30.length > 500) candlesM30.splice(0, candlesM30.length - 300);
     }, 60 * 60 * 1000); // every hour
 
+    // 🔄 Auto-refresh account balance every 60 seconds
+    setInterval(async () => {
+      try {
+        const newBalance = await safeGetAccountBalance();
+        if (newBalance && newBalance !== accountBalance) {
+          accountBalance = newBalance;
+        }
+      } catch (e) {
+        console.warn('[BALANCE] Refresh failed:', e.message);
+      }
+    }, 60 * 1000);
+
 
     // Hourly health monitor
     setInterval(async () => {
       try {
         const uptimeHours = (process.uptime() / 3600).toFixed(1);
         const openPositions = await safeGetPositions();
-        const totalTrades = Object.keys(openTradeRecords).length;
+        const totalTrades = Object.keys(openPairs).length;
         const tickHealth = new Date(Date.now() - lastTickTime).getSeconds();
 
         console.log(
