@@ -62,6 +62,7 @@ let candlesM1 = []
 let candlesM5 = []
 let candlesM30 = []
 let lastSignal = null; // {type, m5CandleTime, time}
+let lastKnownTrend = null;
 let openPairs = {}; // ticket -> metadata
 
 // --------------------- HELPERS: Indicators & Trend ---------------------
@@ -79,8 +80,10 @@ function calculateIndicators(values, highs, lows) {
 
 function determineMarketTypeFromBB(values, bbArray, lookback = 20) {
   if (!bbArray.length || !values.length) return 'sideways';
+
   const n = Math.min(lookback, values.length, bbArray.length);
   let above = 0, below = 0;
+
   for (let i = 0; i < n; i++) {
     const vi = values[values.length - 1 - i];
     const bbi = bbArray[bbArray.length - 1 - i];
@@ -88,13 +91,28 @@ function determineMarketTypeFromBB(values, bbArray, lookback = 20) {
     if (vi > bbi.middle) above++;
     if (vi < bbi.middle) below++;
   }
+
   const pctAbove = above / n;
   const bbw = (bbArray.at(-1).upper - bbArray.at(-1).lower) / bbArray.at(-1).middle;
-  const THRESH = 0.02;  // tune for XAU
-  if (bbw > THRESH && pctAbove > 0.6) return 'uptrend';
-  if (bbw > THRESH && pctAbove < 0.4) return 'downtrend';
+
+  // Tuned thresholds (works well for both Gold and BTC)
+  const STRONG_TREND_BBW = 0.018;
+  const SIDEWAYS_BBW = 0.012;
+  const UPPER_PCT = 0.58;
+  const LOWER_PCT = 0.42;
+
+  if (bbw > STRONG_TREND_BBW && pctAbove > UPPER_PCT) return 'uptrend';
+  if (bbw > STRONG_TREND_BBW && pctAbove < LOWER_PCT) return 'downtrend';
+
+  if (bbw > SIDEWAYS_BBW) {
+    if (pctAbove > 0.62) return 'uptrend';
+    if (pctAbove < 0.38) return 'downtrend';
+  }
+
   return 'sideways';
 }
+
+
 
 
 // --------------------- HELPERS: Money & Lot sizing ---------------------
@@ -380,7 +398,27 @@ async function checkStrategy(m5CandleTime = null) {
   const ind30 = calculateIndicators(closesM30, highsM30, lowsM30);
 
 
-  const higherTrend = determineMarketTypeFromBB(closesM30, ind30.bb || []);
+  // 🧠 Determine higher timeframe trend
+let higherTrend;
+
+// If M30 candles are insufficient, fallback to 5m trend (12-candle = 1hr lookback)
+if (candlesM30.length < 22) {
+  higherTrend = determineMarketTypeFromBB(closesM5, ind5.bb || [], 24);
+} else {
+  // ✅ Normal: use M30 (20-candle lookback)
+  higherTrend = determineMarketTypeFromBB(closesM30, ind30.bb || [], 20);
+}
+
+  // Track last known non-sideways trend
+  if (higherTrend !== 'sideways') {
+    lastKnownTrend = higherTrend;
+  }
+
+  // Determine effective bias: if sideways, inherit last known
+  let effectiveTrend = higherTrend;
+  if (higherTrend === 'sideways' && lastKnownTrend) {
+    effectiveTrend = lastKnownTrend;
+  }
   const lastRSI_M5 = ind5.rsi.at(-1);
   const lastStoch_M5 = ind5.stochastic.at(-1);
   const prevStoch_M5 = ind5.stochastic.at(-2);
@@ -421,7 +459,7 @@ async function checkStrategy(m5CandleTime = null) {
   // --- POTENTIAL ZONE ALERTS ---
   // BUY Zone
   if (
-    higherTrend === 'uptrend' &&
+    effectiveTrend === 'uptrend' &&
     buyM5Trigger &&
     !buyM1Confirm &&
     (!lastZoneSignal || lastZoneSignal.type !== 'BUY' || lastZoneSignal.candleTime !== m5CandleTime)
@@ -429,7 +467,7 @@ async function checkStrategy(m5CandleTime = null) {
     await sendTelegram(
       `⚡ *POTENTIAL BUY ZONE DETECTED*\n` +
       `━━━━━━━━━━━━━━━\n` +
-      `📊 *Trend:* ${higherTrend.toUpperCase()}\n` +
+      `📊 *Trend:* ${effectiveTrend.toUpperCase()}\n` +
       `📍 *Trigger:* M5 bullish setup detected\n` +
       `💡 Waiting for M1 confirmation...\n` +
       `⏰ ${new Date().toLocaleTimeString()}`,
@@ -440,7 +478,7 @@ async function checkStrategy(m5CandleTime = null) {
 
   // SELL Zone
   if (
-    higherTrend === 'downtrend' &&
+    effectiveTrend === 'downtrend' &&
     sellM5Trigger &&
     !sellM1Confirm &&
     (!lastZoneSignal || lastZoneSignal.type !== 'SELL' || lastZoneSignal.candleTime !== m5CandleTime)
@@ -448,7 +486,7 @@ async function checkStrategy(m5CandleTime = null) {
     await sendTelegram(
       `⚡ *POTENTIAL SELL ZONE DETECTED*\n` +
       `━━━━━━━━━━━━━━━\n` +
-      `📊 *Trend:* ${higherTrend.toUpperCase()}\n` +
+      `📊 *Trend:* ${effectiveTrend.toUpperCase()}\n` +
       `📍 *Trigger:* M5 bearish setup detected\n` +
       `💡 Waiting for M1 confirmation...\n` +
       `⏰ ${new Date().toLocaleTimeString()}`,
@@ -496,8 +534,8 @@ async function checkStrategy(m5CandleTime = null) {
   }
   const ask = price.ask, bid = price.bid;
 
-    // BUY path
-    if (higherTrend === 'uptrend' && buyM5Trigger && buyM1Confirm) {
+    // ✅ BUY path: allowed when M30 = uptrend or sideways
+    if ((effectiveTrend === 'uptrend') && buyM5Trigger && buyM1Confirm) {
       const candleTime = m5CandleTime || new Date().toISOString();
       if (!canTakeTrade('BUY', candleTime)) {
         console.log('BUY blocked by cooldown/duplicate guard.');
@@ -506,21 +544,11 @@ async function checkStrategy(m5CandleTime = null) {
         const tpPrice = ask + effectiveSl * trr;
         if ((openPositions.length < MAX_OPEN_TRADES) && allowedRiskPercent > 0) {
           try {
-            try {
-              const pair = await placePairedOrder('BUY', lot, slPrice, tpPrice, allowedRiskPercent);
-              if (pair) {
-                console.log('BUY pair placed:', pair);
-                lastSignal = {
-                  type: 'BUY',
-                  m5CandleTime: candleTime,
-                  time: new Date().toISOString()
-                };
-              }
-            } catch (e) {
-              console.error('BUY place pair failed:', e.message || e);
+            const pair = await placePairedOrder('BUY', lot, slPrice, tpPrice, allowedRiskPercent);
+            if (pair) {
+              console.log('BUY pair placed:', pair);
+              lastSignal = { type: 'BUY', m5CandleTime: candleTime, time: new Date().toISOString() };
             }
-
-            lastSignal = { type: 'BUY', m5CandleTime: candleTime, time: new Date().toISOString() };
           } catch (e) {
             console.error('BUY place order failed:', e.message || e);
           }
@@ -528,37 +556,27 @@ async function checkStrategy(m5CandleTime = null) {
       }
     }
 
-  // SELL path
-  if (higherTrend === 'downtrend' && sellM5Trigger && sellM1Confirm) {
-    const candleTime = m5CandleTime || new Date().toISOString();
-    if (!canTakeTrade('SELL', candleTime)) {
-      console.log('SELL blocked by cooldown/duplicate guard.');
-    } else {
-      const slPrice = bid + effectiveSl;
-      const tpPrice = bid - effectiveSl * trr;
-      if ((openPositions.length < MAX_OPEN_TRADES) && allowedRiskPercent > 0) {
-        try {
+    // ✅ SELL path: allowed when M30 = downtrend or sideways
+    if ((effectiveTrend === 'downtrend') && sellM5Trigger && sellM1Confirm) {
+      const candleTime = m5CandleTime || new Date().toISOString();
+      if (!canTakeTrade('SELL', candleTime)) {
+        console.log('SELL blocked by cooldown/duplicate guard.');
+      } else {
+        const slPrice = bid + effectiveSl;
+        const tpPrice = bid - effectiveSl * trr;
+        if ((openPositions.length < MAX_OPEN_TRADES) && allowedRiskPercent > 0) {
           try {
             const pair = await placePairedOrder('SELL', lot, slPrice, tpPrice, allowedRiskPercent);
             if (pair) {
               console.log('SELL pair placed:', pair);
-              lastSignal = {
-                type: 'SELL',
-                m5CandleTime: candleTime,
-                time: new Date().toISOString()
-              };
+              lastSignal = { type: 'SELL', m5CandleTime: candleTime, time: new Date().toISOString() };
             }
           } catch (e) {
-            console.error('SELL place pair failed:', e.message || e);
+            console.error('SELL place order failed:', e.message || e);
           }
-
-          lastSignal = { type: 'SELL', m5CandleTime: candleTime, time: new Date().toISOString() };
-        } catch (e) {
-          console.error('SELL place order failed:', e.message || e);
         }
       }
     }
-  }
 
   // Always monitor open trades for partial close / trailing / trend-weaken close
   await monitorOpenTrades(ind30, ind5, ind1);
