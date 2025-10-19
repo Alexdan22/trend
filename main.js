@@ -61,8 +61,15 @@ let accountBalance = 0;
 let candlesM1 = []
 let candlesM5 = []
 let candlesM30 = []
-let lastSignal = null; // {type, m5CandleTime, time}
+let lastSignal = null;
 let lastKnownTrend = null;
+const botStartTime = Date.now();
+let usingM5Fallback = false;
+let warmUpComplete = false;
+let lastTickPrice = null;
+let stagnantTickCount = 0;
+let stagnantSince = null;
+let marketFrozen = false;
 let openPairs = {}; // ticket -> metadata
 
 // --------------------- HELPERS: Indicators & Trend ---------------------
@@ -303,28 +310,19 @@ async function safeGetPositions() {
 let lastStrategyRun = 0;
 const STRATEGY_COOLDOWN_MS = 60_000; // 1 minute
 
-
-
-
 function onCandle(candle) {
   if (!candle) return;
 
   const { timeframe, high, low, close, timestamp } = candle;
 
 
-  // Only trigger strategy on a new 5-minute candle,
-  // and only if we have enough data for all timeframes
-  if (
-    timeframe === '5m' &&
-    candlesM30.length >= 22 &&
-    candlesM5.length >= 22 &&
-    candlesM1.length >= 22
-  ) {
+  // Only trigger strategy on a new 5-minute candle
+  if (timeframe === '5m') {
     checkStrategy(new Date(timestamp * 1000).toISOString())
       .catch(err => console.error('checkStrategy error:', err));
   }
-}
 
+}
 
 function updateCandle(tf, tickPrice, tickTime) {
   const tfSeconds = tf === '1m' ? 60 : tf === '5m' ? 300 : 1800;
@@ -360,14 +358,57 @@ function updateCandle(tf, tickPrice, tickTime) {
   }
 }
 
-function handleTick(tick) {
+// --------------------- TICK HANDLER WITH MARKET FREEZE DETECTION ---------------------
+async function handleTick(tick) {
   try {
     const tickPrice = tick.bid ?? tick.ask ?? tick.price;
     const tickTime = Math.floor(Date.now() / 1000);
 
-    updateCandle('1m', tickPrice, tickTime);
-    updateCandle('5m', tickPrice, tickTime);
-    updateCandle('30m', tickPrice, tickTime);
+    // --- Detect stagnant price movement ---
+    if (lastTickPrice !== null) {
+      if (tickPrice !== lastTickPrice) {
+        // ✅ Price moved → reset freeze counters
+        if (marketFrozen) {
+          marketFrozen = false;
+          stagnantTickCount = 0;
+          console.log(`[MARKET] ✅ Price movement resumed. Resuming candle updates.`);
+          await sendTelegram(
+            `✅ *MARKET ACTIVE AGAIN*\n━━━━━━━━━━━━━━━\n💹 Price movement detected\n🕒 ${new Date().toLocaleTimeString()}\n📈 Candle updates resumed.`,
+            { parse_mode: 'Markdown' }
+          );
+        } else {
+          stagnantTickCount = 0;
+        }
+      } else {
+        // ❌ Price unchanged → count as stagnant
+        stagnantTickCount++;
+
+        // After ~2 minutes (60 ticks @ 2s interval), mark market as frozen
+        if (stagnantTickCount > 60 && !marketFrozen) {
+          marketFrozen = true;
+          stagnantSince = new Date().toISOString();
+
+          console.warn(`[MARKET] ⚠️ Market appears frozen since ${stagnantSince}. Pausing candle aggregation.`);
+          await sendTelegram(
+            `⚠️ *MARKET FROZEN DETECTED*\n━━━━━━━━━━━━━━━\n📉 *No price movement detected*\n🕒 Since: ${new Date().toLocaleTimeString()}\n⏸️ Candle updates paused until movement resumes.`,
+            { parse_mode: 'Markdown' }
+          );
+        }
+
+        // Skip candle updates while market is frozen
+        if (marketFrozen) return;
+      }
+    }
+
+    lastTickPrice = tickPrice;
+
+    // --- Update candle arrays only when market is active ---
+    if (!marketFrozen) {
+      updateCandle('1m', tickPrice, tickTime);
+      updateCandle('5m', tickPrice, tickTime);
+      updateCandle('30m', tickPrice, tickTime);
+    }
+
   } catch (e) {
     console.warn('[TICK] Candle update error:', e.message);
   }
@@ -375,50 +416,81 @@ function handleTick(tick) {
 
 
 
-
 // --------------------- CORE: Strategy & Execution ---------------------
 async function checkStrategy(m5CandleTime = null) {
 
+  // ⏱️ Warm-up control
+  const runtimeMinutes = (Date.now() - botStartTime) / 60000;
+  const m30Ready = candlesM30.length >= 22;
+
+  if (marketFrozen) {
+    console.log('[STRAT] ⏸️ Market frozen — skipping strategy evaluation.');
+    return;
+  }
+
+  // 🚫 Do not run any strategy or indicators for the first 2 hours
+  if (runtimeMinutes < 120) {
+    return; // Exit early: only collecting candle data
+  }
+
+  // 🔔 One-time warm-up completion notification
+  if (!warmUpComplete) {
+    warmUpComplete = true;
+    console.log(`[TREND] ✅ Warm-up complete — strategy is now ACTIVE.`);
+    await sendTelegram(
+      `✅ *STRATEGY ACTIVE*\n━━━━━━━━━━━━━━━\n🕒 Runtime: ${runtimeMinutes.toFixed(1)} min\n📈 Candles: M1=${candlesM1.length}, M5=${candlesM5.length}, M30=${candlesM30.length}\n🚀 The bot has completed its 2-hour warm-up and is now LIVE.`,
+      { parse_mode: 'Markdown' }
+    );
+  }
+
+  // ✅ After 2 hours, begin normal indicator calculations
   const closesM1 = candlesM1.map(c => c.close);
   const highsM1 = candlesM1.map(c => c.high);
   const lowsM1  = candlesM1.map(c => c.low);
-
   const ind1 = calculateIndicators(closesM1, highsM1, lowsM1);
 
   const closesM5 = candlesM5.map(c => c.close);
   const highsM5 = candlesM5.map(c => c.high);
   const lowsM5  = candlesM5.map(c => c.low);
-
   const ind5 = calculateIndicators(closesM5, highsM5, lowsM5);
 
   const closesM30 = candlesM30.map(c => c.close);
   const highsM30 = candlesM30.map(c => c.high);
   const lowsM30  = candlesM30.map(c => c.low);
-
   const ind30 = calculateIndicators(closesM30, highsM30, lowsM30);
 
-
   // 🧠 Determine higher timeframe trend
-let higherTrend;
+  let higherTrend;
 
-// If M30 candles are insufficient, fallback to 5m trend (12-candle = 1hr lookback)
-if (candlesM30.length < 22) {
-  higherTrend = determineMarketTypeFromBB(closesM5, ind5.bb || [], 24);
-} else {
-  // ✅ Normal: use M30 (20-candle lookback)
-  higherTrend = determineMarketTypeFromBB(closesM30, ind30.bb || [], 20);
-}
+  if (m30Ready) {
+    // ✅ Normal: use M30 (20-candle lookback)
+    higherTrend = determineMarketTypeFromBB(closesM30, ind30.bb || [], 20);
+    if (usingM5Fallback) {
+      console.log(`[TREND] ✅ Switched back to M30 trend — M30 data now sufficient (${candlesM30.length} candles).`);
+      usingM5Fallback = false;
+    }
+  } else {
+    // ⚠️ After 2h but M30 still not ready → use M5 fallback
+    higherTrend = determineMarketTypeFromBB(closesM5, ind5.bb || [], 24);
+    if (!usingM5Fallback) {
+      console.log(`[TREND] ⚠️ Using M5 fallback — runtime ${runtimeMinutes.toFixed(1)} min > 120, only ${candlesM30.length} M30 candles.`);
+      usingM5Fallback = true;
+    }
+  }
 
-  // Track last known non-sideways trend
+  // 🧭 Preserve trend memory and effective bias
   if (higherTrend !== 'sideways') {
     lastKnownTrend = higherTrend;
   }
 
-  // Determine effective bias: if sideways, inherit last known
   let effectiveTrend = higherTrend;
   if (higherTrend === 'sideways' && lastKnownTrend) {
     effectiveTrend = lastKnownTrend;
   }
+
+  console.log(`[TREND] Final effective trend: ${effectiveTrend.toUpperCase()} (higherTF=${higherTrend}, lastKnown=${lastKnownTrend || 'none'})`);
+
+  // --- Safety: skip if indicators incomplete ---
   const lastRSI_M5 = ind5.rsi.at(-1);
   const lastStoch_M5 = ind5.stochastic.at(-1);
   const prevStoch_M5 = ind5.stochastic.at(-2);
@@ -426,22 +498,20 @@ if (candlesM30.length < 22) {
   const lastStoch_M1 = ind1.stochastic.at(-1);
   const lastATR_M5 = ind5.atr.at(-1) || 0;
 
-  if (!lastStoch_M5 || !prevStoch_M5 || !lastStoch_M1) return; // safety
+  if (!lastStoch_M5 || !prevStoch_M5 || !lastStoch_M1) return; // safety check
 
   console.log(`[STRAT] M30:${higherTrend} | M5 RSI:${lastRSI_M5?.toFixed(2)} Stoch:${lastStoch_M5?.k?.toFixed(2)} | M1 RSI:${lastRSI_M1?.toFixed(2)} Stoch:${lastStoch_M1?.k?.toFixed(2)}`);
-  
-  // compute current open positions
+
+  // --- Positions ---
   const openPositions = await safeGetPositions();
-  // sync our tracking map with existing positions
   await syncOpenPairsWithPositions(openPositions);
 
-  // allow new trade if open positions < MAX_OPEN_TRADES
+  // --- Risk check ---
   if (openPositions.length >= MAX_OPEN_TRADES) {
     await monitorOpenTrades(ind30, ind5, ind1);
     return;
   }
 
-  // compute allowed risk for this new trade
   const allowedRiskPercent = computeAllowedRiskForNewTrade(openPositions.length);
   if (allowedRiskPercent <= 0) {
     console.log('No remaining risk budget for new trades.');
@@ -449,15 +519,13 @@ if (candlesM30.length < 22) {
     return;
   }
 
-  // Define M5 triggers
+  // --- Entry Triggers ---
   const buyM5Trigger = (prevStoch_M5.k < 25 && lastStoch_M5.k >= 25 && lastRSI_M5 < 50);
-  const buyM1Confirm = (lastRSI_M1 < 55); // RSI only
+  const buyM1Confirm = (lastRSI_M1 < 55);
   const sellM5Trigger = (prevStoch_M5.k > 75 && lastStoch_M5.k <= 75 && lastRSI_M5 > 50);
-  const sellM1Confirm = (lastRSI_M1 > 45); // RSI only
+  const sellM1Confirm = (lastRSI_M1 > 45);
 
-
-  // --- POTENTIAL ZONE ALERTS ---
-  // BUY Zone
+  // --- Potential Zone Alerts ---
   if (
     effectiveTrend === 'uptrend' &&
     buyM5Trigger &&
@@ -465,18 +533,12 @@ if (candlesM30.length < 22) {
     (!lastZoneSignal || lastZoneSignal.type !== 'BUY' || lastZoneSignal.candleTime !== m5CandleTime)
   ) {
     await sendTelegram(
-      `⚡ *POTENTIAL BUY ZONE DETECTED*\n` +
-      `━━━━━━━━━━━━━━━\n` +
-      `📊 *Trend:* ${effectiveTrend.toUpperCase()}\n` +
-      `📍 *Trigger:* M5 bullish setup detected\n` +
-      `💡 Waiting for M1 confirmation...\n` +
-      `⏰ ${new Date().toLocaleTimeString()}`,
+      `⚡ *POTENTIAL BUY ZONE DETECTED*\n━━━━━━━━━━━━━━━\n📊 *Trend:* ${effectiveTrend.toUpperCase()}\n📍 *Trigger:* M5 bullish setup detected\n💡 Waiting for M1 confirmation...\n⏰ ${new Date().toLocaleTimeString()}`,
       { parse_mode: 'Markdown' }
     );
     lastZoneSignal = { type: 'BUY', candleTime: m5CandleTime };
   }
 
-  // SELL Zone
   if (
     effectiveTrend === 'downtrend' &&
     sellM5Trigger &&
@@ -484,40 +546,30 @@ if (candlesM30.length < 22) {
     (!lastZoneSignal || lastZoneSignal.type !== 'SELL' || lastZoneSignal.candleTime !== m5CandleTime)
   ) {
     await sendTelegram(
-      `⚡ *POTENTIAL SELL ZONE DETECTED*\n` +
-      `━━━━━━━━━━━━━━━\n` +
-      `📊 *Trend:* ${effectiveTrend.toUpperCase()}\n` +
-      `📍 *Trigger:* M5 bearish setup detected\n` +
-      `💡 Waiting for M1 confirmation...\n` +
-      `⏰ ${new Date().toLocaleTimeString()}`,
+      `⚡ *POTENTIAL SELL ZONE DETECTED*\n━━━━━━━━━━━━━━━\n📊 *Trend:* ${effectiveTrend.toUpperCase()}\n📍 *Trigger:* M5 bearish setup detected\n💡 Waiting for M1 confirmation...\n⏰ ${new Date().toLocaleTimeString()}`,
       { parse_mode: 'Markdown' }
     );
     lastZoneSignal = { type: 'SELL', candleTime: m5CandleTime };
   }
 
-
-  // determine sl price using ATR (dynamic)
+  // --- SL & TP Calculation ---
   const slDistance = lastATR_M5 * ATR_SL_MULTIPLIER;
-  const minSlDistance = 20 * 0.1; // 20 pips * 0.1
+  const minSlDistance = 20 * 0.1;
   const effectiveSl = Math.max(slDistance || 0, minSlDistance);
 
-  
-  // ensure we have a reasonable accountBalance
   if (!accountBalance || accountBalance === 0) {
     accountBalance = await safeGetAccountBalance();
   }
-  
-  
-  const slPriceDiff = effectiveSl;           // effectiveSl is already in price units
-  const CONTRACT_SIZE = 100;                 // change if your broker uses a different value
+
+  const slPriceDiff = effectiveSl;
+  const CONTRACT_SIZE = 100;
   const lot = calculateLotFromRisk(accountBalance, allowedRiskPercent, slPriceDiff, CONTRACT_SIZE);
 
-
-  // extra TP rules: if M30 is strong (very strong), allow larger R:R
-  const trr = (function() {
+  const trr = (() => {
     try {
       const bbw30 = (ind30.bb.at(-1).upper - ind30.bb.at(-1).lower) / ind30.bb.at(-1).middle;
-      if (determineMarketTypeFromBB(closesM30, ind30.bb) === 'uptrend' || determineMarketTypeFromBB(closesM30, ind30.bb) === 'downtrend') {
+      const m30Type = determineMarketTypeFromBB(closesM30, ind30.bb);
+      if (m30Type === 'uptrend' || m30Type === 'downtrend') {
         if (bbw30 > STRONG_TREND_BBW) return 3.0;
         return 2.0;
       }
@@ -525,60 +577,61 @@ if (candlesM30.length < 22) {
     return 1.5;
   })();
 
-  // Compose SL/TP price levels
-  const price = await safeGetPrice(SYMBOL); // {bid, ask}
+  // --- Execute Trade ---
+  const price = await safeGetPrice(SYMBOL);
   if (!price) {
     console.warn('[STRAT] Price unavailable, skipping trade attempt.');
     await monitorOpenTrades(ind30, ind5, ind1);
     return;
   }
+
   const ask = price.ask, bid = price.bid;
 
-    // ✅ BUY path: allowed when M30 = uptrend or sideways
-    if ((effectiveTrend === 'uptrend') && buyM5Trigger && buyM1Confirm) {
-      const candleTime = m5CandleTime || new Date().toISOString();
-      if (!canTakeTrade('BUY', candleTime)) {
-        console.log('BUY blocked by cooldown/duplicate guard.');
-      } else {
-        const slPrice = ask - effectiveSl;
-        const tpPrice = ask + effectiveSl * trr;
-        if ((openPositions.length < MAX_OPEN_TRADES) && allowedRiskPercent > 0) {
-          try {
-            const pair = await placePairedOrder('BUY', lot, slPrice, tpPrice, allowedRiskPercent);
-            if (pair) {
-              console.log('BUY pair placed:', pair);
-              lastSignal = { type: 'BUY', m5CandleTime: candleTime, time: new Date().toISOString() };
-            }
-          } catch (e) {
-            console.error('BUY place order failed:', e.message || e);
+  // BUY
+  if ((effectiveTrend === 'uptrend') && buyM5Trigger && buyM1Confirm) {
+    const candleTime = m5CandleTime || new Date().toISOString();
+    if (!canTakeTrade('BUY', candleTime)) {
+      console.log('BUY blocked by cooldown/duplicate guard.');
+    } else {
+      const slPrice = ask - effectiveSl;
+      const tpPrice = ask + effectiveSl * trr;
+      if ((openPositions.length < MAX_OPEN_TRADES) && allowedRiskPercent > 0) {
+        try {
+          const pair = await placePairedOrder('BUY', lot, slPrice, tpPrice, allowedRiskPercent);
+          if (pair) {
+            console.log('BUY pair placed:', pair);
+            lastSignal = { type: 'BUY', m5CandleTime: candleTime, time: new Date().toISOString() };
           }
+        } catch (e) {
+          console.error('BUY place order failed:', e.message || e);
         }
       }
     }
+  }
 
-    // ✅ SELL path: allowed when M30 = downtrend or sideways
-    if ((effectiveTrend === 'downtrend') && sellM5Trigger && sellM1Confirm) {
-      const candleTime = m5CandleTime || new Date().toISOString();
-      if (!canTakeTrade('SELL', candleTime)) {
-        console.log('SELL blocked by cooldown/duplicate guard.');
-      } else {
-        const slPrice = bid + effectiveSl;
-        const tpPrice = bid - effectiveSl * trr;
-        if ((openPositions.length < MAX_OPEN_TRADES) && allowedRiskPercent > 0) {
-          try {
-            const pair = await placePairedOrder('SELL', lot, slPrice, tpPrice, allowedRiskPercent);
-            if (pair) {
-              console.log('SELL pair placed:', pair);
-              lastSignal = { type: 'SELL', m5CandleTime: candleTime, time: new Date().toISOString() };
-            }
-          } catch (e) {
-            console.error('SELL place order failed:', e.message || e);
+  // SELL
+  if ((effectiveTrend === 'downtrend') && sellM5Trigger && sellM1Confirm) {
+    const candleTime = m5CandleTime || new Date().toISOString();
+    if (!canTakeTrade('SELL', candleTime)) {
+      console.log('SELL blocked by cooldown/duplicate guard.');
+    } else {
+      const slPrice = bid + effectiveSl;
+      const tpPrice = bid - effectiveSl * trr;
+      if ((openPositions.length < MAX_OPEN_TRADES) && allowedRiskPercent > 0) {
+        try {
+          const pair = await placePairedOrder('SELL', lot, slPrice, tpPrice, allowedRiskPercent);
+          if (pair) {
+            console.log('SELL pair placed:', pair);
+            lastSignal = { type: 'SELL', m5CandleTime: candleTime, time: new Date().toISOString() };
           }
+        } catch (e) {
+          console.error('SELL place order failed:', e.message || e);
         }
       }
     }
+  }
 
-  // Always monitor open trades for partial close / trailing / trend-weaken close
+  // --- Always monitor open trades for trailing/partial logic ---
   await monitorOpenTrades(ind30, ind5, ind1);
 }
 
@@ -822,7 +875,8 @@ async function monitorOpenTrades(ind30, ind5, ind1) {
 
 
 
-// --------------------- MAIN LOOP WITH ADAPTIVE RETRY ---------------------
+
+// --------------------- MAIN LOOP WITH ADAPTIVE RETRY + MAINTENANCE ALERT ---------------------
 
 (async function startBot() {
   const MetaApi = require('metaapi.cloud-sdk').default;
@@ -833,11 +887,14 @@ async function monitorOpenTrades(ind30, ind5, ind1) {
   const ACCOUNT_ID = process.env.METAAPI_ACCOUNT_ID;
   const SYMBOL = process.env.SYMBOL || "XAUUSDm";
 
-  let retryDelay = 2 * 60 * 1000; // start at 2 minutes
+  let retryDelay = 2 * 60 * 1000; // start with 2 minutes
   const MAX_DELAY = 20 * 60 * 1000; // cap at 20 minutes
+  const MAINTENANCE_ALERT_THRESHOLD = 30 * 60 * 1000; // 30 minutes
+  let lastTickTime = Date.now();
   let api, metastatsApi, account, connection;
   let reconnecting = false;
-  let lastTickTime = Date.now();
+  let lastDisconnectTime = null;
+  let maintenanceAlertSent = false;
 
   async function connectMetaApi() {
     try {
@@ -846,47 +903,64 @@ async function monitorOpenTrades(ind30, ind5, ind1) {
       metastatsApi = new MetaStats(METAAPI_TOKEN);
       account = await api.metatraderAccountApi.getAccount(ACCOUNT_ID);
 
-      // Ensure account is deployed
       if (account.state !== 'DEPLOYED') {
         console.log('[BOT] Account not deployed — deploying...');
         await account.deploy();
       }
 
-      // Ensure connection to broker
       if (account.connectionStatus !== 'CONNECTED') {
         console.log('[BOT] Waiting for broker connection...');
         await account.waitConnected();
       }
 
-      // Connect streaming
       connection = account.getStreamingConnection();
       await connection.connect();
-
       if (typeof connection.waitSynchronized === 'function') {
         await connection.waitSynchronized();
       }
 
       const terminalState = connection.terminalState;
-      const accountInfo = terminalState.accountInformation || {};
-      accountBalance = accountInfo.balance || 0;
+      const info = terminalState.accountInformation || {};
+      accountBalance = info.balance || 0;
 
       console.log(`✅ Connected to MetaApi. Balance: ${accountBalance.toFixed(2)}`);
+
       await sendTelegram(
         `✅ *BOT CONNECTED TO METAAPI*\n━━━━━━━━━━━━━━━\n📊 Symbol: ${SYMBOL}\n💰 Balance: ${accountBalance.toFixed(2)}\n🕒 ${new Date().toLocaleTimeString()}`,
         { parse_mode: 'Markdown' }
       );
 
-      retryDelay = 2 * 60 * 1000; // reset retry delay on success
+      // Reset retry and maintenance tracking
+      retryDelay = 2 * 60 * 1000;
+      lastDisconnectTime = null;
+      maintenanceAlertSent = false;
+
       await subscribeToMarketData();
       startIntervals();
 
     } catch (err) {
       console.warn(`[BOT] Connection error: ${err.message || err}`);
-      console.log(`[BOT] Retrying connection in ${(retryDelay / 60000).toFixed(1)} minutes...`);
-      await delay(retryDelay);
-      retryDelay = Math.min(retryDelay * 1.5, MAX_DELAY); // adaptive backoff
-      await connectMetaApi();
+      handleConnectionFailure();
     }
+  }
+
+  async function handleConnectionFailure() {
+    if (!lastDisconnectTime) lastDisconnectTime = Date.now();
+    const disconnectedFor = Date.now() - lastDisconnectTime;
+
+    if (disconnectedFor >= MAINTENANCE_ALERT_THRESHOLD && !maintenanceAlertSent) {
+      maintenanceAlertSent = true;
+      console.log(`[BOT] Broker seems under maintenance for >30m.`);
+      await sendTelegram(
+        `⚠️ *BROKER CONNECTION ALERT*\n━━━━━━━━━━━━━━━\n📡 *Status:* Disconnected for more than 30 minutes\n🔧 Possible broker maintenance\n🕒 ${new Date().toLocaleTimeString()}`,
+        { parse_mode: 'Markdown' }
+      );
+    }
+
+    console.log(`[BOT] Retrying connection in ${(retryDelay / 60000).toFixed(1)} minutes...`);
+    await delay(retryDelay);
+    retryDelay = Math.min(retryDelay * 1.5, MAX_DELAY);
+    await connectMetaApi();
   }
 
   async function subscribeToMarketData() {
@@ -936,12 +1010,12 @@ async function monitorOpenTrades(ind30, ind5, ind1) {
           await subscribeToMarketData();
           console.log(`[RECONNECTED] Resubscribed to ${SYMBOL} tick stream.`);
           lastTickTime = Date.now();
+          retryDelay = 2 * 60 * 1000;
+          lastDisconnectTime = null;
+          maintenanceAlertSent = false;
         } catch (err) {
           console.error('❌ Reconnect attempt failed:', err.message);
-          console.log(`[BOT] Scheduling full reconnect in ${(retryDelay / 60000).toFixed(1)} minutes...`);
-          await delay(retryDelay);
-          retryDelay = Math.min(retryDelay * 1.5, MAX_DELAY);
-          await connectMetaApi();
+          await handleConnectionFailure();
         } finally {
           reconnecting = false;
         }
@@ -990,15 +1064,37 @@ async function monitorOpenTrades(ind30, ind5, ind1) {
     setInterval(async () => {
       try {
         const uptimeHours = (process.uptime() / 3600).toFixed(1);
+        const runtimeMinutes = Math.floor((Date.now() - botStartTime) / 60000);
+        const isWarmUp = runtimeMinutes < 120;
+        const warmUpRemaining = Math.max(0, 120 - runtimeMinutes);
         const openPositions = await safeGetPositions();
         const totalTrades = Object.keys(openPairs).length;
 
+        // Strategy status text
+        let strategyStatus = '';
+        const marketStatus = marketFrozen
+            ? "Market: ⏸️ Frozen (no price movement)"
+            : "Market: 💹 Active";
+
+        if (isWarmUp) {
+          strategyStatus = `Strategy: 💤 Warm-up (${runtimeMinutes} min) — starts in ${warmUpRemaining} min`;
+        } else {
+          if (candlesM30.length >= 22) {
+            strategyStatus = `Strategy: ✅ Active (using M30)`;
+          } else if (usingM5Fallback) {
+            strategyStatus = `Strategy: ⚠️ Active (M5 fallback — M30 has ${candlesM30.length} candles)`;
+          } else {
+            strategyStatus = `Strategy: ⚠️ Active (M30 incomplete — ${candlesM30.length} candles)`;
+          }
+        }
+
         console.log(
-          `\n[HEALTH] ⏱️ Uptime: ${uptimeHours}h | 🟢 Candles: M1=${candlesM1.length}, M5=${candlesM5.length}, M30=${candlesM30.length} | 📊 Open Trades: ${openPositions.length} (${totalTrades} tracked)`
+          `\n[HEALTH] ⏱️ Uptime: ${uptimeHours}h | 🟢 Candles: M1=${candlesM1.length}, M5=${candlesM5.length}, M30=${candlesM30.length} | 📊 Open Trades: ${openPositions.length} (${totalTrades} tracked)\n[HEALTH] ${strategyStatus}\n[HEALTH] ${marketStatus}`
         );
 
+
         await sendTelegram(
-          `📊 *BOT HEALTH REPORT*\n━━━━━━━━━━━━━━━\n🕒 *Uptime:* ${uptimeHours}h\n📈 *Candles:* M1=${candlesM1.length}, M5=${candlesM5.length}, M30=${candlesM30.length}\n📊 *Open Trades:* ${openPositions.length} (${totalTrades} tracked)\n💰 *Balance:* ${accountBalance?.toFixed(2)}`,
+          `📊 *BOT HEALTH REPORT*\n━━━━━━━━━━━━━━━\n🕒 *Uptime:* ${uptimeHours}h\n${strategyStatus}\n📈 *Candles:* M1=${candlesM1.length}, M5=${candlesM5.length}, M30=${candlesM30.length}\n📊 *Open Trades:* ${openPositions.length} (${totalTrades} tracked)\n💰 *Balance:* ${accountBalance?.toFixed(2)}`,
           { parse_mode: 'Markdown' }
         );
 
@@ -1009,11 +1105,13 @@ async function monitorOpenTrades(ind30, ind5, ind1) {
         console.warn(`[HEALTH] Error: ${e.message}`);
       }
     }, 60 * 60 * 1000);
+
   }
 
-  // Start the first connection
+  // Start bot
   await connectMetaApi();
 })();
+
  
 
 process.on('SIGINT', async () => {
