@@ -822,163 +822,183 @@ async function monitorOpenTrades(ind30, ind5, ind1) {
 
 
 
+// --------------------- MAIN LOOP WITH ADAPTIVE RETRY ---------------------
 
-// --------------------- MAIN LOOP ---------------------
-(async () => {
-  try {
-    api = new MetaApi(METAAPI_TOKEN);
-    metastatsApi = new MetaStats(METAAPI_TOKEN);
-    account = await api.metatraderAccountApi.getAccount(ACCOUNT_ID);
+(async function startBot() {
+  const MetaApi = require('metaapi.cloud-sdk').default;
+  const MetaStats = require('metaapi.cloud-metastats-sdk').default;
+  const { setTimeout: delay } = require('timers/promises');
 
-    // Deploy account if required
-    if (account.state !== 'DEPLOYED') {
-      console.log('Deploying account...');
-      await account.deploy();
-      await account.waitConnected();
+  const METAAPI_TOKEN = process.env.METAAPI_TOKEN;
+  const ACCOUNT_ID = process.env.METAAPI_ACCOUNT_ID;
+  const SYMBOL = process.env.SYMBOL || "XAUUSDm";
+
+  let retryDelay = 2 * 60 * 1000; // start at 2 minutes
+  const MAX_DELAY = 20 * 60 * 1000; // cap at 20 minutes
+  let api, metastatsApi, account, connection;
+  let reconnecting = false;
+  let lastTickTime = Date.now();
+
+  async function connectMetaApi() {
+    try {
+      console.log(`[BOT] Attempting to connect to MetaApi account ${ACCOUNT_ID}...`);
+      api = new MetaApi(METAAPI_TOKEN);
+      metastatsApi = new MetaStats(METAAPI_TOKEN);
+      account = await api.metatraderAccountApi.getAccount(ACCOUNT_ID);
+
+      // Ensure account is deployed
+      if (account.state !== 'DEPLOYED') {
+        console.log('[BOT] Account not deployed — deploying...');
+        await account.deploy();
+      }
+
+      // Ensure connection to broker
+      if (account.connectionStatus !== 'CONNECTED') {
+        console.log('[BOT] Waiting for broker connection...');
+        await account.waitConnected();
+      }
+
+      // Connect streaming
+      connection = account.getStreamingConnection();
+      await connection.connect();
+
+      if (typeof connection.waitSynchronized === 'function') {
+        await connection.waitSynchronized();
+      }
+
+      const terminalState = connection.terminalState;
+      const accountInfo = terminalState.accountInformation || {};
+      accountBalance = accountInfo.balance || 0;
+
+      console.log(`✅ Connected to MetaApi. Balance: ${accountBalance.toFixed(2)}`);
+      await sendTelegram(
+        `✅ *BOT CONNECTED TO METAAPI*\n━━━━━━━━━━━━━━━\n📊 Symbol: ${SYMBOL}\n💰 Balance: ${accountBalance.toFixed(2)}\n🕒 ${new Date().toLocaleTimeString()}`,
+        { parse_mode: 'Markdown' }
+      );
+
+      retryDelay = 2 * 60 * 1000; // reset retry delay on success
+      await subscribeToMarketData();
+      startIntervals();
+
+    } catch (err) {
+      console.warn(`[BOT] Connection error: ${err.message || err}`);
+      console.log(`[BOT] Retrying connection in ${(retryDelay / 60000).toFixed(1)} minutes...`);
+      await delay(retryDelay);
+      retryDelay = Math.min(retryDelay * 1.5, MAX_DELAY); // adaptive backoff
+      await connectMetaApi();
     }
+  }
 
-    // Connect to MetaApi shared server
-    connection = account.getStreamingConnection();
-    await connection.connect();
-    if (typeof connection.waitSynchronized === 'function') {
-      await connection.waitSynchronized();
-    }
-
-    // Fetch account info
-    const terminalState = connection.terminalState;
-    const accountInfo = terminalState.accountInformation || {};
-    accountBalance = accountInfo.balance || 0;
-    console.log('✅ Connected to MetaApi. Balance:', accountBalance);
-
-    await sendTelegram(
-    `✅ *BOT CONNECTED TO METAAPI*\n` +
-    `━━━━━━━━━━━━━━━\n` +
-    `📊 Symbol: ${SYMBOL}\n` +
-    `💰 Balance: ${accountBalance.toFixed(2)}\n` +
-    `🕒 ${new Date().toLocaleTimeString()}`,
-    { parse_mode: 'Markdown' }
-  );
-
-
-    // Subscribe to tick data
+  async function subscribeToMarketData() {
     try {
       console.log(`[INIT] Subscribing to ${SYMBOL} tick stream...`);
       if (typeof connection.subscribeToMarketData === 'function') {
         await connection.subscribeToMarketData(SYMBOL);
         console.log(`[CANDLES] Subscribed to market data for ${SYMBOL}`);
       } else {
-        console.log(`[CANDLES] subscribeToMarketData not available on this connection object.`);
+        console.log(`[CANDLES] subscribeToMarketData not available on this connection.`);
       }
     } catch (e) {
       console.warn(`❌ Market data subscription failed: ${e.message}`);
     }
+  }
 
-    // --- Tick polling + heartbeat monitoring ---
-    let lastTickTime = Date.now();
-    const pollIntervalMs = 2000;     // tick polling frequency
-    const heartbeatMs = 30000;       // no-tick timeout
-    let reconnecting = false;
+  async function startIntervals() {
+    console.log('🤖 Bot ready and running. Listening to live tick stream for', SYMBOL);
 
-    const pollTicks = async () => {
+    const pollIntervalMs = 2000;
+    const heartbeatMs = 30000;
+
+    // --- Tick polling ---
+    setInterval(async () => {
       try {
-        const price = connection.terminalState && typeof connection.terminalState.price === 'function' ? connection.terminalState.price(SYMBOL) : null;
+        const price = connection?.terminalState?.price(SYMBOL);
         if (price && price.bid != null && price.ask != null) {
           lastTickTime = Date.now();
-          // Feed tick into candle aggregator
-          if (typeof handleTick === 'function') handleTick(price);
+          handleTick(price);
         }
       } catch (e) {
         console.warn(`[POLL] Failed to get price: ${e.message}`);
       }
-    };
+    }, pollIntervalMs);
 
-    const watchdog = async () => {
+    // --- Adaptive watchdog reconnect ---
+    setInterval(async () => {
       const diff = Date.now() - lastTickTime;
       if (diff > heartbeatMs && !reconnecting) {
         reconnecting = true;
-        console.warn(`⚠️ No ticks for ${heartbeatMs / 1000}s — reconnecting...`);
+        console.warn(`⚠️ No ticks for ${heartbeatMs / 1000}s — attempting reconnect...`);
         try {
           await connection.connect();
           if (typeof connection.waitSynchronized === 'function') {
             await connection.waitSynchronized();
           }
-          if (typeof connection.subscribeToMarketData === 'function') {
-            await connection.subscribeToMarketData(SYMBOL);
-          }
+          await subscribeToMarketData();
           console.log(`[RECONNECTED] Resubscribed to ${SYMBOL} tick stream.`);
           lastTickTime = Date.now();
         } catch (err) {
-          console.error('❌ Reconnect attempt failed:', err.message || err);
+          console.error('❌ Reconnect attempt failed:', err.message);
+          console.log(`[BOT] Scheduling full reconnect in ${(retryDelay / 60000).toFixed(1)} minutes...`);
+          await delay(retryDelay);
+          retryDelay = Math.min(retryDelay * 1.5, MAX_DELAY);
+          await connectMetaApi();
         } finally {
           reconnecting = false;
         }
       }
-    };
-
-    setInterval(pollTicks, pollIntervalMs);
-    setInterval(watchdog, 5000);
+    }, 5000);
 
     // --- Periodic trade monitor ---
     setInterval(async () => {
       const closesM30 = candlesM30.map(c => c.close);
       const highsM30 = candlesM30.map(c => c.high);
-      const lowsM30  = candlesM30.map(c => c.low);
+      const lowsM30 = candlesM30.map(c => c.low);
 
       const closesM5 = candlesM5.map(c => c.close);
       const highsM5 = candlesM5.map(c => c.high);
-      const lowsM5  = candlesM5.map(c => c.low);
+      const lowsM5 = candlesM5.map(c => c.low);
 
       const closesM1 = candlesM1.map(c => c.close);
       const highsM1 = candlesM1.map(c => c.high);
-      const lowsM1  = candlesM1.map(c => c.low);
+      const lowsM1 = candlesM1.map(c => c.low);
 
       const ind30 = calculateIndicators(closesM30, highsM30, lowsM30);
-      const ind5  = calculateIndicators(closesM5, highsM5, lowsM5);
-      const ind1  = calculateIndicators(closesM1, highsM1, lowsM1);
+      const ind5 = calculateIndicators(closesM5, highsM5, lowsM5);
+      const ind1 = calculateIndicators(closesM1, highsM1, lowsM1);
 
       await monitorOpenTrades(ind30, ind5, ind1);
     }, CHECK_INTERVAL_MS);
 
-
-    // Memory cleanup for long runs
+    // --- Cleanup memory hourly ---
     setInterval(() => {
       if (candlesM1.length > 500) candlesM1.splice(0, candlesM1.length - 300);
       if (candlesM5.length > 500) candlesM5.splice(0, candlesM5.length - 300);
       if (candlesM30.length > 500) candlesM30.splice(0, candlesM30.length - 300);
-    }, 60 * 60 * 1000); // every hour
+    }, 60 * 60 * 1000);
 
-    // 🔄 Auto-refresh account balance every 60 seconds
+    // --- Balance refresh ---
     setInterval(async () => {
       try {
         const newBalance = await safeGetAccountBalance();
-        if (newBalance && newBalance !== accountBalance) {
-          accountBalance = newBalance;
-        }
+        if (newBalance && newBalance !== accountBalance) accountBalance = newBalance;
       } catch (e) {
         console.warn('[BALANCE] Refresh failed:', e.message);
       }
     }, 60 * 1000);
 
-
-    // Hourly health monitor
+    // --- Hourly health report ---
     setInterval(async () => {
       try {
         const uptimeHours = (process.uptime() / 3600).toFixed(1);
         const openPositions = await safeGetPositions();
         const totalTrades = Object.keys(openPairs).length;
-        const tickHealth = new Date(Date.now() - lastTickTime).getSeconds();
 
         console.log(
           `\n[HEALTH] ⏱️ Uptime: ${uptimeHours}h | 🟢 Candles: M1=${candlesM1.length}, M5=${candlesM5.length}, M30=${candlesM30.length} | 📊 Open Trades: ${openPositions.length} (${totalTrades} tracked)`
         );
 
         await sendTelegram(
-          `📊 *BOT HEALTH REPORT*\n` +
-          `━━━━━━━━━━━━━━━\n` +
-          `🕒 *Uptime:* ${uptimeHours}h\n` +
-          `📈 *Candles:* M1=${candlesM1.length}, M5=${candlesM5.length}, M30=${candlesM30.length}\n` +
-          `📊 *Open Trades:* ${openPositions.length} (${totalTrades} tracked)\n` +
-          `💰 *Balance:* ${accountBalance?.toFixed(2)}`,
+          `📊 *BOT HEALTH REPORT*\n━━━━━━━━━━━━━━━\n🕒 *Uptime:* ${uptimeHours}h\n📈 *Candles:* M1=${candlesM1.length}, M5=${candlesM5.length}, M30=${candlesM30.length}\n📊 *Open Trades:* ${openPositions.length} (${totalTrades} tracked)\n💰 *Balance:* ${accountBalance?.toFixed(2)}`,
           { parse_mode: 'Markdown' }
         );
 
@@ -986,16 +1006,15 @@ async function monitorOpenTrades(ind30, ind5, ind1) {
           console.warn(`⚠️ Health Check: No tick for 30s, last tick at ${new Date(lastTickTime).toLocaleTimeString()}`);
         }
       } catch (e) {
-        console.warn(`[HEALTH] Error: ${e.message || e}`);
+        console.warn(`[HEALTH] Error: ${e.message}`);
       }
-    }, 60 * 60 * 1000); // every hour
-
-    console.log('🤖 Bot ready and running. Listening to live tick stream for', SYMBOL);
-
-  } catch (e) {
-    console.error('❌ Fatal error:', e.message || e);
+    }, 60 * 60 * 1000);
   }
+
+  // Start the first connection
+  await connectMetaApi();
 })();
+ 
 
 process.on('SIGINT', async () => {
   console.log('🛑 Gracefully shutting down...');
