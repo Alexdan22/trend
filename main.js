@@ -941,33 +941,6 @@ async function monitorOpenTrades(ind30, ind5, ind1) {
         await connection.waitSynchronized();
       }
 
-      // --- MetaApi connection event handlers ---
-      connection.on('disconnected', () => {
-        console.warn('[METAAPI] Disconnected — waiting for reconnection...');
-      });
-
-      connection.on('connected', async () => {
-        console.log('[METAAPI] Connected — synchronizing account...');
-        try {
-          await connection.waitSynchronized({ timeoutInSeconds: 30 });
-          await subscribeToMarketData(); // ensures price feed resumes
-          console.log('[METAAPI] Synchronized — tick stream restored.');
-        } catch (e) {
-          console.error('[METAAPI] Sync after connect failed:', e.message || e);
-        }
-      });
-
-      connection.on('reconnected', async () => {
-        console.log('[METAAPI] Reconnected — re-subscribing to symbol feed...');
-        try {
-          await connection.waitSynchronized({ timeoutInSeconds: 30 });
-          await subscribeToMarketData();
-          console.log(`[METAAPI] Re-subscribed to ${SYMBOL} after reconnect.`);
-        } catch (e) {
-          console.error('[METAAPI] Re-subscribe failed:', e.message || e);
-        }
-      });
-
 
       const terminalState = connection.terminalState;
       const info = terminalState.accountInformation || {};
@@ -1045,6 +1018,28 @@ async function monitorOpenTrades(ind30, ind5, ind1) {
         console.warn(`[POLL] Failed to get price: ${e.message}`);
       }
     }, pollIntervalMs);
+
+    // --- MetaApi streaming connection monitoring ---
+    setInterval(async () => {
+      try {
+        // If connection dropped or desynced, try to resync quietly
+        const state = connection?.synchronized;
+        const lastPrice = connection?.terminalState?.price(SYMBOL);
+
+        if (!connection || !state || !lastPrice || lastPrice.bid == null || lastPrice.ask == null) {
+          console.warn('[METAAPI] Lost price feed or desynced. Reconnecting...');
+          await connection.connect();
+          if (typeof connection.waitSynchronized === 'function') {
+            await connection.waitSynchronized({ timeoutInSeconds: 30 });
+          }
+          await subscribeToMarketData();
+          console.log('[METAAPI] Reconnected and resubscribed to', SYMBOL);
+        }
+      } catch (e) {
+        console.error('[METAAPI] Connection monitor failed:', e.message);
+      }
+    }, 15 * 1000); // every 15s
+
 
     // --- Adaptive watchdog reconnect ---
     setInterval(async () => {
