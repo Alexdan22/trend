@@ -941,6 +941,34 @@ async function monitorOpenTrades(ind30, ind5, ind1) {
         await connection.waitSynchronized();
       }
 
+      // --- MetaApi connection event handlers ---
+      connection.on('disconnected', () => {
+        console.warn('[METAAPI] Disconnected — waiting for reconnection...');
+      });
+
+      connection.on('connected', async () => {
+        console.log('[METAAPI] Connected — synchronizing account...');
+        try {
+          await connection.waitSynchronized({ timeoutInSeconds: 30 });
+          await subscribeToMarketData(); // ensures price feed resumes
+          console.log('[METAAPI] Synchronized — tick stream restored.');
+        } catch (e) {
+          console.error('[METAAPI] Sync after connect failed:', e.message || e);
+        }
+      });
+
+      connection.on('reconnected', async () => {
+        console.log('[METAAPI] Reconnected — re-subscribing to symbol feed...');
+        try {
+          await connection.waitSynchronized({ timeoutInSeconds: 30 });
+          await subscribeToMarketData();
+          console.log(`[METAAPI] Re-subscribed to ${SYMBOL} after reconnect.`);
+        } catch (e) {
+          console.error('[METAAPI] Re-subscribe failed:', e.message || e);
+        }
+      });
+
+
       const terminalState = connection.terminalState;
       const info = terminalState.accountInformation || {};
       accountBalance = info.balance || 0;
