@@ -919,53 +919,76 @@ async function monitorOpenTrades(ind30, ind5, ind1) {
   let maintenanceAlertSent = false;
 
   async function connectMetaApi() {
-    try {
-      console.log(`[BOT] Attempting to connect to MetaApi account ${ACCOUNT_ID}...`);
-      api = new MetaApi(METAAPI_TOKEN);
-      metastatsApi = new MetaStats(METAAPI_TOKEN);
-      account = await api.metatraderAccountApi.getAccount(ACCOUNT_ID);
+      try {
+        console.log(`[BOT] Attempting to connect to MetaApi account ${ACCOUNT_ID}...`);
 
-      if (account.state !== 'DEPLOYED') {
-        console.log('[BOT] Account not deployed — deploying...');
-        await account.deploy();
+        api = new MetaApi(METAAPI_TOKEN);
+        metastatsApi = new MetaStats(METAAPI_TOKEN);
+        account = await api.metatraderAccountApi.getAccount(ACCOUNT_ID);
+
+        // --- Step 1️⃣: Ensure account is deployed and broker-connected ---
+        if (account.state !== 'DEPLOYED') {
+          console.log('[BOT] Account not deployed — deploying...');
+          await account.deploy();
+        }
+
+        if (account.connectionStatus !== 'CONNECTED') {
+          console.log('[BOT] Waiting for broker connection...');
+          await account.waitConnected();
+        }
+
+        // --- Step 2️⃣: Initialize streaming connection ---
+        connection = account.getStreamingConnection();
+
+        console.log('[BOT] Connecting streaming connection...');
+        await connection.connect();
+        console.log('[BOT] Streaming connection established.');
+
+        if (typeof connection.waitSynchronized === 'function') {
+          console.log('[BOT] Waiting for streaming synchronization...');
+          await connection.waitSynchronized();
+          console.log('[BOT] ✅ Streaming connection synchronized.');
+        }
+
+        // --- Step 3️⃣: Verify terminalState and account info ---
+        const terminalState = connection.terminalState;
+        const info = terminalState?.accountInformation || {};
+        accountBalance = info.balance || 0;
+
+        console.log(`✅ Connected to MetaApi (Streaming). Balance: ${accountBalance.toFixed(2)}`);
+        console.log('Account:', account.id);
+        console.log('Connection state:', connection.state);
+        console.log('Terminal state ready:', !!connection.terminalState);
+
+        // --- Step 4️⃣: Subscribe to market data ---
+        console.log(`[INIT] Subscribing to ${SYMBOL} tick stream...`);
+        if (typeof connection.subscribeToMarketData === 'function') {
+          await connection.subscribeToMarketData(SYMBOL);
+          console.log(`[CANDLES] Subscribed to market data for ${SYMBOL}`);
+        } else {
+          console.warn(`[CANDLES] subscribeToMarketData not available on this connection.`);
+        }
+
+        // --- Step 5️⃣: Notify Telegram & reset retry controls ---
+        await sendTelegram(
+          `✅ *BOT CONNECTED TO METAAPI*\n━━━━━━━━━━━━━━━\n📊 Symbol: ${SYMBOL}\n💰 Balance: ${accountBalance.toFixed(2)}\n🕒 ${new Date().toLocaleTimeString()}`,
+          { parse_mode: 'Markdown' }
+        );
+
+        retryDelay = 2 * 60 * 1000; // reset retry timer
+        lastDisconnectTime = null;
+        maintenanceAlertSent = false;
+
+        // --- Step 6️⃣: Launch core bot intervals ---
+        startIntervals();
+
+      } catch (err) {
+        console.warn(`[BOT] Connection error: ${err.message || err}`);
+        await handleConnectionFailure();
       }
-
-      if (account.connectionStatus !== 'CONNECTED') {
-        console.log('[BOT] Waiting for broker connection...');
-        await account.waitConnected();
-      }
-
-      connection = account.getStreamingConnection();
-      await connection.connect();
-      if (typeof connection.waitSynchronized === 'function') {
-        await connection.waitSynchronized();
-      }
-
-
-      const terminalState = connection.terminalState;
-      const info = terminalState.accountInformation || {};
-      accountBalance = info.balance || 0;
-
-      console.log(`✅ Connected to MetaApi. Balance: ${accountBalance.toFixed(2)}`);
-
-      await sendTelegram(
-        `✅ *BOT CONNECTED TO METAAPI*\n━━━━━━━━━━━━━━━\n📊 Symbol: ${SYMBOL}\n💰 Balance: ${accountBalance.toFixed(2)}\n🕒 ${new Date().toLocaleTimeString()}`,
-        { parse_mode: 'Markdown' }
-      );
-
-      // Reset retry and maintenance tracking
-      retryDelay = 2 * 60 * 1000;
-      lastDisconnectTime = null;
-      maintenanceAlertSent = false;
-
-      await subscribeToMarketData();
-      startIntervals();
-
-    } catch (err) {
-      console.warn(`[BOT] Connection error: ${err.message || err}`);
-      handleConnectionFailure();
     }
-  }
+
+
 
   async function handleConnectionFailure() {
     if (!lastDisconnectTime) lastDisconnectTime = Date.now();
