@@ -148,27 +148,49 @@ function calculateLotFromRisk(balance, riskPercent, slPriceDiff, contractSize = 
 // --------------------- ROBUST EXECUTION HELPERS (from test_order_execution.js) ---------------------
 function safeLog(...args) { console.log(...args); }
 
-// safeGetPrice - uses streaming terminalState if available
 async function safeGetPrice(symbol) {
   try {
     if (connection?.terminalState) {
       const p = connection.terminalState.price(symbol);
-      if (p && p.bid != null && p.ask != null) return p;
+      if (p && p.bid != null && p.ask != null) {
+        // good price from terminalState
+        return p;
+      } else {
+        console.debug('[PRICE] terminalState price missing or incomplete for', symbol, p);
+      }
+    } else {
+      console.debug('[PRICE] connection.terminalState not available');
     }
-  } catch (e) {}
-  // fallback: attempt account.getSymbolPrice or connection.getSymbolPrice
+  } catch (e) {
+    console.error('[PRICE] terminalState.price error', e);
+  }
+
+  // fallback 1: connection.getSymbolPrice
   try {
     if (connection && typeof connection.getSymbolPrice === 'function') {
-      return await connection.getSymbolPrice(symbol);
+      const p2 = await connection.getSymbolPrice(symbol);
+      console.debug('[PRICE] connection.getSymbolPrice returned', p2);
+      if (p2 && p2.bid != null && p2.ask != null) return p2;
     }
-  } catch (e) {}
+  } catch (e) {
+    console.error('[PRICE] connection.getSymbolPrice error', e);
+  }
+
+  // fallback 2: account.getSymbolPrice
   try {
     if (account && typeof account.getSymbolPrice === 'function') {
-      return await account.getSymbolPrice(symbol);
+      const p3 = await account.getSymbolPrice(symbol);
+      console.debug('[PRICE] account.getSymbolPrice returned', p3);
+      if (p3 && p3.bid != null && p3.ask != null) return p3;
     }
-  } catch (e) {}
+  } catch (e) {
+    console.error('[PRICE] account.getSymbolPrice error', e);
+  }
+
+  // final null
   return null;
 }
+
 
 // safeGetAccountBalance - tolerant retrieval
 async function safeGetAccountBalance() {
