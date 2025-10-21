@@ -1083,7 +1083,7 @@ async function startBot() {
   }
 }
 
-
+startBot().catch(err => console.error('BOT start failed:', err));
 
 
  
