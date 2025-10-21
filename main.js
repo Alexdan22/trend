@@ -30,6 +30,21 @@ const ATR_SL_MULTIPLIER = 1.2;
 const STRONG_TREND_BBW = 0.02;
 const CHECK_INTERVAL_MS = 10_000;
 
+// --------------------- STRATEGY THRESHOLDS ---------------------
+const STRATEGY_THRESHOLDS = {
+  RSI: {
+    BUY_CONFIRM: 45,     // previously <40
+    SELL_CONFIRM: 55,    // previously >60
+    M5_FILTER_BUY: 50,   // minor filter for M5 buy trigger
+    M5_FILTER_SELL: 50   // minor filter for M5 sell trigger
+  },
+  STOCHASTIC: {
+    BUY_TRIGGER: 30,     // previously 20
+    SELL_TRIGGER: 70     // previously 80
+  }
+};
+
+
 // --------------------- TELEGRAM SETUP ---------------------
 const TelegramBot = require('node-telegram-bot-api');
 const TELEGRAM_TOKEN = process.env.TELEGRAM_BOT_TOKEN;
@@ -64,6 +79,10 @@ let candlesM30 = []
 let latestPrice = null;   // { bid, ask, timestamp }
 let lastSignal = null;
 let lastKnownTrend = null;
+// Memory of recent Stochastic triggers (for sync tolerance)
+let recentBuyTriggers = [];
+let recentSellTriggers = [];
+const TRIGGER_MEMORY_CANDLES = 3; // how many recent M5 candles to keep valid
 const botStartTime = Date.now();
 let usingM5Fallback = false;
 let warmUpComplete = false;
@@ -505,14 +524,12 @@ async function checkStrategy(m5CandleTime = null) {
   let higherTrend;
 
   if (m30Ready) {
-    // ✅ Normal: use M30 (20-candle lookback)
     higherTrend = determineMarketTypeFromBB(closesM30, ind30.bb || [], 20);
     if (usingM5Fallback) {
       console.log(`[TREND] ✅ Switched back to M30 trend — M30 data now sufficient (${candlesM30.length} candles).`);
       usingM5Fallback = false;
     }
   } else {
-    // ⚠️ After 2h but M30 still not ready → use M5 fallback
     higherTrend = determineMarketTypeFromBB(closesM5, ind5.bb || [], 24);
     if (!usingM5Fallback) {
       console.log(`[TREND] ⚠️ Using M5 fallback — runtime ${runtimeMinutes.toFixed(1)} min > 120, only ${candlesM30.length} M30 candles.`);
@@ -540,7 +557,7 @@ async function checkStrategy(m5CandleTime = null) {
   const lastStoch_M1 = ind1.stochastic.at(-1);
   const lastATR_M5 = ind5.atr.at(-1) || 0;
 
-  if (!lastStoch_M5 || !prevStoch_M5 || !lastStoch_M1) return; // safety check
+  if (!lastStoch_M5 || !prevStoch_M5 || !lastStoch_M1) return;
 
   console.log(`[STRAT] M30:${higherTrend} | M5 RSI:${lastRSI_M5?.toFixed(2)} Stoch:${lastStoch_M5?.k?.toFixed(2)} | M1 RSI:${lastRSI_M1?.toFixed(2)} Stoch:${lastStoch_M1?.k?.toFixed(2)}`);
 
@@ -561,16 +578,51 @@ async function checkStrategy(m5CandleTime = null) {
     return;
   }
 
-  // --- Entry Triggers ---
-  const buyM5Trigger = (prevStoch_M5.k < 25 && lastStoch_M5.k >= 25 && lastRSI_M5 < 50);
-  const buyM1Confirm = (lastRSI_M1 < 55);
-  const sellM5Trigger = (prevStoch_M5.k > 75 && lastStoch_M5.k <= 75 && lastRSI_M5 > 50);
-  const sellM1Confirm = (lastRSI_M1 > 45);
+  // --- Entry Triggers with short-term memory ---
+  const t = STRATEGY_THRESHOLDS;
+
+  const newBuyTrigger =
+    (prevStoch_M5.k < t.STOCHASTIC.BUY_TRIGGER &&
+     lastStoch_M5.k >= t.STOCHASTIC.BUY_TRIGGER &&
+     lastRSI_M5 < t.RSI.M5_FILTER_BUY);
+
+  const newSellTrigger =
+    (prevStoch_M5.k > t.STOCHASTIC.SELL_TRIGGER &&
+     lastStoch_M5.k <= t.STOCHASTIC.SELL_TRIGGER &&
+     lastRSI_M5 > t.RSI.M5_FILTER_SELL);
+
+  // Initialize memory arrays if undefined
+  if (typeof recentBuyTriggers === 'undefined') global.recentBuyTriggers = [];
+  if (typeof recentSellTriggers === 'undefined') global.recentSellTriggers = [];
+
+  // Store triggers
+  if (newBuyTrigger) recentBuyTriggers.push(m5CandleTime);
+  if (newSellTrigger) recentSellTriggers.push(m5CandleTime);
+
+  // Keep only latest N
+  recentBuyTriggers = recentBuyTriggers.slice(-TRIGGER_MEMORY_CANDLES);
+  recentSellTriggers = recentSellTriggers.slice(-TRIGGER_MEMORY_CANDLES);
+
+  // Confirmation checks
+  const buyM1Confirm = (lastRSI_M1 < t.RSI.BUY_CONFIRM);
+  const sellM1Confirm = (lastRSI_M1 > t.RSI.SELL_CONFIRM);
+
+  // Check if any recent triggers still valid (within ~15min)
+  const nowSec = Math.floor(Date.now() / 1000);
+  const validWindow = 5 * 60 * TRIGGER_MEMORY_CANDLES;
+  const hasRecentBuyTrigger =
+    recentBuyTriggers.some(ts => (nowSec - new Date(ts).getTime() / 1000) <= validWindow);
+  const hasRecentSellTrigger =
+    recentSellTriggers.some(ts => (nowSec - new Date(ts).getTime() / 1000) <= validWindow);
+
+  // Final entry flags
+  const buyReady = (effectiveTrend === 'uptrend' && hasRecentBuyTrigger && buyM1Confirm);
+  const sellReady = (effectiveTrend === 'downtrend' && hasRecentSellTrigger && sellM1Confirm);
 
   // --- Potential Zone Alerts ---
   if (
     effectiveTrend === 'uptrend' &&
-    buyM5Trigger &&
+    hasRecentBuyTrigger &&
     !buyM1Confirm &&
     (!lastZoneSignal || lastZoneSignal.type !== 'BUY' || lastZoneSignal.candleTime !== m5CandleTime)
   ) {
@@ -583,7 +635,7 @@ async function checkStrategy(m5CandleTime = null) {
 
   if (
     effectiveTrend === 'downtrend' &&
-    sellM5Trigger &&
+    hasRecentSellTrigger &&
     !sellM1Confirm &&
     (!lastZoneSignal || lastZoneSignal.type !== 'SELL' || lastZoneSignal.candleTime !== m5CandleTime)
   ) {
@@ -629,11 +681,10 @@ async function checkStrategy(m5CandleTime = null) {
     return;
   }
 
-
   const ask = price.ask, bid = price.bid;
 
   // BUY
-  if ((effectiveTrend === 'uptrend') && buyM5Trigger && buyM1Confirm) {
+  if (buyReady) {
     const candleTime = m5CandleTime || new Date().toISOString();
     if (!canTakeTrade('BUY', candleTime)) {
       console.log('BUY blocked by cooldown/duplicate guard.');
@@ -655,7 +706,7 @@ async function checkStrategy(m5CandleTime = null) {
   }
 
   // SELL
-  if ((effectiveTrend === 'downtrend') && sellM5Trigger && sellM1Confirm) {
+  if (sellReady) {
     const candleTime = m5CandleTime || new Date().toISOString();
     if (!canTakeTrade('SELL', candleTime)) {
       console.log('SELL blocked by cooldown/duplicate guard.');
@@ -679,6 +730,7 @@ async function checkStrategy(m5CandleTime = null) {
   // --- Always monitor open trades for trailing/partial logic ---
   await monitorOpenTrades(ind30, ind5, ind1);
 }
+
 
 // --------------------- GUARDS & RECORDING ---------------------
 
