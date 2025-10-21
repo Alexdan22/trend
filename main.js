@@ -1078,7 +1078,7 @@ async function startBot() {
     retryDelay = Math.min(retryDelay * 1.5, MAX_DELAY);
 
     // restart after delay (non-recursive)
-    setTimeout(startBot, 0);
+    await startBot(); // restart bot completely
     return;
   }
 }
