@@ -76,13 +76,30 @@ let accountBalance = 0;
 let candlesM1 = []
 let candlesM5 = []
 let candlesM30 = []
+// Global indicators, refreshed every 10 seconds
+let ind1 = {};
+let ind5 = {};
+let ind30 = {};
+
+// Last computed time for sanity check (optional)
+let lastIndicatorUpdate = 0;
+
 let latestPrice = null;   // { bid, ask, timestamp }
 let lastSignal = null;
 let lastKnownTrend = null;
-// Memory of recent Stochastic triggers (for sync tolerance)
-let recentBuyTriggers = [];
-let recentSellTriggers = [];
-const TRIGGER_MEMORY_CANDLES = 3; // how many recent M5 candles to keep valid
+let openPositionsCache = [];
+let lastTradeMonitorRun = 0;
+// ---------- Notification / dedupe state ----------
+let lastRetracementNotify = {
+  type: null,        // 'BUY' | 'SELL' | null
+  candleId: null,    // unique id for the M5 candle when we last notified (e.g. time)
+  lastSent: 0        // timestamp ms of last Telegram sent
+};
+
+// how often to resend the same retracement alert if still active (optional)
+// set to 0 to never repeat
+const RETRACE_NOTIFY_COOLDOWN_MS = 30 * 60 * 1000; // 30 minutes (changeable)
+
 const botStartTime = Date.now();
 let usingM5Fallback = false;
 let warmUpComplete = false;
@@ -104,6 +121,31 @@ function calculateIndicators(values, highs, lows) {
     : [];
   return { rsi, stochastic, bb, atr };
 }
+
+async function refreshGlobalIndicators() {
+  try {
+    const closesM1 = candlesM1.map(c => c.close);
+    const highsM1  = candlesM1.map(c => c.high);
+    const lowsM1   = candlesM1.map(c => c.low);
+    ind1 = calculateIndicators(closesM1, highsM1, lowsM1);
+
+    const closesM5 = candlesM5.map(c => c.close);
+    const highsM5  = candlesM5.map(c => c.high);
+    const lowsM5   = candlesM5.map(c => c.low);
+    ind5 = calculateIndicators(closesM5, highsM5, lowsM5);
+
+    const closesM30 = candlesM30.map(c => c.close);
+    const highsM30  = candlesM30.map(c => c.high);
+    const lowsM30   = candlesM30.map(c => c.low);
+    ind30 = calculateIndicators(closesM30, highsM30, lowsM30);
+
+    lastIndicatorUpdate = Date.now();
+    // console.log(`[DEBUG] Indicators refreshed at ${new Date().toLocaleTimeString()}`);
+  } catch (err) {
+    console.error('[ERROR] Failed to refresh indicators:', err.message || err);
+  }
+}
+
 
 function determineMarketTypeFromBB(values, bbArray, lookback = 20) {
   if (!bbArray.length || !values.length) return 'sideways';
@@ -469,6 +511,20 @@ async function handleTick(tick) {
       updateCandle('30m', tickPrice, tickTimeSec);
     }
 
+    if (Date.now() - lastTradeMonitorRun > 15000) {
+      lastTradeMonitorRun = Date.now();
+
+      if (openPositionsCache?.length) {
+        try {
+          // Uses the globally refreshed indicators
+          await monitorOpenTrades(ind30, ind5, ind1);
+        } catch (err) {
+          console.error('[MONITOR ERROR]', err.message || err);
+        }
+      }
+    }
+
+
   } catch (e) {
     console.warn('[TICK] Candle update error:', e.message);
   }
@@ -480,6 +536,19 @@ async function handleTick(tick) {
 // --------------------- CORE: Strategy & Execution ---------------------
 async function checkStrategy(m5CandleTime = null) {
 
+  // Ensure persistent retracement state exists (global)
+  if (!globalThis.retracementState) {
+    globalThis.retracementState = {
+      active: false,       // true when we are remembering a retracement
+      type: null,          // 'BUY' or 'SELL'
+      startCandle: null,   // id of the M5 candle when retracement began
+      startedAt: 0,        // timestamp ms when retracement began
+      lastSeen: 0          // last timestamp we observed retracement conditions true
+    };
+  }
+  // Max age for a remembered retracement (ms). Adjust if needed.
+  if (!globalThis.retraceMaxAgeMs) globalThis.retraceMaxAgeMs = 60 * 60 * 1000; // 60 minutes
+
   // ⏱️ Warm-up control
   const runtimeMinutes = (Date.now() - botStartTime) / 60000;
   const m30Ready = candlesM30.length >= 22;
@@ -490,9 +559,7 @@ async function checkStrategy(m5CandleTime = null) {
   }
 
   // 🚫 Do not run any strategy or indicators for the first 2 hours
-  if (runtimeMinutes < 120) {
-    return; // Exit early: only collecting candle data
-  }
+  if (runtimeMinutes < 120) return;
 
   // 🔔 One-time warm-up completion notification
   if (!warmUpComplete) {
@@ -520,16 +587,29 @@ async function checkStrategy(m5CandleTime = null) {
   const lowsM30  = candlesM30.map(c => c.low);
   const ind30 = calculateIndicators(closesM30, highsM30, lowsM30);
 
-  // 🧠 Determine higher timeframe trend
+  // 🧠 Determine higher timeframe trend (with dynamic fallback)
   let higherTrend;
-
   if (m30Ready) {
-    higherTrend = determineMarketTypeFromBB(closesM30, ind30.bb || [], 20);
-    if (usingM5Fallback) {
-      console.log(`[TREND] ✅ Switched back to M30 trend — M30 data now sufficient (${candlesM30.length} candles).`);
-      usingM5Fallback = false;
+    const m30Trend = determineMarketTypeFromBB(closesM30, ind30.bb || [], 20);
+
+    if (m30Trend === 'sideways') {
+      // fallback to M5 if M30 sideways
+      const m5Trend = determineMarketTypeFromBB(closesM5, ind5.bb || [], 24);
+      higherTrend = m5Trend;
+      if (!usingM5Fallback) {
+        console.log(`[TREND] ⚠️ M30 is sideways → falling back to M5 trend (${m5Trend.toUpperCase()}).`);
+        usingM5Fallback = true;
+      }
+    } else {
+      // use M30 normally
+      higherTrend = m30Trend;
+      if (usingM5Fallback) {
+        console.log(`[TREND] ✅ Switched back to M30 trend — strong direction restored (${m30Trend.toUpperCase()}).`);
+        usingM5Fallback = false;
+      }
     }
   } else {
+    // initial fallback (not enough M30 candles)
     higherTrend = determineMarketTypeFromBB(closesM5, ind5.bb || [], 24);
     if (!usingM5Fallback) {
       console.log(`[TREND] ⚠️ Using M5 fallback — runtime ${runtimeMinutes.toFixed(1)} min > 120, only ${candlesM30.length} M30 candles.`);
@@ -537,15 +617,10 @@ async function checkStrategy(m5CandleTime = null) {
     }
   }
 
-  // 🧭 Preserve trend memory and effective bias
-  if (higherTrend !== 'sideways') {
-    lastKnownTrend = higherTrend;
-  }
 
-  let effectiveTrend = higherTrend;
-  if (higherTrend === 'sideways' && lastKnownTrend) {
-    effectiveTrend = lastKnownTrend;
-  }
+  // 🧭 Preserve trend memory and effective bias
+  if (higherTrend !== 'sideways') lastKnownTrend = higherTrend;
+  let effectiveTrend = higherTrend === 'sideways' && lastKnownTrend ? lastKnownTrend : higherTrend;
 
   console.log(`[TREND] Final effective trend: ${effectiveTrend.toUpperCase()} (higherTF=${higherTrend}, lastKnown=${lastKnownTrend || 'none'})`);
 
@@ -556,16 +631,27 @@ async function checkStrategy(m5CandleTime = null) {
   const lastRSI_M1 = ind1.rsi.at(-1);
   const lastStoch_M1 = ind1.stochastic.at(-1);
   const lastATR_M5 = ind5.atr.at(-1) || 0;
-
   if (!lastStoch_M5 || !prevStoch_M5 || !lastStoch_M1) return;
 
   console.log(`[STRAT] M30:${higherTrend} | M5 RSI:${lastRSI_M5?.toFixed(2)} Stoch:${lastStoch_M5?.k?.toFixed(2)} | M1 RSI:${lastRSI_M1?.toFixed(2)} Stoch:${lastStoch_M1?.k?.toFixed(2)}`);
 
-  // --- Positions ---
+  // --- Market Regime Filter ---
+  const bbwM30 = ind30.bb?.length ? (ind30.bb.at(-1).upper - ind30.bb.at(-1).lower) / ind30.bb.at(-1).middle : 0;
+  const atrM5 = ind5.atr.at(-1) || 0;
+  const lowVol = bbwM30 < 0.0015 || atrM5 < 0.5;
+  const nowHour = new Date().getUTCHours();
+  const inDeadHours = (nowHour >= 0 && nowHour < 5);
+  if (lowVol || inDeadHours) {
+    console.log(`[STRAT] Market not tradable (lowVol=${lowVol}, deadHours=${inDeadHours}).`);
+    await monitorOpenTrades(ind30, ind5, ind1);
+    return;
+  }
+
+  // --- Positions & Risk ---
   const openPositions = await safeGetPositions();
+  openPositionsCache = openPositions;  // 🔄 Keep latest positions globally
   await syncOpenPairsWithPositions(openPositions);
 
-  // --- Risk check ---
   if (openPositions.length >= MAX_OPEN_TRADES) {
     await monitorOpenTrades(ind30, ind5, ind1);
     return;
@@ -578,84 +664,131 @@ async function checkStrategy(m5CandleTime = null) {
     return;
   }
 
-  // --- Entry Triggers with short-term memory ---
-  const t = STRATEGY_THRESHOLDS;
+  // ===============================================================
+  // === RETRACEMENT + RESUMPTION STRATEGY LOGIC STARTS HERE ===
+  // ===============================================================
+  const isUptrend = effectiveTrend === 'uptrend';
+  const isDowntrend = effectiveTrend === 'downtrend';
+  const bbMid_M5 = ind5.bb.at(-1)?.middle;
 
+  // Detect retracement (current candle)
+  const retracementBuy = isUptrend && lastRSI_M5 < 55 && lastStoch_M5.k < 55;
+  const retracementSell = isDowntrend && lastRSI_M5 > 45 && lastStoch_M5.k > 45;
+
+
+  const retraceActiveNow = retracementBuy || retracementSell;
+  const retraceTypeNow = retracementBuy ? 'BUY' : (retracementSell ? 'SELL' : null);
+  const currentM5CandleId = candlesM5.at(-1)?.time || new Date().toISOString(); // use your candle time field if different
+  const now = Date.now();
+
+  // --- Expire stale retracement memory if too old ---
+  if (globalThis.retracementState.active) {
+    const age = now - (globalThis.retracementState.startedAt || 0);
+    if (age > globalThis.retraceMaxAgeMs) {
+      console.log('[RETRACE] remembered retracement expired due to age. Clearing state.');
+      globalThis.retracementState = { active: false, type: null, startCandle: null, startedAt: 0, lastSeen: 0 };
+      lastRetracementNotify.type = null;
+      lastRetracementNotify.candleId = null;
+    }
+  }
+
+  // --- When retracement condition appears now, either set or refresh remembered retracement ---
+  if (retraceActiveNow) {
+    // If there's an existing remembered retracement of different type - overwrite it (new retrace)
+    if (!globalThis.retracementState.active || globalThis.retracementState.type !== retraceTypeNow) {
+      // New retracement begins - set memory
+      globalThis.retracementState = {
+        active: true,
+        type: retraceTypeNow,
+        startCandle: currentM5CandleId,
+        startedAt: now,
+        lastSeen: now
+      };
+      console.log(`[RETRACE] Started remembering retracement: ${retraceTypeNow} @ ${new Date(now).toISOString()}`);
+    } else {
+      // Refresh lastSeen timestamp if same type continues
+      globalThis.retracementState.lastSeen = now;
+    }
+
+    // --- Notification logic (existing de-dupe) ---
+    const isNewRetrace = (
+      lastRetracementNotify.type !== retraceTypeNow ||
+      lastRetracementNotify.candleId !== currentM5CandleId
+    );
+    const cooldownPassed = (now - (lastRetracementNotify.lastSent || 0)) > RETRACE_NOTIFY_COOLDOWN_MS;
+    if (isNewRetrace || cooldownPassed) {
+      const retraceMsg = retracementBuy ? `🔄 *Uptrend Pullback Detected*` : `🔄 *Downtrend Rally Detected*`;
+      const rsi = lastRSI_M5?.toFixed(2);
+      const stoch = lastStoch_M5?.k?.toFixed(2);
+      const msg = `${retraceMsg}\n━━━━━━━━━━━━━━━\n📊 M5 RSI: *${rsi}*\n🎚️ Stoch: *${stoch}*\n📈 Trend: *${effectiveTrend.toUpperCase()}*\n⏱️ Awaiting resumption confirmation...`;
+
+      console.log(`[RETRACE] ${retraceTypeNow === 'BUY' ? 'Uptrend pullback' : 'Downtrend rally'} detected.`);
+      await sendTelegram(msg, { parse_mode: 'Markdown' });
+
+      lastRetracementNotify = {
+        type: retraceTypeNow,
+        candleId: currentM5CandleId,
+        lastSent: now
+      };
+    } else {
+      console.log('[RETRACE] notification suppressed (already sent recently).');
+    }
+  } else {
+    // If retracement is not currently active, we DO NOT immediately clear the remembered retracement.
+    // We keep it active for a while (retraceMaxAge) so resumption on next candle(s) can be matched.
+    // But if no remembered retracement exists, clear the notify state as before.
+    if (!globalThis.retracementState.active) {
+      if (lastRetracementNotify.type !== null) {
+        console.log('[RETRACE] cleared notify state (no active retracement).');
+        lastRetracementNotify.type = null;
+        lastRetracementNotify.candleId = null;
+      }
+    }
+  }
+
+  // Detect resumption (momentum returning to trend)
+  const resumedBuy = isUptrend && prevStoch_M5.k < 50 && lastStoch_M5.k > 50;
+  const resumedSell = isDowntrend && prevStoch_M5.k > 50 && lastStoch_M5.k < 50;
+
+
+  // Define recency window (e.g. 6 M5 candles ≈ 30 minutes)
+  const retracementRecent =
+    globalThis.retracementState.active &&
+    now - (globalThis.retracementState.lastSeen || 0) < 6 * 5 * 60 * 1000;
+
+  // --- New trigger logic: must be a resumption after a recent retracement ---
   const newBuyTrigger =
-    (prevStoch_M5.k < t.STOCHASTIC.BUY_TRIGGER &&
-     lastStoch_M5.k >= t.STOCHASTIC.BUY_TRIGGER &&
-     lastRSI_M5 < t.RSI.M5_FILTER_BUY);
+    resumedBuy &&
+    retracementRecent &&
+    globalThis.retracementState.type === 'BUY';
 
   const newSellTrigger =
-    (prevStoch_M5.k > t.STOCHASTIC.SELL_TRIGGER &&
-     lastStoch_M5.k <= t.STOCHASTIC.SELL_TRIGGER &&
-     lastRSI_M5 > t.RSI.M5_FILTER_SELL);
+    resumedSell &&
+    retracementRecent &&
+    globalThis.retracementState.type === 'SELL';
 
-  // Initialize memory arrays if undefined
-  if (typeof recentBuyTriggers === 'undefined') global.recentBuyTriggers = [];
-  if (typeof recentSellTriggers === 'undefined') global.recentSellTriggers = [];
+  // --- Confirmation via M1 ---
+  const buyM1Confirm = lastRSI_M1 > 50 && lastStoch_M1.k > 30;
+  const sellM1Confirm = lastRSI_M1 < 50 && lastStoch_M1.k < 70;
 
-  // Store triggers
-  if (newBuyTrigger) recentBuyTriggers.push(m5CandleTime);
-  if (newSellTrigger) recentSellTriggers.push(m5CandleTime);
+  // --- Add M5 confirmation filter ---
+  const m5AlignedBuy = lastRSI_M5 < 55;
+  const m5AlignedSell = lastRSI_M5 > 45;
 
-  // Keep only latest N
-  recentBuyTriggers = recentBuyTriggers.slice(-TRIGGER_MEMORY_CANDLES);
-  recentSellTriggers = recentSellTriggers.slice(-TRIGGER_MEMORY_CANDLES);
+  // --- Final trade readiness conditions ---
+  const buyReady = isUptrend && newBuyTrigger;
+  const sellReady = isDowntrend && newSellTrigger;
 
-  // Confirmation checks
-  const buyM1Confirm = (lastRSI_M1 < t.RSI.BUY_CONFIRM);
-  const sellM1Confirm = (lastRSI_M1 > t.RSI.SELL_CONFIRM);
 
-  // Check if any recent triggers still valid (within ~15min)
-  const nowSec = Math.floor(Date.now() / 1000);
-  const validWindow = 5 * 60 * TRIGGER_MEMORY_CANDLES;
-  const hasRecentBuyTrigger =
-    recentBuyTriggers.some(ts => (nowSec - new Date(ts).getTime() / 1000) <= validWindow);
-  const hasRecentSellTrigger =
-    recentSellTriggers.some(ts => (nowSec - new Date(ts).getTime() / 1000) <= validWindow);
-
-  // Final entry flags
-  const buyReady = (effectiveTrend === 'uptrend' && hasRecentBuyTrigger && buyM1Confirm);
-  const sellReady = (effectiveTrend === 'downtrend' && hasRecentSellTrigger && sellM1Confirm);
-
-  // --- Potential Zone Alerts ---
-  if (
-    effectiveTrend === 'uptrend' &&
-    hasRecentBuyTrigger &&
-    !buyM1Confirm &&
-    (!lastZoneSignal || lastZoneSignal.type !== 'BUY' || lastZoneSignal.candleTime !== m5CandleTime)
-  ) {
-    await sendTelegram(
-      `⚡ *POTENTIAL BUY ZONE DETECTED*\n━━━━━━━━━━━━━━━\n📊 *Trend:* ${effectiveTrend.toUpperCase()}\n📍 *Trigger:* M5 bullish setup detected\n💡 Waiting for M1 confirmation...\n⏰ ${new Date().toLocaleTimeString()}`,
-      { parse_mode: 'Markdown' }
-    );
-    lastZoneSignal = { type: 'BUY', candleTime: m5CandleTime };
-  }
-
-  if (
-    effectiveTrend === 'downtrend' &&
-    hasRecentSellTrigger &&
-    !sellM1Confirm &&
-    (!lastZoneSignal || lastZoneSignal.type !== 'SELL' || lastZoneSignal.candleTime !== m5CandleTime)
-  ) {
-    await sendTelegram(
-      `⚡ *POTENTIAL SELL ZONE DETECTED*\n━━━━━━━━━━━━━━━\n📊 *Trend:* ${effectiveTrend.toUpperCase()}\n📍 *Trigger:* M5 bearish setup detected\n💡 Waiting for M1 confirmation...\n⏰ ${new Date().toLocaleTimeString()}`,
-      { parse_mode: 'Markdown' }
-    );
-    lastZoneSignal = { type: 'SELL', candleTime: m5CandleTime };
-  }
 
   // --- SL & TP Calculation ---
-  const slDistance = lastATR_M5 * ATR_SL_MULTIPLIER;
-  const minSlDistance = 20 * 0.1;
-  const effectiveSl = Math.max(slDistance || 0, minSlDistance);
+  const lastRetracementLow = Math.min(...candlesM5.slice(-3).map(c => c.low));
+  const lastRetracementHigh = Math.max(...candlesM5.slice(-3).map(c => c.high));
+  const retracementDepth = Math.abs(lastRetracementHigh - lastRetracementLow);
+  const slDistance = Math.max(retracementDepth * 0.5, lastATR_M5 * ATR_SL_MULTIPLIER);
 
-  if (!accountBalance || accountBalance === 0) {
-    accountBalance = await safeGetAccountBalance();
-  }
-
-  const slPriceDiff = effectiveSl;
+  if (!accountBalance || accountBalance === 0) accountBalance = await safeGetAccountBalance();
+  const slPriceDiff = slDistance;
   const CONTRACT_SIZE = 100;
   const lot = calculateLotFromRisk(accountBalance, allowedRiskPercent, slPriceDiff, CONTRACT_SIZE);
 
@@ -671,33 +804,35 @@ async function checkStrategy(m5CandleTime = null) {
     return 1.5;
   })();
 
-  // --- Execute Trade ---
-  const now = Date.now();
   const price = latestPrice;
-  const ageMs = price ? now - price.timestamp : Infinity;
-
-  if (!price || !price.bid || !price.ask || ageMs > 10000) {
-    console.warn(`[STRAT] No fresh price available (age=${(ageMs/1000).toFixed(1)}s). Skipping trade.`);
-    return;
-  }
-
+  if (!price || !price.bid || !price.ask) return;
   const ask = price.ask, bid = price.bid;
 
-  // BUY
+  // ===============================================================
+  // === ENTRY EXECUTION ===========================================
+  // ===============================================================
   if (buyReady) {
     const candleTime = m5CandleTime || new Date().toISOString();
     if (!canTakeTrade('BUY', candleTime)) {
       console.log('BUY blocked by cooldown/duplicate guard.');
     } else {
-      const slPrice = ask - effectiveSl;
-      const tpPrice = ask + effectiveSl * trr;
+      const slPrice = ask - slDistance;
+      const tpPrice = ask + slDistance * trr;
       if ((openPositions.length < MAX_OPEN_TRADES) && allowedRiskPercent > 0) {
         try {
           const pair = await placePairedOrder('BUY', lot, slPrice, tpPrice, allowedRiskPercent);
           if (pair) {
             console.log('BUY pair placed:', pair);
             lastSignal = { type: 'BUY', m5CandleTime: candleTime, time: new Date().toISOString() };
+            const msg = `🟢 *BUY Trade Placed*\n━━━━━━━━━━━━━━━\n📈 Trend: *${effectiveTrend.toUpperCase()}*\n💰 Lot: *${lot}*\n📊 SL: *${slPrice.toFixed(2)}*\n🎯 TP: *${tpPrice.toFixed(2)}*\n📅 Time: *${new Date().toLocaleTimeString()} UTC*`;
+            await sendTelegram(msg, { parse_mode: 'Markdown' });
+
+            // Clear retracement memory and notify state after trade
+            globalThis.retracementState = { active: false, type: null, startCandle: null, startedAt: 0, lastSeen: 0 };
+            lastRetracementNotify.type = null;
+            lastRetracementNotify.candleId = null;
           }
+
         } catch (e) {
           console.error('BUY place order failed:', e.message || e);
         }
@@ -705,21 +840,28 @@ async function checkStrategy(m5CandleTime = null) {
     }
   }
 
-  // SELL
   if (sellReady) {
     const candleTime = m5CandleTime || new Date().toISOString();
     if (!canTakeTrade('SELL', candleTime)) {
       console.log('SELL blocked by cooldown/duplicate guard.');
     } else {
-      const slPrice = bid + effectiveSl;
-      const tpPrice = bid - effectiveSl * trr;
+      const slPrice = bid + slDistance;
+      const tpPrice = bid - slDistance * trr;
       if ((openPositions.length < MAX_OPEN_TRADES) && allowedRiskPercent > 0) {
         try {
           const pair = await placePairedOrder('SELL', lot, slPrice, tpPrice, allowedRiskPercent);
           if (pair) {
             console.log('SELL pair placed:', pair);
             lastSignal = { type: 'SELL', m5CandleTime: candleTime, time: new Date().toISOString() };
+            const msg = `🔴 *SELL Trade Placed*\n━━━━━━━━━━━━━━━\n📉 Trend: *${effectiveTrend.toUpperCase()}*\n💰 Lot: *${lot}*\n📊 SL: *${slPrice.toFixed(2)}*\n🎯 TP: *${tpPrice.toFixed(2)}*\n📅 Time: *${new Date().toLocaleTimeString()} UTC*`;
+            await sendTelegram(msg, { parse_mode: 'Markdown' });
+
+            // Clear retracement memory and notify state after trade
+            globalThis.retracementState = { active: false, type: null, startCandle: null, startedAt: 0, lastSeen: 0 };
+            lastRetracementNotify.type = null;
+            lastRetracementNotify.candleId = null;
           }
+
         } catch (e) {
           console.error('SELL place order failed:', e.message || e);
         }
@@ -730,6 +872,8 @@ async function checkStrategy(m5CandleTime = null) {
   // --- Always monitor open trades for trailing/partial logic ---
   await monitorOpenTrades(ind30, ind5, ind1);
 }
+
+
 
 
 // --------------------- GUARDS & RECORDING ---------------------
@@ -763,17 +907,51 @@ function canTakeTrade(type, m5CandleTime) {
       const pTicket = rec.trades?.PARTIAL?.ticket;
       const tTicket = rec.trades?.TRAILING?.ticket;
 
-      // if PARTIAL ticket missing on broker
-      if (pTicket && !openTickets.has(pTicket)) {
-        console.log(`[SYNC] PARTIAL trade ${pTicket} missing on broker — marking closed`);
-        rec.trades.PARTIAL.ticket = null;
-        rec.partialClosed = true;
+      // --- Helper to retry detection for missing trades ---
+      async function verifyTradeStillMissing(ticket, label) {
+        rec._missingRetries = rec._missingRetries || {};
+        rec._missingRetries[label] = (rec._missingRetries[label] || 0) + 1;
+
+        const attempt = rec._missingRetries[label];
+        if (attempt < 3) {
+          console.log(`[SYNC] ${label} trade ${ticket} temporarily missing — retrying (${attempt})`);
+          await delay(3000);
+          await account.refresh();
+          const refreshedPositions = await safeGetPositions();
+          const refreshedTickets = new Set(
+            (refreshedPositions || []).map(p => p.positionId || p.ticket || p.id).filter(Boolean)
+          );
+
+          if (refreshedTickets.has(ticket)) {
+            console.log(`[SYNC] ${label} trade ${ticket} found after retry.`);
+            rec._missingRetries[label] = 0;
+            return false; // not missing
+          } else {
+            console.log(`[SYNC] ${label} trade ${ticket} still missing after retry ${attempt}.`);
+            return true; // still missing
+          }
+        } else {
+          console.log(`[SYNC] ${label} trade ${ticket} confirmed missing after retries — marking closed.`);
+          rec._missingRetries[label] = 0;
+          return true;
+        }
       }
 
-      // if TRAILING ticket missing on broker
+      // --- PARTIAL missing logic with retry safeguard ---
+      if (pTicket && !openTickets.has(pTicket)) {
+        const stillMissing = await verifyTradeStillMissing(pTicket, 'PARTIAL');
+        if (stillMissing) {
+          rec.trades.PARTIAL.ticket = null;
+          rec.partialClosed = true;
+        }
+      }
+
+      // --- TRAILING missing logic with retry safeguard ---
       if (tTicket && !openTickets.has(tTicket)) {
-        console.log(`[SYNC] TRAILING trade ${tTicket} missing on broker — marking closed`);
-        rec.trades.TRAILING.ticket = null;
+        const stillMissing = await verifyTradeStillMissing(tTicket, 'TRAILING');
+        if (stillMissing) {
+          rec.trades.TRAILING.ticket = null;
+        }
       }
 
       // if both tickets gone → remove record
@@ -782,6 +960,7 @@ function canTakeTrade(type, m5CandleTime) {
         delete openPairs[pairId];
       }
     }
+
 
     // Step 2️⃣ — detect any new broker positions we’re not tracking
     for (const pos of positions) {
@@ -1124,17 +1303,36 @@ async function startBot() {
       }
     }, 15_000);
 
+    // --- Refresh indicators every 10 seconds, but only after warm-up (120 min) ---
+    setInterval(() => {
+      const runtimeMinutes = (Date.now() - botStartTime) / 60000;
+
+      // Respect warm-up period
+      if (runtimeMinutes < 120) {
+        if (runtimeMinutes % 10 < 0.2) {  // roughly every 10 minutes, one log line
+          console.log(`[IND] ⏸️ Skipping indicator refresh — warm-up in progress (${runtimeMinutes.toFixed(1)} min elapsed).`);
+        }
+        return;
+      }
+
+      // Proceed only if candles are ready
+      if (candlesM1.length > 0 && candlesM5.length > 0 && candlesM30.length > 0) {
+        refreshGlobalIndicators();
+      }
+    }, 10 * 1000);
+
+
     // --- health report (hourly) unchanged
-    setInterval(async () => {
-      try {
-        const uptimeHours = (process.uptime() / 3600).toFixed(1);
-        const openPositions = await safeGetPositions();
-        const totalTrades = Object.keys(openPairs).length;
-        console.log(`[HEALTH] Uptime ${uptimeHours}h | Candles M1=${candlesM1.length} M5=${candlesM5.length} M30=${candlesM30.length} | Open positions ${openPositions.length}`);
-        await sendTelegram(`📊 BOT HEALTH\nUptime: ${uptimeHours}h\nCandles: M1=${candlesM1.length} M5=${candlesM5.length} M30=${candlesM30.length}\nOpen: ${openPositions.length}`, { parse_mode: 'Markdown' });
-        if (Date.now() - lastTickTime > 30_000) console.warn('[HEALTH] No tick for >30s');
-      } catch (e) { console.warn('[HEALTH] error', e.message); }
-    }, 60 * 60 * 1000);
+    // setInterval(async () => {
+    //   try {
+    //     const uptimeHours = (process.uptime() / 3600).toFixed(1);
+    //     const openPositions = await safeGetPositions();
+    //     const totalTrades = Object.keys(openPairs).length;
+    //     console.log(`[HEALTH] Uptime ${uptimeHours}h | Candles M1=${candlesM1.length} M5=${candlesM5.length} M30=${candlesM30.length} | Open positions ${openPositions.length}`);
+    //     await sendTelegram(`📊 BOT HEALTH\nUptime: ${uptimeHours}h\nCandles: M1=${candlesM1.length} M5=${candlesM5.length} M30=${candlesM30.length}\nOpen: ${openPositions.length}`, { parse_mode: 'Markdown' });
+    //     if (Date.now() - lastTickTime > 30_000) console.warn('[HEALTH] No tick for >30s');
+    //   } catch (e) { console.warn('[HEALTH] error', e.message); }
+    // }, 60 * 60 * 1000);
 
     // ---------- helper: ensureConnectionWithRefresh (re-reads account)
     async function ensureConnectionWithRefresh() {
