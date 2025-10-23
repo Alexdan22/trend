@@ -638,7 +638,7 @@ async function checkStrategy(m5CandleTime = null) {
   // --- Market Regime Filter ---
   const bbwM30 = ind30.bb?.length ? (ind30.bb.at(-1).upper - ind30.bb.at(-1).lower) / ind30.bb.at(-1).middle : 0;
   const atrM5 = ind5.atr.at(-1) || 0;
-  const lowVol = bbwM30 < 0.0015 || atrM5 < 0.5;
+  const lowVol = bbwM30 < 0.0012 || atrM5 < 0.2;
   const nowHour = new Date().getUTCHours();
   const inDeadHours = (nowHour >= 0 && nowHour < 5);
   if (lowVol || inDeadHours) {
@@ -669,7 +669,6 @@ async function checkStrategy(m5CandleTime = null) {
   // ===============================================================
   const isUptrend = effectiveTrend === 'uptrend';
   const isDowntrend = effectiveTrend === 'downtrend';
-  const bbMid_M5 = ind5.bb.at(-1)?.middle;
 
   // Detect retracement (current candle)
   const retracementBuy = isUptrend && lastRSI_M5 < 55 && lastStoch_M5.k < 55;
@@ -766,14 +765,6 @@ async function checkStrategy(m5CandleTime = null) {
     resumedSell &&
     retracementRecent &&
     globalThis.retracementState.type === 'SELL';
-
-  // --- Confirmation via M1 ---
-  const buyM1Confirm = lastRSI_M1 > 50 && lastStoch_M1.k > 30;
-  const sellM1Confirm = lastRSI_M1 < 50 && lastStoch_M1.k < 70;
-
-  // --- Add M5 confirmation filter ---
-  const m5AlignedBuy = lastRSI_M5 < 55;
-  const m5AlignedSell = lastRSI_M5 > 45;
 
   // --- Final trade readiness conditions ---
   const buyReady = isUptrend && newBuyTrigger;
