@@ -160,22 +160,23 @@ function determineMarketTypeFromBB(values, bbArray, lookback = 20) {
   const pctAbove = above / n;
   const bbw = (bbArray.at(-1).upper - bbArray.at(-1).lower) / bbArray.at(-1).middle;
 
-  // Tuned thresholds (works well for both Gold and BTC)
-  const STRONG_TREND_BBW = 0.018;
-  const SIDEWAYS_BBW = 0.012;
-  const UPPER_PCT = 0.58;
-  const LOWER_PCT = 0.42;
+  // Adjusted for Gold (moderate volatility)
+  const STRONG_TREND_BBW = 0.010;   // previously 0.018
+  const SIDEWAYS_BBW = 0.006;       // previously 0.012
+  const UPPER_PCT = 0.55;           // previously 0.58
+  const LOWER_PCT = 0.45;           // previously 0.42
 
   if (bbw > STRONG_TREND_BBW && pctAbove > UPPER_PCT) return 'uptrend';
   if (bbw > STRONG_TREND_BBW && pctAbove < LOWER_PCT) return 'downtrend';
 
   if (bbw > SIDEWAYS_BBW) {
-    if (pctAbove > 0.62) return 'uptrend';
-    if (pctAbove < 0.38) return 'downtrend';
+    if (pctAbove > 0.6) return 'uptrend';
+    if (pctAbove < 0.4) return 'downtrend';
   }
 
   return 'sideways';
 }
+
 
 
 
