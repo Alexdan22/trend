@@ -326,24 +326,28 @@ async function placePairedOrder(side, totalLot, intendedSlPrice, intendedTpPrice
   }
 
   const pairId = `pair-${Date.now()}`;
+  const entryPrice =
+    side === 'BUY'
+      ? (first?.price || first?.openPrice || latestPrice?.ask)
+      : (first?.price || first?.openPrice || latestPrice?.bid);
+
   openPairs[pairId] = {
     pairId,
     side,
     riskPercent,
     totalLot: lotEach * 2,
-    // record what ticket ids the broker returned (may be null depending on API)
     trades: {
       PARTIAL: { ticket: first?.positionId || first?.orderId || null, lot: lotEach },
       TRAILING: { ticket: second?.positionId || second?.orderId || null, lot: lotEach }
     },
-    // store the intended internal stop/take (for internal management)
     intendedSl: intendedSlPrice,
     intendedTp: intendedTpPrice,
-    sl: intendedSlPrice,   // current internal "hard" SL (initially same as intended)
-    tp: intendedTpPrice,   // TP for partial detection
+    sl: intendedSlPrice,
+    tp: intendedTpPrice,
     internalTrailingSL: null,
     partialClosed: false,
-    openedAt: new Date().toISOString()
+    openedAt: new Date().toISOString(),
+    entryPrice // ✅ added for internal logic (partial/TP detection)
   };
 
   console.log('[PAIR OPENED - INTERNAL SL/TP]', pairId, openPairs[pairId]);
@@ -351,31 +355,25 @@ async function placePairedOrder(side, totalLot, intendedSlPrice, intendedTpPrice
 }
 
 
+
 async function processTickForOpenPairs(price) {
-  // price: { bid, ask, timestamp }
   if (!price) return;
   try {
     const now = Date.now();
-    const posList = await safeGetPositions(); // keep local view updated
-    // optional: sync occasionally (we already have syncOpenPairsWithPositions elsewhere)
+    const posList = await safeGetPositions();
     await syncOpenPairsWithPositions(posList);
 
-    // build quick map of open tickets for resilience
     const openTickets = new Set((posList || []).map(p => p.positionId || p.ticket || p.id).filter(Boolean));
 
-    // per-pair tick processing
     for (const [pairId, rec] of Object.entries(openPairs)) {
       const side = rec.side;
       const partialRec = rec.trades?.PARTIAL;
       const trailingRec = rec.trades?.TRAILING;
       const entry = rec.entryPrice || rec.openPrice || null;
-
-      // current market price relevant to side
       const current = side === 'BUY' ? price.bid : price.ask;
       if (!current) continue;
 
-      // ensure we still track the tickets if broker removed them unexpectedly
-      // if a recorded ticket is no longer in broker positions, mark it null (sync function helps)
+      // --- Ticket validity check ---
       if (partialRec?.ticket && !openTickets.has(partialRec.ticket)) {
         console.log(`[PAIR] Partial ticket ${partialRec.ticket} missing for ${pairId} — marking as closed.`);
         rec.trades.PARTIAL.ticket = null;
@@ -387,59 +385,83 @@ async function processTickForOpenPairs(price) {
       }
 
       // --- PARTIAL CLOSE CHECK ---
-      // Use intendedTP and entry stored. If either ticket missing, treat as already done.
       if (!rec.partialClosed && rec.tp && rec.entryPrice && partialRec?.ticket) {
         const totalDist = Math.abs(rec.tp - rec.entryPrice);
-        const currentDist = Math.abs(rec.tp - current);
-        const progress = 1 - currentDist / totalDist;
-        // When progress >= 0.5 -> partial TP reached
+        const movedDist = Math.abs(current - rec.entryPrice);
+        const progress = movedDist / totalDist;
+
         if (progress >= 0.5) {
           console.log(`[PAIR] Partial target reached for ${pairId} (progress=${progress.toFixed(2)}) — closing PARTIAL leg.`);
           try {
             await safeClosePosition(partialRec.ticket, partialRec.lot);
             rec.partialClosed = true;
             rec.trades.PARTIAL.ticket = null;
+            rec.internalTrailingSL = rec.entryPrice; // break-even
 
-            // After partial close: set break-even SL (entry) for remaining leg
-            rec.internalTrailingSL = rec.entryPrice; // break-even move
-            // if trailing trade exists but its ticket is null (rare) keep internalTrailingSL for logic
             await sendTelegram(
               `🟠 *PARTIAL CLOSED*\n━━━━━━━━━━━━━━━\n🎫 *Pair:* ${pairId}\n📈 *Side:* ${side}\n💰 *Lot Closed:* ${partialRec.lot}\n🕒 ${new Date().toLocaleTimeString()}`,
               { parse_mode: "Markdown" }
             );
 
-            // refresh account balance quickly
-            try {
-              const newBal = await safeGetAccountBalance();
-              if (newBal && newBal !== accountBalance) accountBalance = newBal;
-            } catch (err) { console.warn('[BALANCE] post-partial refresh failed', err.message); }
+            const newBal = await safeGetAccountBalance();
+            if (newBal && newBal !== accountBalance) accountBalance = newBal;
           } catch (err) {
             console.warn(`[PAIR] Partial close failed for ${pairId}:`, err.message || err);
           }
         }
       }
 
+      // --- FINAL TAKE PROFIT HIT CHECK (NEW) ---
+      if (rec.tp && rec.entryPrice && (partialRec?.ticket || trailingRec?.ticket)) {
+        const tpHit =
+          (side === 'BUY' && current >= rec.tp) ||
+          (side === 'SELL' && current <= rec.tp);
+
+        if (tpHit) {
+          console.log(`[PAIR] 🎯 TP hit for ${pairId} — closing all trades.`);
+          for (const key of ['PARTIAL', 'TRAILING']) {
+            const t = rec.trades[key];
+            if (t?.ticket) {
+              try {
+                await safeClosePosition(t.ticket, t.lot);
+                rec.trades[key].ticket = null;
+              } catch (err) {
+                console.warn(`[PAIR] Failed to close ${key} trade for ${pairId}:`, err.message);
+              }
+            }
+          }
+
+          delete openPairs[pairId];
+          await sendTelegram(
+            `🎯 *TP HIT — PAIR CLOSED*\n━━━━━━━━━━━━━━━\n🎫 *Pair:* ${pairId}\n📈 *Side:* ${side}\n🕒 ${new Date().toLocaleTimeString()}`,
+            { parse_mode: 'Markdown' }
+          );
+
+          const newBal = await safeGetAccountBalance();
+          if (newBal && newBal !== accountBalance) accountBalance = newBal;
+          continue; // skip further processing for this pair
+        }
+      }
+
       // --- TRAILING / BREAK-EVEN LOGIC ---
-      // Only enable trailing behavior after partialClosed === true
       if (rec.partialClosed) {
-        // compute new trailing SL (use ATR if available else small margin)
         const atrVal = ind5?.atr?.at(-1) || 0;
         if (atrVal > 0) {
-          const desiredTrailing = side === 'BUY' ? current - atrVal * 1.0 : current + atrVal * 1.0;
-          // move internalTrailingSL only if it improves (buys: higher SL, sells: lower SL)
+          const desiredTrailing =
+            side === 'BUY' ? current - atrVal * 1.0 : current + atrVal * 1.0;
+
           if (!rec.internalTrailingSL ||
             (side === 'BUY' && desiredTrailing > rec.internalTrailingSL + 0.0005) ||
-            (side === 'SELL' && desiredTrailing < rec.internalTrailingSL - 0.0005)
-          ) {
+            (side === 'SELL' && desiredTrailing < rec.internalTrailingSL - 0.0005)) {
             rec.internalTrailingSL = desiredTrailing;
-            // optional: log sparse updates
-            // console.log(`[PAIR] Updated internal trailing SL for ${pairId} -> ${rec.internalTrailingSL.toFixed(5)}`);
           }
         }
 
-        // check for internal trailing hit -> close trailing ticket if exists
         if (rec.internalTrailingSL && trailingRec?.ticket) {
-          const hit = side === 'BUY' ? current <= rec.internalTrailingSL : current >= rec.internalTrailingSL;
+          const hit =
+            (side === 'BUY' && current <= rec.internalTrailingSL) ||
+            (side === 'SELL' && current >= rec.internalTrailingSL);
+
           if (hit) {
             console.log(`[PAIR] Internal trailing SL hit for ${pairId} -> closing trailing trade.`);
             try {
@@ -449,43 +471,16 @@ async function processTickForOpenPairs(price) {
                 `🔴 *TRAILING STOP HIT*\n━━━━━━━━━━━━━━━\n🎫 *Pair:* ${pairId}\n📈 *Side:* ${side}\n💰 *Lot Closed:* ${trailingRec.lot}\n🕒 ${new Date().toLocaleTimeString()}`,
                 { parse_mode: "Markdown" }
               );
-              // update balance
-              try {
-                const newBal = await safeGetAccountBalance();
-                if (newBal && newBal !== accountBalance) accountBalance = newBal;
-              } catch (err) { console.warn('[BALANCE] post-trailing refresh failed', err.message); }
+              const newBal = await safeGetAccountBalance();
+              if (newBal && newBal !== accountBalance) accountBalance = newBal;
             } catch (err) {
               console.warn(`[PAIR] Failed to close trailing trade ${pairId}:`, err.message || err);
             }
           }
         }
-      } // end partialClosed guard
-
-      // --- HARD STOP if market structure collapses (optional) ---
-      // If M10 trend weakens to sideways/conflict, we may want to close both legs immediately.
-      // This check aligns with monitorOpenTrades behavior but doing it here ensures tick responsiveness.
-      const closesM10 = candlesM10.map(c => c.close);
-      const m10Type = (ind10?.bb?.length && closesM10.length) ? determineMarketTypeFromBB(closesM10, ind10.bb, 24) : 'sideways';
-      if (m10Type === 'sideways') {
-        // close both if either ticket exists
-        let didClose = false;
-        for (const key of ['PARTIAL', 'TRAILING']) {
-          const t = rec.trades[key];
-          if (t?.ticket) {
-            try {
-              await safeClosePosition(t.ticket, t.lot);
-              rec.trades[key].ticket = null;
-              didClose = true;
-            } catch (err) { console.warn(`[PAIR] Failed forced close ${pairId} ${key}:`, err.message || err); }
-          }
-        }
-        if (didClose) {
-          delete openPairs[pairId];
-          await sendTelegram(`🔻 *PAIR CLOSED (M10 SIDEWAYS)*\n━━━━━━━━━━━━━━━\n🎫 *Pair:* ${pairId}\n🕒 ${new Date().toLocaleTimeString()}`, { parse_mode: 'Markdown' });
-        }
       }
 
-      // if both tickets gone -> remove pair record
+
       if (!rec.trades.PARTIAL.ticket && !rec.trades.TRAILING.ticket) {
         delete openPairs[pairId];
       }
@@ -494,6 +489,7 @@ async function processTickForOpenPairs(price) {
     console.error('[TICK-PROCESS] processTickForOpenPairs error:', err.message || err);
   }
 }
+
 
 
 // safeClosePosition - tolerant close; treat "not found" as already-closed success
