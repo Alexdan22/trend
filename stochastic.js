@@ -817,141 +817,100 @@ if (trendM5 === 'sideways' && trendM10 !== 'sideways') {
   // ===============================================================
   // === RETRACEMENT + RESUMPTION STRATEGY LOGIC STARTS HERE ===
   // ===============================================================
+  const isUptrend = effectiveTrend === 'uptrend';
+  const isDowntrend = effectiveTrend === 'downtrend';
+
+  // Detect retracement (current candle)
+  const retracementBuy = isUptrend && lastRSI_M5 < 55 && lastStoch_M5.k < 55;
+  const retracementSell = isDowntrend && lastRSI_M5 > 45 && lastStoch_M5.k > 45;
 
 
-  // ===============================================================
-  // === RSI-DRIVEN MOMENTUM STRATEGY STARTS HERE ===
-  // ===============================================================
+  const retraceActiveNow = retracementBuy || retracementSell;
+  const retraceTypeNow = retracementBuy ? 'BUY' : (retracementSell ? 'SELL' : null);
+  const currentM5CandleId = candlesM5.at(-1)?.time || new Date().toISOString(); // use your candle time field if different
+  const now = Date.now();
 
-  // ✅ Persistent RSI phase memory and Telegram dedupe
-  if (!globalThis.rsiPhaseState) {
-    globalThis.rsiPhaseState = {
-      lastPhase: null,          // 'continuation' | 'pullback' | 'reversal' | 'sideways'
-      lastSlope: null,
-      pullbackCount: 0,
-      pullbackConfirmed: false,
-      lastUpdate: 0
-    };
+  // --- Expire stale retracement memory if too old ---
+  if (globalThis.retracementState.active) {
+    const age = now - (globalThis.retracementState.startedAt || 0);
+    if (age > globalThis.retraceMaxAgeMs) {
+      console.log('[RETRACE] remembered retracement expired due to age. Clearing state.');
+      globalThis.retracementState = { active: false, type: null, startCandle: null, startedAt: 0, lastSeen: 0 };
+      lastRetracementNotify.type = null;
+      lastRetracementNotify.candleId = null;
+    }
   }
-  if (!globalThis.lastRSIAlert) {
-    globalThis.lastRSIAlert = { type: null, timestamp: 0 };
-  }
 
-  const rsiSeries = ind5.rsi.slice(-10);
-  if (rsiSeries.length < 5) return;
-
-  const minRSI = Math.min(...rsiSeries);
-  const maxRSI = Math.max(...rsiSeries);
-  const currentRSI = rsiSeries.at(-1);
-  const prevRSI = rsiSeries.at(-2);
-  const slope = currentRSI - prevRSI;
-  const range = maxRSI - minRSI;
-  const recoveryRatio = (currentRSI - minRSI) / Math.max(range, 1);
-
-  // --- Base classification ---
-  let nowPhase;
-  if (range < 8) nowPhase = 'sideways';
-  else if (recoveryRatio < 0.4) nowPhase = 'continuation';
-  else if (recoveryRatio <= 0.7) nowPhase = 'pullback';
-  else nowPhase = 'reversal';
-
-  // --- Filter shallow noise ---
-  const rsiDelta = Math.abs(currentRSI - minRSI);
-  const isMeaningfulMove = rsiDelta >= 6;
-  if (nowPhase === 'pullback' && !isMeaningfulMove) nowPhase = 'continuation';
-
-  // --- Determine trend bias ---
-  const mainTrend = effectiveTrend;
-  const momentumDir = slope > 0 ? 'up' : 'down';
-
-  // --- Phase persistence and trade logic ---
-  const prevPhase = globalThis.rsiPhaseState.lastPhase;
-  const prevSlope = globalThis.rsiPhaseState.lastSlope;
-  let tradeSignal = null;
-
-  // Track consecutive opposite-slope bars for pullback confirmation
-  if (nowPhase === 'pullback') {
-    if (prevPhase === 'pullback' && Math.sign(prevSlope) === Math.sign(slope)) {
-      globalThis.rsiPhaseState.pullbackCount++;
+  // --- When retracement condition appears now, either set or refresh remembered retracement ---
+  if (retraceActiveNow) {
+    // If there's an existing remembered retracement of different type - overwrite it (new retrace)
+    if (!globalThis.retracementState.active || globalThis.retracementState.type !== retraceTypeNow) {
+      // New retracement begins - set memory
+      globalThis.retracementState = {
+        active: true,
+        type: retraceTypeNow,
+        startCandle: currentM5CandleId,
+        startedAt: now,
+        lastSeen: now
+      };
+      console.log(`[RETRACE] Started remembering retracement: ${retraceTypeNow} @ ${new Date(now).toISOString()}`);
     } else {
-      globalThis.rsiPhaseState.pullbackCount = 1;
+      // Refresh lastSeen timestamp if same type continues
+      globalThis.retracementState.lastSeen = now;
     }
-    if (globalThis.rsiPhaseState.pullbackCount >= 2) {
-      globalThis.rsiPhaseState.pullbackConfirmed = true;
+
+    // --- One-time retracement alert ---
+    if (!lastRetracementNotify.type || lastRetracementNotify.type !== retraceTypeNow) {
+      const retraceMsg = retracementBuy
+        ? `🔄 *Uptrend Pullback Detected*`
+        : `🔄 *Downtrend Rally Detected*`;
+      const msg = `${retraceMsg}\n━━━━━━━━━━━━━━━\n📈 Trend: *${effectiveTrend.toUpperCase()}*\n⏱️ Awaiting resumption confirmation...`;
+
+      await sendTelegram(msg, { parse_mode: 'Markdown' });
+      lastRetracementNotify = { type: retraceTypeNow };
+      console.log(`[RETRACE] Alert sent once for type: ${retraceTypeNow}`);
+    } else {
+      // Already alerted for this retracement type — do nothing
+      console.log(`[RETRACE] Alert skipped (already sent for ${retraceTypeNow}).`);
+    }
+
+  } else {
+    // If retracement is not currently active, we DO NOT immediately clear the remembered retracement.
+    // We keep it active for a while (retraceMaxAge) so resumption on next candle(s) can be matched.
+    // But if no remembered retracement exists, clear the notify state as before.
+    if (!globalThis.retracementState.active) {
+      if (lastRetracementNotify.type !== null) {
+        console.log('[RETRACE] cleared notify state (no active retracement).');
+        lastRetracementNotify.type = null;
+        lastRetracementNotify.candleId = null;
+      }
     }
   }
 
-  // ---- ONE-TIME TELEGRAM ALERTS ----
-  async function sendOneTimeRSIAlert(type, message) {
-    if (globalThis.lastRSIAlert.type !== type) {
-      await sendTelegram(message, { parse_mode: 'Markdown' });
-      globalThis.lastRSIAlert = { type, timestamp: Date.now() };
-      console.log(`[RSI] Alert sent once for ${type}`);
-    }
-  }
+  // Detect resumption (momentum returning to trend)
+  const resumedBuy = isUptrend && prevStoch_M5.k < 50 && lastStoch_M5.k > 50;
+  const resumedSell = isDowntrend && prevStoch_M5.k > 50 && lastStoch_M5.k < 50;
 
-  // Send alert when new pullback starts
-  if (nowPhase === 'pullback' && prevPhase !== 'pullback') {
-    const msg =
-      mainTrend === 'uptrend'
-        ? `🔄 *Uptrend Pullback Detected*\n━━━━━━━━━━━━━━━\n📈 Trend: *${mainTrend.toUpperCase()}*\n🧮 RSI: ${currentRSI.toFixed(
-            2
-          )}\nAwaiting continuation...`
-        : `🔄 *Downtrend Pullback Detected*\n━━━━━━━━━━━━━━━\n📉 Trend: *${mainTrend.toUpperCase()}*\n🧮 RSI: ${currentRSI.toFixed(
-            2
-          )}\nAwaiting continuation...`;
-    await sendOneTimeRSIAlert('pullback', msg);
-  }
 
-  // Send alert when new reversal begins
-  if (nowPhase === 'reversal' && prevPhase !== 'reversal') {
-    const msg =
-      momentumDir === 'up'
-        ? `🟢 *Potential Upward Reversal Zone*\n━━━━━━━━━━━━━━━\nRSI: ${currentRSI.toFixed(
-            2
-          )}\nMomentum turning bullish.`
-        : `🔴 *Potential Downward Reversal Zone*\n━━━━━━━━━━━━━━━\nRSI: ${currentRSI.toFixed(
-            2
-          )}\nMomentum turning bearish.`;
-    await sendOneTimeRSIAlert('reversal', msg);
-  }
+  // Define recency window (e.g. 6 M5 candles ≈ 30 minutes)
+  const retracementRecent =
+    globalThis.retracementState.active &&
+    now - (globalThis.retracementState.lastSeen || 0) < 6 * 5 * 60 * 1000;
 
-  // When RSI resumes in main direction after confirmed pullback → trade trigger
-  if (
-    prevPhase === 'pullback' &&
-    nowPhase === 'continuation' &&
-    globalThis.rsiPhaseState.pullbackConfirmed
-  ) {
-    if (mainTrend === 'uptrend' && momentumDir === 'up') tradeSignal = 'BUY';
-    if (mainTrend === 'downtrend' && momentumDir === 'down') tradeSignal = 'SELL';
-    globalThis.rsiPhaseState.pullbackConfirmed = false;
-    globalThis.rsiPhaseState.pullbackCount = 0;
-    globalThis.lastRSIAlert.type = null; // reset so next pullback alert can fire
-    console.log(`[RSI] Pullback → Continuation detected. Triggering ${tradeSignal}.`);
-  }
+  // --- New trigger logic: must be a resumption after a recent retracement ---
+  const newBuyTrigger =
+    resumedBuy &&
+    retracementRecent &&
+    globalThis.retracementState.type === 'BUY';
 
-  // Handle fresh reversal (trend flip)
-  if (nowPhase === 'reversal') {
-    if (momentumDir === 'up' && mainTrend === 'downtrend') tradeSignal = 'BUY_REVERSAL';
-    if (momentumDir === 'down' && mainTrend === 'uptrend') tradeSignal = 'SELL_REVERSAL';
-    globalThis.rsiPhaseState.pullbackConfirmed = false;
-    globalThis.rsiPhaseState.pullbackCount = 0;
-    console.log(`[RSI] Reversal phase detected (${tradeSignal}).`);
-  }
+  const newSellTrigger =
+    resumedSell &&
+    retracementRecent &&
+    globalThis.retracementState.type === 'SELL';
 
-  // Update memory
-  globalThis.rsiPhaseState.lastPhase = nowPhase;
-  globalThis.rsiPhaseState.lastSlope = slope;
-  globalThis.rsiPhaseState.lastUpdate = Date.now();
-
-  // --- Convert RSI signals to trade flags ---
-  const buyReady = tradeSignal === 'BUY' || tradeSignal === 'BUY_REVERSAL';
-  const sellReady = tradeSignal === 'SELL' || tradeSignal === 'SELL_REVERSAL';
-
-  console.log(
-    `[RSI] phase=${nowPhase}, ratio=${recoveryRatio.toFixed(2)}, slope=${slope.toFixed(2)}, ` +
-      `trend=${mainTrend}, momentum=${momentumDir}, tradeSignal=${tradeSignal}`
-  );
+  // --- Final trade readiness conditions ---
+  const buyReady = isUptrend && newBuyTrigger;
+  const sellReady = isDowntrend && newSellTrigger;
 
 
 
