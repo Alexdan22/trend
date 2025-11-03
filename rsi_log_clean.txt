@@ -1,0 +1,937 @@
+📲 Telegram bot connected.
+[BOT] Starting MetaApi bot for XAUUSDm — PID 433914
+[METAAPI] Fetched account: 128e3573-c93d-40de-b67b-8634e1863ce3 state= DEPLOYED connectionStatus= CONNECTED
+[METAAPI] Account appears CONNECTED to broker.
+[METAAPI] Connecting streaming connection...
+[METAAPI] Waiting for streaming synchronization (waitSynchronized)...
+[METAAPI] ✅ Streaming connection synchronized.
+[METAAPI] Subscribed to XAUUSDm market data.
+[METAAPI] Waiting for first valid tick (max 60s)...
+[METAAPI] First tick received.
+[METAAPI] Initial balance guess: 965.76
+[IND] ⏸️ Skipping indicator refresh — warm-up in progress (10.1 min elapsed).
+[IND] ⏸️ Skipping indicator refresh — warm-up in progress (20.1 min elapsed).
+[IND] ⏸️ Skipping indicator refresh — warm-up in progress (30.1 min elapsed).
+[IND] ⏸️ Skipping indicator refresh — warm-up in progress (40.1 min elapsed).
+[IND] ⏸️ Skipping indicator refresh — warm-up in progress (50.1 min elapsed).
+[IND] ⏸️ Skipping indicator refresh — warm-up in progress (60.1 min elapsed).
+[IND] ⏸️ Skipping indicator refresh — warm-up in progress (70.1 min elapsed).
+[IND] ⏸️ Skipping indicator refresh — warm-up in progress (80.1 min elapsed).
+[IND] ⏸️ Skipping indicator refresh — warm-up in progress (90.1 min elapsed).
+[IND] ⏸️ Skipping indicator refresh — warm-up in progress (100.1 min elapsed).
+[IND] ⏸️ Skipping indicator refresh — warm-up in progress (110.2 min elapsed).
+[MARKET] ✅ Price movement resumed. Resuming candle updates.
+[TREND] ✅ Warm-up complete — strategy is now ACTIVE.
+[TREND] M10 not ready yet (2 candles). Using only M5.
+[TREND] ⚪ Both M5 & M10 sideways → skip trades.
+[TREND] M10 not ready yet (2 candles). Using only M5.
+[TREND] ⚪ Both M5 & M10 sideways → skip trades.
+[TREND] M10 not ready yet (2 candles). Using only M5.
+[TREND] ⚪ Both M5 & M10 sideways → skip trades.
+[TREND] M10 not ready yet (3 candles). Using only M5.
+[TREND] ⚪ Both M5 & M10 sideways → skip trades.
+[TREND] M10 not ready yet (3 candles). Using only M5.
+[TREND] ⚪ Both M5 & M10 sideways → skip trades.
+[TREND] M10 not ready yet (4 candles). Using only M5.
+[TREND] ⚪ Both M5 & M10 sideways → skip trades.
+[TREND] M10 not ready yet (4 candles). Using only M5.
+[TREND] ⚪ Both M5 & M10 sideways → skip trades.
+[TREND] M10 not ready yet (5 candles). Using only M5.
+[TREND] ⚪ Both M5 & M10 sideways → skip trades.
+[TREND] M10 not ready yet (5 candles). Using only M5.
+[TREND] ⚪ Both M5 & M10 sideways → skip trades.
+[TREND] M10 not ready yet (6 candles). Using only M5.
+[TREND] ⚪ Both M5 & M10 sideways → skip trades.
+[TREND] M10 not ready yet (6 candles). Using only M5.
+[TREND] ⚪ Both M5 & M10 sideways → skip trades.
+[TREND] M10 not ready yet (7 candles). Using only M5.
+[TREND] ⚪ Both M5 & M10 sideways → skip trades.
+[TREND] M10 not ready yet (7 candles). Using only M5.
+[TREND] ⚪ Both M5 & M10 sideways → skip trades.
+[TREND] M10 not ready yet (8 candles). Using only M5.
+[TREND] ⚪ Both M5 & M10 sideways → skip trades.
+[TREND] M10 not ready yet (8 candles). Using only M5.
+[TREND] ⚪ Both M5 & M10 sideways → skip trades.
+[STRAT] Trend:sideways | M5 RSI:19.52 Stoch:2.09 | M1 RSI:40.78 Stoch:2.27
+[STRAT] Market not tradable (lowVol=true, deadHours=true).
+[TREND] M10 not ready yet (9 candles). Using only M5.
+[TREND] ⚪ Both M5 & M10 sideways → skip trades.
+[STRAT] Trend:sideways | M5 RSI:15.12 Stoch:0.72 | M1 RSI:25.50 Stoch:2.83
+[STRAT] Market not tradable (lowVol=true, deadHours=true).
+[TREND] M10 not ready yet (9 candles). Using only M5.
+[TREND] ⚪ Both M5 & M10 sideways → skip trades.
+[STRAT] Trend:sideways | M5 RSI:13.61 Stoch:0.67 | M1 RSI:24.98 Stoch:1.43
+[STRAT] Market not tradable (lowVol=true, deadHours=true).
+[TREND] M10 not ready yet (10 candles). Using only M5.
+[TREND] ⚪ Both M5 & M10 sideways → skip trades.
+[STRAT] Trend:sideways | M5 RSI:26.82 Stoch:23.01 | M1 RSI:46.35 Stoch:49.55
+[STRAT] Market not tradable (lowVol=true, deadHours=true).
+[TREND] M10 not ready yet (10 candles). Using only M5.
+[TREND] ⚪ Both M5 & M10 sideways → skip trades.
+[STRAT] Trend:sideways | M5 RSI:26.52 Stoch:23.34 | M1 RSI:45.36 Stoch:77.01
+[STRAT] Market not tradable (lowVol=true, deadHours=true).
+[TREND] M10 not ready yet (11 candles). Using only M5.
+[TREND] ⚪ Both M5 & M10 sideways → skip trades.
+[STRAT] Trend:sideways | M5 RSI:24.34 Stoch:11.05 | M1 RSI:40.94 Stoch:34.22
+[STRAT] Market not tradable (lowVol=true, deadHours=true).
+[TREND] M10 not ready yet (11 candles). Using only M5.
+[TREND] ⚪ Both M5 & M10 sideways → skip trades.
+[STRAT] Trend:sideways | M5 RSI:34.12 Stoch:31.76 | M1 RSI:57.35 Stoch:98.22
+[STRAT] Market not tradable (lowVol=true, deadHours=true).
+[TREND] M10 not ready yet (12 candles). Using only M5.
+[TREND] ⚪ Both M5 & M10 sideways → skip trades.
+[STRAT] Trend:sideways | M5 RSI:33.62 Stoch:32.98 | M1 RSI:51.65 Stoch:61.76
+[STRAT] Market not tradable (lowVol=true, deadHours=true).
+[TREND] M10 not ready yet (12 candles). Using only M5.
+[TREND] ⚪ Both M5 & M10 sideways → skip trades.
+[STRAT] Trend:sideways | M5 RSI:35.47 Stoch:44.95 | M1 RSI:54.80 Stoch:51.48
+[STRAT] Market not tradable (lowVol=true, deadHours=true).
+[TREND] M10 not ready yet (13 candles). Using only M5.
+[TREND] M10 sideways → using M5 (DOWNTREND).
+[STRAT] Trend:downtrend | M5 RSI:31.30 Stoch:21.66 | M1 RSI:39.08 Stoch:5.90
+[STRAT] Market not tradable (lowVol=true, deadHours=true).
+[TREND] M10 not ready yet (13 candles). Using only M5.
+[TREND] M10 sideways → using M5 (DOWNTREND).
+[STRAT] Trend:downtrend | M5 RSI:32.98 Stoch:26.49 | M1 RSI:43.02 Stoch:18.89
+[STRAT] Market not tradable (lowVol=true, deadHours=true).
+[TREND] M10 not ready yet (14 candles). Using only M5.
+[TREND] M10 sideways → using M5 (DOWNTREND).
+[STRAT] Trend:downtrend | M5 RSI:34.78 Stoch:31.56 | M1 RSI:48.41 Stoch:47.75
+[STRAT] Market not tradable (lowVol=true, deadHours=true).
+[TREND] M10 not ready yet (14 candles). Using only M5.
+[TREND] M10 sideways → using M5 (DOWNTREND).
+[STRAT] Trend:downtrend | M5 RSI:51.52 Stoch:92.06 | M1 RSI:70.20 Stoch:93.79
+[STRAT] Market not tradable (lowVol=true, deadHours=true).
+[TREND] M10 not ready yet (15 candles). Using only M5.
+[TREND] M10 sideways → using M5 (DOWNTREND).
+[STRAT] Trend:downtrend | M5 RSI:52.84 Stoch:90.56 | M1 RSI:66.75 Stoch:86.87
+[STRAT] Market not tradable (lowVol=true, deadHours=true).
+[TREND] M10 not ready yet (15 candles). Using only M5.
+[TREND] M10 sideways → using M5 (DOWNTREND).
+[STRAT] Trend:downtrend | M5 RSI:58.54 Stoch:99.56 | M1 RSI:75.92 Stoch:99.13
+[STRAT] Market not tradable (lowVol=true, deadHours=true).
+[TREND] M10 not ready yet (16 candles). Using only M5.
+[TREND] M10 sideways → using M5 (DOWNTREND).
+[STRAT] Trend:downtrend | M5 RSI:56.75 Stoch:94.10 | M1 RSI:67.07 Stoch:83.19
+[STRAT] Market not tradable (lowVol=true, deadHours=true).
+[TREND] M10 not ready yet (16 candles). Using only M5.
+[TREND] ⚪ Both M5 & M10 sideways → skip trades.
+[STRAT] Trend:sideways | M5 RSI:61.46 Stoch:96.24 | M1 RSI:72.30 Stoch:95.86
+[STRAT] Market not tradable (lowVol=true, deadHours=true).
+[TREND] M10 not ready yet (17 candles). Using only M5.
+[TREND] ⚪ Both M5 & M10 sideways → skip trades.
+[STRAT] Trend:sideways | M5 RSI:62.89 Stoch:94.87 | M1 RSI:70.16 Stoch:85.73
+[STRAT] Market not tradable (lowVol=true, deadHours=true).
+[TREND] M10 not ready yet (17 candles). Using only M5.
+[TREND] ⚪ Both M5 & M10 sideways → skip trades.
+[STRAT] Trend:sideways | M5 RSI:58.36 Stoch:84.59 | M1 RSI:56.57 Stoch:27.36
+[STRAT] Market not tradable (lowVol=true, deadHours=true).
+[TREND] M10 not ready yet (18 candles). Using only M5.
+[TREND] ⚪ Both M5 & M10 sideways → skip trades.
+[STRAT] Trend:sideways | M5 RSI:54.70 Stoch:73.97 | M1 RSI:45.89 Stoch:15.47
+[STRAT] Market not tradable (lowVol=true, deadHours=true).
+[TREND] M10 not ready yet (18 candles). Using only M5.
+[TREND] M10 sideways → using M5 (UPTREND).
+[STRAT] Trend:uptrend | M5 RSI:55.42 Stoch:76.24 | M1 RSI:47.91 Stoch:24.79
+[STRAT] Market not tradable (lowVol=true, deadHours=true).
+[TREND] M10 not ready yet (19 candles). Using only M5.
+[TREND] M10 sideways → using M5 (UPTREND).
+[STRAT] Trend:uptrend | M5 RSI:57.95 Stoch:84.22 | M1 RSI:57.88 Stoch:89.87
+[STRAT] Market not tradable (lowVol=true, deadHours=true).
+[TREND] M10 not ready yet (19 candles). Using only M5.
+[TREND] M10 sideways → using M5 (UPTREND).
+[STRAT] Trend:uptrend | M5 RSI:58.00 Stoch:84.37 | M1 RSI:52.42 Stoch:58.91
+[STRAT] Market not tradable (lowVol=true, deadHours=true).
+[TREND] M10 not ready yet (20 candles). Using only M5.
+[TREND] M10 sideways → using M5 (UPTREND).
+[STRAT] Trend:uptrend | M5 RSI:54.08 Stoch:75.57 | M1 RSI:42.92 Stoch:5.25
+[STRAT] Market not tradable (lowVol=false, deadHours=true).
+[TREND] M10 not ready yet (20 candles). Using only M5.
+[TREND] M10 sideways → using M5 (UPTREND).
+[STRAT] Trend:uptrend | M5 RSI:52.56 Stoch:72.08 | M1 RSI:40.59 Stoch:10.91
+[STRAT] Market not tradable (lowVol=false, deadHours=true).
+[TREND] M10 not ready yet (21 candles). Using only M5.
+[TREND] M10 sideways → using M5 (UPTREND).
+[STRAT] Trend:uptrend | M5 RSI:55.60 Stoch:77.93 | M1 RSI:53.69 Stoch:56.39
+[STRAT] Market not tradable (lowVol=false, deadHours=true).
+[TREND] M10 not ready yet (21 candles). Using only M5.
+[TREND] M10 sideways → using M5 (UPTREND).
+[STRAT] Trend:uptrend | M5 RSI:60.08 Stoch:86.78 | M1 RSI:65.17 Stoch:100.00
+[STRAT] Market not tradable (lowVol=false, deadHours=true).
+[TREND] M10 not ready yet (22 candles). Using only M5.
+[TREND] M10 sideways → using M5 (UPTREND).
+[STRAT] Trend:uptrend | M5 RSI:59.18 Stoch:62.23 | M1 RSI:54.30 Stoch:46.70
+[STRAT] Market not tradable (lowVol=false, deadHours=true).
+[TREND] M10 not ready yet (22 candles). Using only M5.
+[TREND] M10 sideways → using M5 (UPTREND).
+[STRAT] Trend:uptrend | M5 RSI:55.02 Stoch:42.46 | M1 RSI:46.55 Stoch:0.69
+[STRAT] Market not tradable (lowVol=false, deadHours=true).
+[TREND] M10 not ready yet (23 candles). Using only M5.
+[TREND] M10 sideways → using M5 (UPTREND).
+[STRAT] Trend:uptrend | M5 RSI:57.85 Stoch:49.96 | M1 RSI:53.87 Stoch:34.43
+[STRAT] Market not tradable (lowVol=false, deadHours=true).
+[TREND] M10 not ready yet (23 candles). Using only M5.
+[TREND] M10 sideways → using M5 (UPTREND).
+[STRAT] Trend:uptrend | M5 RSI:60.23 Stoch:64.72 | M1 RSI:57.11 Stoch:94.26
+[STRAT] Market not tradable (lowVol=false, deadHours=true).
+[TREND] M5 sideways → using M10 fallback (UPTREND).
+[STRAT] Trend:uptrend | M5 RSI:61.39 Stoch:72.04 | M1 RSI:55.28 Stoch:56.26
+[STRAT] Market not tradable (lowVol=false, deadHours=true).
+[TREND] M5 sideways → using M10 fallback (UPTREND).
+[STRAT] Trend:uptrend | M5 RSI:58.57 Stoch:60.86 | M1 RSI:49.47 Stoch:15.86
+[STRAT] Market not tradable (lowVol=false, deadHours=true).
+[TREND] M5 sideways → using M10 fallback (UPTREND).
+[STRAT] Trend:uptrend | M5 RSI:59.64 Stoch:66.82 | M1 RSI:51.24 Stoch:27.30
+[STRAT] Market not tradable (lowVol=false, deadHours=true).
+[TREND] M5 sideways → using M10 fallback (UPTREND).
+[STRAT] Trend:uptrend | M5 RSI:62.90 Stoch:85.46 | M1 RSI:60.75 Stoch:82.10
+[RSI] phase=sideways, ratio=1.00, slope=3.26, trend=uptrend, momentum=up, tradeSignal=null
+[TREND] M5 sideways → using M10 fallback (UPTREND).
+[STRAT] Trend:uptrend | M5 RSI:66.51 Stoch:82.12 | M1 RSI:65.47 Stoch:71.88
+[RSI] Alert sent once for reversal
+[RSI] Reversal phase detected (null).
+[RSI] phase=reversal, ratio=1.00, slope=3.61, trend=uptrend, momentum=up, tradeSignal=null
+[TREND] M5 sideways → using M10 fallback (UPTREND).
+[STRAT] Trend:uptrend | M5 RSI:63.10 Stoch:72.86 | M1 RSI:57.06 Stoch:50.36
+[RSI] Reversal phase detected (SELL_REVERSAL).
+[RSI] phase=reversal, ratio=0.70, slope=-3.41, trend=uptrend, momentum=down, tradeSignal=SELL_REVERSAL
+[PAIR OPENED - INTERNAL SL/TP] pair-1762139402484 {
+  pairId: 'pair-1762139402484',
+  side: 'SELL',
+  riskPercent: 0.02,
+  totalLot: 0.02,
+  trades: {
+    PARTIAL: { ticket: '2596721674', lot: 0.01 },
+    TRAILING: { ticket: '2596721829', lot: 0.01 }
+  },
+  intendedSl: 4012.666058141446,
+  intendedTp: 3992.2418837171094,
+  sl: 4012.666058141446,
+  tp: 3992.2418837171094,
+  internalTrailingSL: null,
+  partialClosed: false,
+  openedAt: '2025-11-03T03:10:02.485Z',
+  entryPrice: 4005.757
+}
+SELL pair placed: {
+  pairId: 'pair-1762139402484',
+  side: 'SELL',
+  riskPercent: 0.02,
+  totalLot: 0.02,
+  trades: {
+    PARTIAL: { ticket: '2596721674', lot: 0.01 },
+    TRAILING: { ticket: '2596721829', lot: 0.01 }
+  },
+  intendedSl: 4012.666058141446,
+  intendedTp: 3992.2418837171094,
+  sl: 4012.666058141446,
+  tp: 3992.2418837171094,
+  internalTrailingSL: null,
+  partialClosed: false,
+  openedAt: '2025-11-03T03:10:02.485Z',
+  entryPrice: 4005.757
+}
+[PAIR] Restored missing internalTrailingSL for pair-1762139402484
+[TREND] M5 sideways → using M10 fallback (UPTREND).
+[STRAT] Trend:uptrend | M5 RSI:65.11 Stoch:82.53 | M1 RSI:57.94 Stoch:52.55
+[RSI] Reversal phase detected (null).
+[RSI] phase=reversal, ratio=0.88, slope=2.01, trend=uptrend, momentum=up, tradeSignal=null
+[TREND] M5 sideways → using M10 fallback (UPTREND).
+[STRAT] Trend:uptrend | M5 RSI:65.36 Stoch:83.62 | M1 RSI:57.65 Stoch:71.59
+[RSI] Reversal phase detected (null).
+[RSI] phase=reversal, ratio=0.87, slope=0.25, trend=uptrend, momentum=up, tradeSignal=null
+[TREND] M5 sideways → using M10 fallback (UPTREND).
+[STRAT] Trend:uptrend | M5 RSI:65.60 Stoch:80.83 | M1 RSI:56.85 Stoch:57.89
+[RSI] phase=sideways, ratio=0.89, slope=0.24, trend=uptrend, momentum=up, tradeSignal=null
+[TREND] M5 sideways → using M10 fallback (UPTREND).
+[STRAT] Trend:uptrend | M5 RSI:61.79 Stoch:69.57 | M1 RSI:46.70 Stoch:0.00
+[RSI] phase=sideways, ratio=0.41, slope=-3.81, trend=uptrend, momentum=down, tradeSignal=null
+[TREND] M5 sideways → using M10 fallback (UPTREND).
+[STRAT] Trend:uptrend | M5 RSI:65.86 Stoch:91.03 | M1 RSI:62.59 Stoch:98.48
+[RSI] phase=sideways, ratio=0.92, slope=4.07, trend=uptrend, momentum=up, tradeSignal=null
+[PAIR] Partial target reached for pair-1762139402484 (progress=0.53) — closing PARTIAL leg.
+[PAIR] Internal trailing SL hit for pair-1762139402484 -> closing trailing trade.
+[PAIR] Internal trailing SL hit for pair-1762139402484 -> closing trailing trade.
+[TREND] M5 sideways → using M10 fallback (UPTREND).
+[STRAT] Trend:uptrend | M5 RSI:68.18 Stoch:96.63 | M1 RSI:66.13 Stoch:91.69
+[RSI] Reversal phase detected (null).
+[RSI] phase=reversal, ratio=1.00, slope=2.32, trend=uptrend, momentum=up, tradeSignal=null
+[TREND] M5 sideways → using M10 fallback (UPTREND).
+[STRAT] Trend:uptrend | M5 RSI:65.34 Stoch:85.92 | M1 RSI:56.27 Stoch:62.79
+[RSI] phase=sideways, ratio=0.56, slope=-2.84, trend=uptrend, momentum=down, tradeSignal=null
+[TREND] M5 sideways → using M10 fallback (UPTREND).
+[STRAT] Trend:uptrend | M5 RSI:67.50 Stoch:98.01 | M1 RSI:64.24 Stoch:93.40
+[RSI] phase=sideways, ratio=0.89, slope=2.16, trend=uptrend, momentum=up, tradeSignal=null
+[TREND] M5 sideways → using M10 fallback (UPTREND).
+[STRAT] Trend:uptrend | M5 RSI:68.06 Stoch:96.34 | M1 RSI:63.28 Stoch:82.49
+[RSI] phase=sideways, ratio=0.98, slope=0.56, trend=uptrend, momentum=up, tradeSignal=null
+[TREND] M5 sideways → using M10 fallback (UPTREND).
+[STRAT] Trend:uptrend | M5 RSI:63.02 Stoch:76.18 | M1 RSI:47.18 Stoch:0.00
+[RSI] phase=sideways, ratio=0.19, slope=-5.04, trend=uptrend, momentum=down, tradeSignal=null
+[TREND] M5 sideways → using M10 fallback (UPTREND).
+[STRAT] Trend:uptrend | M5 RSI:56.36 Stoch:54.71 | M1 RSI:35.37 Stoch:0.89
+[RSI] phase=continuation, ratio=0.00, slope=-6.66, trend=uptrend, momentum=down, tradeSignal=null
+[TREND] M5 sideways → using M10 fallback (UPTREND).
+[STRAT] Trend:uptrend | M5 RSI:62.81 Stoch:81.84 | M1 RSI:57.74 Stoch:77.08
+[RSI] Alert sent once for pullback
+[RSI] phase=pullback, ratio=0.55, slope=6.45, trend=uptrend, momentum=up, tradeSignal=null
+[TREND] M5 sideways → using M10 fallback (UPTREND).
+[STRAT] Trend:uptrend | M5 RSI:56.90 Stoch:52.64 | M1 RSI:45.19 Stoch:38.61
+[RSI] phase=continuation, ratio=0.05, slope=-5.91, trend=uptrend, momentum=down, tradeSignal=null
+[TREND] M5 sideways → using M10 fallback (UPTREND).
+[STRAT] Trend:uptrend | M5 RSI:50.07 Stoch:1.22 | M1 RSI:32.14 Stoch:1.15
+[RSI] phase=continuation, ratio=0.00, slope=-6.83, trend=uptrend, momentum=down, tradeSignal=null
+[TREND] M5 sideways → using M10 fallback (UPTREND).
+[STRAT] Trend:uptrend | M5 RSI:48.16 Stoch:4.66 | M1 RSI:31.14 Stoch:5.59
+[RSI] phase=continuation, ratio=0.00, slope=-1.91, trend=uptrend, momentum=down, tradeSignal=null
+[TREND] M5 sideways → using M10 fallback (UPTREND).
+[STRAT] Trend:uptrend | M5 RSI:50.55 Stoch:27.23 | M1 RSI:44.56 Stoch:54.72
+[RSI] phase=continuation, ratio=0.12, slope=2.39, trend=uptrend, momentum=up, tradeSignal=null
+[TREND] M5 sideways → using M10 fallback (UPTREND).
+[STRAT] Trend:uptrend | M5 RSI:49.99 Stoch:24.54 | M1 RSI:45.21 Stoch:65.84
+[RSI] phase=continuation, ratio=0.09, slope=-0.56, trend=uptrend, momentum=down, tradeSignal=null
+[TREND] M5 sideways → using M10 fallback (UPTREND).
+[STRAT] Trend:uptrend | M5 RSI:51.34 Stoch:30.78 | M1 RSI:49.51 Stoch:91.35
+[RSI] phase=continuation, ratio=0.16, slope=1.35, trend=uptrend, momentum=up, tradeSignal=null
+[TREND] M5 sideways → using M10 fallback (UPTREND).
+[STRAT] Trend:uptrend | M5 RSI:52.87 Stoch:37.73 | M1 RSI:52.91 Stoch:82.46
+[RSI] phase=continuation, ratio=0.32, slope=1.53, trend=uptrend, momentum=up, tradeSignal=null
+[TREND] M5 sideways → using M10 fallback (UPTREND).
+[STRAT] Trend:uptrend | M5 RSI:49.11 Stoch:22.00 | M1 RSI:46.51 Stoch:44.53
+[RSI] phase=continuation, ratio=0.06, slope=-3.76, trend=uptrend, momentum=down, tradeSignal=null
+[TREND] M5 sideways → using M10 fallback (UPTREND).
+[STRAT] Trend:uptrend | M5 RSI:50.44 Stoch:27.52 | M1 RSI:48.69 Stoch:52.10
+[RSI] phase=continuation, ratio=0.16, slope=1.33, trend=uptrend, momentum=up, tradeSignal=null
+[TREND] M5 sideways → using M10 fallback (UPTREND).
+[STRAT] Trend:uptrend | M5 RSI:47.24 Stoch:14.26 | M1 RSI:40.84 Stoch:18.70
+[RSI] phase=continuation, ratio=0.00, slope=-3.20, trend=uptrend, momentum=down, tradeSignal=null
+[TREND] ⚪ Both M5 & M10 sideways → skip trades.
+[STRAT] Trend:sideways | M5 RSI:40.85 Stoch:9.91 | M1 RSI:26.73 Stoch:20.01
+[RSI] phase=continuation, ratio=0.00, slope=-6.39, trend=sideways, momentum=down, tradeSignal=null
+[TREND] ⚪ Both M5 & M10 sideways → skip trades.
+[STRAT] Trend:sideways | M5 RSI:53.85 Stoch:59.94 | M1 RSI:62.25 Stoch:100.00
+[RSI] Alert sent once for reversal
+[RSI] Reversal phase detected (null).
+[RSI] phase=reversal, ratio=1.00, slope=13.00, trend=sideways, momentum=up, tradeSignal=null
+[TREND] ⚪ Both M5 & M10 sideways → skip trades.
+[STRAT] Trend:sideways | M5 RSI:52.37 Stoch:54.07 | M1 RSI:55.54 Stoch:75.52
+[RSI] Reversal phase detected (null).
+[RSI] phase=reversal, ratio=0.89, slope=-1.48, trend=sideways, momentum=down, tradeSignal=null
+[TREND] ⚪ Both M5 & M10 sideways → skip trades.
+[STRAT] Trend:sideways | M5 RSI:52.70 Stoch:55.87 | M1 RSI:53.65 Stoch:62.56
+[RSI] Reversal phase detected (null).
+[RSI] phase=reversal, ratio=0.91, slope=0.33, trend=sideways, momentum=up, tradeSignal=null
+[TREND] ⚪ Both M5 & M10 sideways → skip trades.
+[STRAT] Trend:sideways | M5 RSI:54.23 Stoch:81.14 | M1 RSI:56.94 Stoch:53.84
+[RSI] Reversal phase detected (null).
+[RSI] phase=reversal, ratio=1.00, slope=1.53, trend=sideways, momentum=up, tradeSignal=null
+[TREND] ⚪ Both M5 & M10 sideways → skip trades.
+[STRAT] Trend:sideways | M5 RSI:59.94 Stoch:95.41 | M1 RSI:70.14 Stoch:94.80
+[RSI] Reversal phase detected (null).
+[RSI] phase=reversal, ratio=1.00, slope=5.71, trend=sideways, momentum=up, tradeSignal=null
+[TREND] ⚪ Both M5 & M10 sideways → skip trades.
+[STRAT] Trend:sideways | M5 RSI:63.02 Stoch:79.55 | M1 RSI:67.61 Stoch:68.97
+[RSI] Reversal phase detected (null).
+[RSI] phase=reversal, ratio=1.00, slope=3.08, trend=sideways, momentum=up, tradeSignal=null
+[TREND] ⚪ Both M5 & M10 sideways → skip trades.
+[STRAT] Trend:sideways | M5 RSI:63.19 Stoch:80.19 | M1 RSI:63.71 Stoch:51.99
+[RSI] Reversal phase detected (null).
+[RSI] phase=reversal, ratio=1.00, slope=0.17, trend=sideways, momentum=up, tradeSignal=null
+[TREND] ⚪ Both M5 & M10 sideways → skip trades.
+[STRAT] Trend:sideways | M5 RSI:63.74 Stoch:82.30 | M1 RSI:60.46 Stoch:40.18
+[RSI] Reversal phase detected (null).
+[RSI] phase=reversal, ratio=1.00, slope=0.55, trend=sideways, momentum=up, tradeSignal=null
+[TREND] ⚪ Both M5 & M10 sideways → skip trades.
+[STRAT] Trend:sideways | M5 RSI:63.75 Stoch:82.33 | M1 RSI:58.91 Stoch:64.13
+[RSI] Reversal phase detected (null).
+[RSI] phase=reversal, ratio=1.00, slope=0.01, trend=sideways, momentum=up, tradeSignal=null
+[TREND] ⚪ Both M5 & M10 sideways → skip trades.
+[STRAT] Trend:sideways | M5 RSI:65.22 Stoch:87.41 | M1 RSI:60.14 Stoch:80.51
+[RSI] Reversal phase detected (null).
+[RSI] phase=reversal, ratio=1.00, slope=1.47, trend=sideways, momentum=up, tradeSignal=null
+[TREND] ⚪ Both M5 & M10 sideways → skip trades.
+[STRAT] Trend:sideways | M5 RSI:60.00 Stoch:77.30 | M1 RSI:52.63 Stoch:51.95
+[RSI] Alert sent once for pullback
+[RSI] phase=pullback, ratio=0.59, slope=-5.22, trend=sideways, momentum=down, tradeSignal=null
+[TREND] ⚪ Both M5 & M10 sideways → skip trades.
+[STRAT] Trend:sideways | M5 RSI:60.17 Stoch:77.78 | M1 RSI:50.35 Stoch:43.23
+[RSI] phase=pullback, ratio=0.60, slope=0.17, trend=sideways, momentum=up, tradeSignal=null
+[TREND] ⚪ Both M5 & M10 sideways → skip trades.
+[STRAT] Trend:sideways | M5 RSI:61.98 Stoch:83.01 | M1 RSI:55.58 Stoch:73.51
+[RSI] Alert sent once for reversal
+[RSI] Reversal phase detected (null).
+[RSI] phase=reversal, ratio=0.71, slope=1.81, trend=sideways, momentum=up, tradeSignal=null
+[TREND] ⚪ Both M5 & M10 sideways → skip trades.
+[STRAT] Trend:sideways | M5 RSI:60.47 Stoch:80.29 | M1 RSI:52.52 Stoch:73.25
+[RSI] phase=sideways, ratio=0.10, slope=-1.51, trend=sideways, momentum=down, tradeSignal=null
+[TREND] ⚪ Both M5 & M10 sideways → skip trades.
+[STRAT] Trend:sideways | M5 RSI:64.95 Stoch:89.74 | M1 RSI:61.63 Stoch:86.30
+[RSI] phase=sideways, ratio=0.95, slope=4.48, trend=sideways, momentum=up, tradeSignal=null
+[TREND] ⚪ Both M5 & M10 sideways → skip trades.
+[STRAT] Trend:sideways | M5 RSI:65.81 Stoch:93.84 | M1 RSI:60.95 Stoch:88.05
+[RSI] phase=sideways, ratio=1.00, slope=0.86, trend=sideways, momentum=up, tradeSignal=null
+[TREND] ⚪ Both M5 & M10 sideways → skip trades.
+[STRAT] Trend:sideways | M5 RSI:61.00 Stoch:81.42 | M1 RSI:54.47 Stoch:59.05
+[RSI] phase=sideways, ratio=0.17, slope=-4.81, trend=sideways, momentum=down, tradeSignal=null
+[TREND] ⚪ Both M5 & M10 sideways → skip trades.
+[STRAT] Trend:sideways | M5 RSI:58.18 Stoch:68.00 | M1 RSI:48.99 Stoch:34.27
+[RSI] phase=sideways, ratio=0.00, slope=-2.82, trend=sideways, momentum=down, tradeSignal=null
+[TREND] ⚪ Both M5 & M10 sideways → skip trades.
+[STRAT] Trend:sideways | M5 RSI:60.51 Stoch:72.86 | M1 RSI:54.63 Stoch:83.01
+[RSI] phase=sideways, ratio=0.31, slope=2.33, trend=sideways, momentum=up, tradeSignal=null
+[TREND] ⚪ Both M5 & M10 sideways → skip trades.
+[STRAT] Trend:sideways | M5 RSI:58.55 Stoch:67.15 | M1 RSI:49.98 Stoch:51.13
+[RSI] phase=sideways, ratio=0.05, slope=-1.96, trend=sideways, momentum=down, tradeSignal=null
+[TREND] ⚪ Both M5 & M10 sideways → skip trades.
+[STRAT] Trend:sideways | M5 RSI:60.52 Stoch:78.93 | M1 RSI:55.86 Stoch:73.06
+[RSI] phase=sideways, ratio=0.31, slope=1.97, trend=sideways, momentum=up, tradeSignal=null
+[TREND] ⚪ Both M5 & M10 sideways → skip trades.
+[STRAT] Trend:sideways | M5 RSI:61.61 Stoch:85.41 | M1 RSI:55.52 Stoch:75.91
+[RSI] phase=sideways, ratio=0.45, slope=1.09, trend=sideways, momentum=up, tradeSignal=null
+[TREND] ⚪ Both M5 & M10 sideways → skip trades.
+[STRAT] Trend:sideways | M5 RSI:62.46 Stoch:89.74 | M1 RSI:55.00 Stoch:75.31
+[RSI] phase=sideways, ratio=0.56, slope=0.85, trend=sideways, momentum=up, tradeSignal=null
+[TREND] ⚪ Both M5 & M10 sideways → skip trades.
+[STRAT] Trend:sideways | M5 RSI:70.57 Stoch:90.27 | M1 RSI:70.08 Stoch:85.54
+[RSI] Reversal phase detected (null).
+[RSI] phase=reversal, ratio=1.00, slope=8.11, trend=sideways, momentum=up, tradeSignal=null
+[TREND] ⚪ Both M5 & M10 sideways → skip trades.
+[STRAT] Trend:sideways | M5 RSI:64.65 Stoch:76.46 | M1 RSI:55.74 Stoch:53.74
+[RSI] Alert sent once for pullback
+[RSI] phase=pullback, ratio=0.52, slope=-5.92, trend=sideways, momentum=down, tradeSignal=null
+[TREND] ⚪ Both M5 & M10 sideways → skip trades.
+[STRAT] Trend:sideways | M5 RSI:51.93 Stoch:39.03 | M1 RSI:39.33 Stoch:1.23
+[RSI] phase=continuation, ratio=0.00, slope=-12.72, trend=sideways, momentum=down, tradeSignal=null
+[TREND] ⚪ Both M5 & M10 sideways → skip trades.
+[STRAT] Trend:sideways | M5 RSI:51.77 Stoch:20.18 | M1 RSI:42.19 Stoch:22.02
+[RSI] phase=continuation, ratio=0.00, slope=-0.16, trend=sideways, momentum=down, tradeSignal=null
+[TREND] ⚪ Both M5 & M10 sideways → skip trades.
+[STRAT] Trend:sideways | M5 RSI:53.03 Stoch:25.93 | M1 RSI:45.82 Stoch:51.40
+[RSI] phase=continuation, ratio=0.07, slope=1.26, trend=sideways, momentum=up, tradeSignal=null
+[TREND] ⚪ Both M5 & M10 sideways → skip trades.
+[STRAT] Trend:sideways | M5 RSI:59.80 Stoch:60.19 | M1 RSI:55.67 Stoch:78.05
+[RSI] phase=pullback, ratio=0.43, slope=6.77, trend=sideways, momentum=up, tradeSignal=null
+[TREND] ⚪ Both M5 & M10 sideways → skip trades.
+[STRAT] Trend:sideways | M5 RSI:55.31 Stoch:42.27 | M1 RSI:50.23 Stoch:48.05
+[RSI] phase=continuation, ratio=0.19, slope=-4.49, trend=sideways, momentum=down, tradeSignal=null
+[TREND] ⚪ Both M5 & M10 sideways → skip trades.
+[STRAT] Trend:sideways | M5 RSI:61.13 Stoch:75.45 | M1 RSI:58.95 Stoch:73.41
+[RSI] phase=pullback, ratio=0.50, slope=5.82, trend=sideways, momentum=up, tradeSignal=null
+[TREND] ⚪ Both M5 & M10 sideways → skip trades.
+[STRAT] Trend:sideways | M5 RSI:62.86 Stoch:86.13 | M1 RSI:60.45 Stoch:89.65
+[RSI] phase=pullback, ratio=0.59, slope=1.73, trend=sideways, momentum=up, tradeSignal=null
+[TREND] ⚪ Both M5 & M10 sideways → skip trades.
+[STRAT] Trend:sideways | M5 RSI:63.32 Stoch:89.08 | M1 RSI:59.65 Stoch:86.02
+[RSI] phase=pullback, ratio=0.61, slope=0.46, trend=sideways, momentum=up, tradeSignal=null
+[TREND] ⚪ Both M5 & M10 sideways → skip trades.
+[STRAT] Trend:sideways | M5 RSI:64.68 Stoch:79.26 | M1 RSI:56.51 Stoch:49.94
+[RSI] Alert sent once for reversal
+[RSI] Reversal phase detected (null).
+[RSI] phase=reversal, ratio=1.00, slope=1.36, trend=sideways, momentum=up, tradeSignal=null
+[TREND] ⚪ Both M5 & M10 sideways → skip trades.
+[STRAT] Trend:sideways | M5 RSI:67.70 Stoch:95.54 | M1 RSI:63.79 Stoch:96.96
+[RSI] Reversal phase detected (null).
+[RSI] phase=reversal, ratio=1.00, slope=3.02, trend=sideways, momentum=up, tradeSignal=null
+[TREND] ⚪ Both M5 & M10 sideways → skip trades.
+[STRAT] Trend:sideways | M5 RSI:69.70 Stoch:97.36 | M1 RSI:66.52 Stoch:92.79
+[RSI] Reversal phase detected (null).
+[RSI] phase=reversal, ratio=1.00, slope=2.00, trend=sideways, momentum=up, tradeSignal=null
+[TREND] ⚪ Both M5 & M10 sideways → skip trades.
+[STRAT] Trend:sideways | M5 RSI:66.71 Stoch:86.04 | M1 RSI:53.63 Stoch:37.78
+[RSI] Reversal phase detected (null).
+[RSI] phase=reversal, ratio=0.82, slope=-2.99, trend=sideways, momentum=down, tradeSignal=null
+[TREND] ⚪ Both M5 & M10 sideways → skip trades.
+[STRAT] Trend:sideways | M5 RSI:55.68 Stoch:56.94 | M1 RSI:40.35 Stoch:10.43
+[RSI] phase=continuation, ratio=0.03, slope=-11.03, trend=sideways, momentum=down, tradeSignal=null
+[TREND] ⚪ Both M5 & M10 sideways → skip trades.
+[STRAT] Trend:sideways | M5 RSI:51.58 Stoch:43.95 | M1 RSI:39.47 Stoch:9.43
+[RSI] phase=continuation, ratio=0.00, slope=-4.10, trend=sideways, momentum=down, tradeSignal=null
+[TREND] ⚪ Both M5 & M10 sideways → skip trades.
+[STRAT] Trend:sideways | M5 RSI:44.53 Stoch:17.97 | M1 RSI:32.97 Stoch:3.23
+[RSI] phase=continuation, ratio=0.00, slope=-7.05, trend=sideways, momentum=down, tradeSignal=null
+[TREND] ⚪ Both M5 & M10 sideways → skip trades.
+[STRAT] Trend:sideways | M5 RSI:41.67 Stoch:18.64 | M1 RSI:35.94 Stoch:25.25
+[RSI] phase=continuation, ratio=0.00, slope=-2.86, trend=sideways, momentum=down, tradeSignal=null
+[TREND] ⚪ Both M5 & M10 sideways → skip trades.
+[STRAT] Trend:sideways | M5 RSI:40.54 Stoch:14.42 | M1 RSI:37.57 Stoch:30.77
+[RSI] phase=continuation, ratio=0.00, slope=-1.13, trend=sideways, momentum=down, tradeSignal=null
+[TREND] ⚪ Both M5 & M10 sideways → skip trades.
+[STRAT] Trend:sideways | M5 RSI:42.20 Stoch:18.58 | M1 RSI:41.23 Stoch:53.20
+[RSI] phase=continuation, ratio=0.06, slope=1.66, trend=sideways, momentum=up, tradeSignal=null
+[TREND] ⚪ Both M5 & M10 sideways → skip trades.
+[STRAT] Trend:sideways | M5 RSI:47.38 Stoch:32.16 | M1 RSI:50.37 Stoch:85.59
+[RSI] phase=continuation, ratio=0.23, slope=5.18, trend=sideways, momentum=up, tradeSignal=null
+[TREND] ⚪ Both M5 & M10 sideways → skip trades.
+[STRAT] Trend:sideways | M5 RSI:47.72 Stoch:33.08 | M1 RSI:52.07 Stoch:88.31
+[RSI] phase=continuation, ratio=0.25, slope=0.34, trend=sideways, momentum=up, tradeSignal=null
+[TREND] ⚪ Both M5 & M10 sideways → skip trades.
+[STRAT] Trend:sideways | M5 RSI:45.30 Stoch:26.06 | M1 RSI:48.59 Stoch:51.38
+[RSI] phase=continuation, ratio=0.18, slope=-2.42, trend=sideways, momentum=down, tradeSignal=null
+[TREND] ⚪ Both M5 & M10 sideways → skip trades.
+[STRAT] Trend:sideways | M5 RSI:54.06 Stoch:50.57 | M1 RSI:61.05 Stoch:88.30
+[RSI] Reversal phase detected (null).
+[RSI] phase=reversal, ratio=0.89, slope=8.76, trend=sideways, momentum=up, tradeSignal=null
+[TREND] ⚪ Both M5 & M10 sideways → skip trades.
+[STRAT] Trend:sideways | M5 RSI:54.40 Stoch:51.63 | M1 RSI:59.07 Stoch:88.48
+[RSI] Reversal phase detected (null).
+[RSI] phase=reversal, ratio=1.00, slope=0.34, trend=sideways, momentum=up, tradeSignal=null
+[TREND] ⚪ Both M5 & M10 sideways → skip trades.
+[STRAT] Trend:sideways | M5 RSI:63.69 Stoch:85.64 | M1 RSI:71.80 Stoch:96.30
+[RSI] Reversal phase detected (null).
+[RSI] phase=reversal, ratio=1.00, slope=9.29, trend=sideways, momentum=up, tradeSignal=null
+[TREND] ⚪ Both M5 & M10 sideways → skip trades.
+[STRAT] Trend:sideways | M5 RSI:56.01 Stoch:64.39 | M1 RSI:56.03 Stoch:57.64
+[RSI] Alert sent once for pullback
+[RSI] phase=pullback, ratio=0.67, slope=-7.68, trend=sideways, momentum=down, tradeSignal=null
+[TREND] ⚪ Both M5 & M10 sideways → skip trades.
+[STRAT] Trend:sideways | M5 RSI:47.54 Stoch:37.26 | M1 RSI:43.26 Stoch:10.86
+[RSI] phase=continuation, ratio=0.30, slope=-8.47, trend=sideways, momentum=down, tradeSignal=null
+[TREND] ⚪ Both M5 & M10 sideways → skip trades.
+[STRAT] Trend:sideways | M5 RSI:44.20 Stoch:24.66 | M1 RSI:37.98 Stoch:3.24
+[RSI] phase=continuation, ratio=0.09, slope=-3.34, trend=sideways, momentum=down, tradeSignal=null
+[TREND] ⚪ Both M5 & M10 sideways → skip trades.
+[STRAT] Trend:sideways | M5 RSI:34.76 Stoch:8.30 | M1 RSI:27.70 Stoch:15.60
+[RSI] phase=continuation, ratio=0.00, slope=-9.44, trend=sideways, momentum=down, tradeSignal=null
+[TREND] ⚪ Both M5 & M10 sideways → skip trades.
+[STRAT] Trend:sideways | M5 RSI:31.08 Stoch:6.70 | M1 RSI:25.17 Stoch:11.11
+[RSI] phase=continuation, ratio=0.00, slope=-3.68, trend=sideways, momentum=down, tradeSignal=null
+[TREND] ⚪ Both M5 & M10 sideways → skip trades.
+[STRAT] Trend:sideways | M5 RSI:32.32 Stoch:9.37 | M1 RSI:31.83 Stoch:27.87
+[RSI] phase=continuation, ratio=0.04, slope=1.24, trend=sideways, momentum=up, tradeSignal=null
+[TREND] M5 sideways → using M10 fallback (UPTREND).
+[STRAT] Trend:uptrend | M5 RSI:27.41 Stoch:2.42 | M1 RSI:23.24 Stoch:1.39
+[RSI] phase=continuation, ratio=0.00, slope=-4.91, trend=uptrend, momentum=down, tradeSignal=null
+[TREND] ⚠️ M5 (downtrend) vs M10 (uptrend) conflict → skipping trade.
+[STRAT] Trend:conflict | M5 RSI:33.32 Stoch:22.57 | M1 RSI:42.26 Stoch:60.28
+[RSI] phase=continuation, ratio=0.16, slope=5.91, trend=conflict, momentum=up, tradeSignal=null
+[TREND] ⚠️ M5 (downtrend) vs M10 (uptrend) conflict → skipping trade.
+[STRAT] Trend:conflict | M5 RSI:36.88 Stoch:29.12 | M1 RSI:48.59 Stoch:80.85
+[RSI] phase=continuation, ratio=0.26, slope=3.56, trend=conflict, momentum=up, tradeSignal=null
+[TREND] ⚠️ M5 (downtrend) vs M10 (uptrend) conflict → skipping trade.
+[STRAT] Trend:conflict | M5 RSI:34.93 Stoch:22.77 | M1 RSI:42.95 Stoch:54.00
+[RSI] phase=continuation, ratio=0.26, slope=-1.95, trend=conflict, momentum=down, tradeSignal=null
+[TREND] ⚠️ M5 (downtrend) vs M10 (uptrend) conflict → skipping trade.
+[STRAT] Trend:conflict | M5 RSI:31.79 Stoch:11.73 | M1 RSI:37.59 Stoch:0.00
+[RSI] phase=continuation, ratio=0.22, slope=-3.14, trend=conflict, momentum=down, tradeSignal=null
+[TREND] ⚠️ M5 (downtrend) vs M10 (uptrend) conflict → skipping trade.
+[STRAT] Trend:conflict | M5 RSI:31.40 Stoch:10.30 | M1 RSI:37.24 Stoch:14.64
+[RSI] phase=continuation, ratio=0.24, slope=-0.39, trend=conflict, momentum=down, tradeSignal=null
+[TREND] M10 sideways → using M5 (DOWNTREND).
+[STRAT] Trend:downtrend | M5 RSI:33.40 Stoch:13.52 | M1 RSI:43.45 Stoch:38.40
+[RSI] phase=continuation, ratio=0.63, slope=2.00, trend=downtrend, momentum=up, tradeSignal=null
+[TREND] M10 sideways → using M5 (DOWNTREND).
+[STRAT] Trend:downtrend | M5 RSI:33.45 Stoch:13.77 | M1 RSI:46.72 Stoch:67.41
+[RSI] phase=pullback, ratio=0.64, slope=0.05, trend=downtrend, momentum=up, tradeSignal=null
+[TREND] M10 sideways → using M5 (DOWNTREND).
+[STRAT] Trend:downtrend | M5 RSI:32.58 Stoch:12.50 | M1 RSI:41.85 Stoch:8.40
+[RSI] phase=continuation, ratio=0.55, slope=-0.87, trend=downtrend, momentum=down, tradeSignal=null
+[TREND] M10 sideways → using M5 (DOWNTREND).
+[STRAT] Trend:downtrend | M5 RSI:36.11 Stoch:19.97 | M1 RSI:48.39 Stoch:44.51
+[RSI] Alert sent once for reversal
+[RSI] Reversal phase detected (BUY_REVERSAL).
+[RSI] phase=reversal, ratio=0.92, slope=3.53, trend=downtrend, momentum=up, tradeSignal=BUY_REVERSAL
+[SYNC] Registered external singleton position: 2600699351
+[PAIR] Trend weakened (M10 sideways) → force-closing all for ext-2600699351
+[PAIR OPENED - INTERNAL SL/TP] pair-1762165803958 {
+  pairId: 'pair-1762165803958',
+  side: 'BUY',
+  riskPercent: 0.02,
+  totalLot: 0.04,
+  trades: {
+    PARTIAL: { ticket: '2600699351', lot: 0.02 },
+    TRAILING: { ticket: '2600700096', lot: 0.02 }
+  },
+  intendedSl: 3993.1834950033517,
+  intendedTp: 4006.477257494973,
+  sl: 3993.1834950033517,
+  tp: 4006.477257494973,
+  internalTrailingSL: null,
+  partialClosed: false,
+  openedAt: '2025-11-03T10:30:03.958Z',
+  entryPrice: 3997.062
+}
+BUY pair placed: {
+  pairId: 'pair-1762165803958',
+  side: 'BUY',
+  riskPercent: 0.02,
+  totalLot: 0.04,
+  trades: {
+    PARTIAL: { ticket: '2600699351', lot: 0.02 },
+    TRAILING: { ticket: '2600700096', lot: 0.02 }
+  },
+  intendedSl: 3993.1834950033517,
+  intendedTp: 4006.477257494973,
+  sl: 3993.1834950033517,
+  tp: 4006.477257494973,
+  internalTrailingSL: null,
+  partialClosed: false,
+  openedAt: '2025-11-03T10:30:03.958Z',
+  entryPrice: 3997.062
+}
+[SYNC] PARTIAL trade 2600699351 temporarily missing — retrying (1)
+[SYNC] PARTIAL trade 2600699351 temporarily missing — retrying (2)
+[SYNC] PARTIAL trade 2600699351 confirmed missing after retries — marking closed.
+[PAIR] Trend weakened (M10 sideways) → force-closing all for pair-1762165803958
+[TREND] M10 sideways → using M5 (DOWNTREND).
+[STRAT] Trend:downtrend | M5 RSI:35.30 Stoch:21.31 | M1 RSI:50.49 Stoch:61.46
+[RSI] phase=sideways, ratio=0.71, slope=-0.81, trend=downtrend, momentum=down, tradeSignal=null
+[TREND] M10 sideways → using M5 (DOWNTREND).
+[STRAT] Trend:downtrend | M5 RSI:38.58 Stoch:40.88 | M1 RSI:51.09 Stoch:66.85
+[RSI] phase=sideways, ratio=1.00, slope=3.28, trend=downtrend, momentum=up, tradeSignal=null
+[TREND] M10 sideways → using M5 (DOWNTREND).
+[STRAT] Trend:downtrend | M5 RSI:36.80 Stoch:39.41 | M1 RSI:47.09 Stoch:50.63
+[RSI] phase=sideways, ratio=0.75, slope=-1.78, trend=downtrend, momentum=down, tradeSignal=null
+[TREND] M10 sideways → using M5 (DOWNTREND).
+[STRAT] Trend:downtrend | M5 RSI:34.45 Stoch:25.11 | M1 RSI:42.09 Stoch:23.91
+[RSI] phase=sideways, ratio=0.42, slope=-2.35, trend=downtrend, momentum=down, tradeSignal=null
+[TREND] M5 sideways → using M10 fallback (DOWNTREND).
+[STRAT] Trend:downtrend | M5 RSI:36.36 Stoch:31.79 | M1 RSI:46.02 Stoch:47.95
+[RSI] phase=sideways, ratio=0.69, slope=1.91, trend=downtrend, momentum=up, tradeSignal=null
+[TREND] M5 sideways → using M10 fallback (DOWNTREND).
+[STRAT] Trend:downtrend | M5 RSI:40.58 Stoch:39.60 | M1 RSI:54.27 Stoch:87.31
+[RSI] Reversal phase detected (BUY_REVERSAL).
+[RSI] phase=reversal, ratio=1.00, slope=4.22, trend=downtrend, momentum=up, tradeSignal=BUY_REVERSAL
+BUY blocked by cooldown/duplicate guard.
+[TREND] M5 sideways → using M10 fallback (DOWNTREND).
+[STRAT] Trend:downtrend | M5 RSI:39.53 Stoch:35.00 | M1 RSI:52.89 Stoch:78.76
+[RSI] Reversal phase detected (null).
+[RSI] phase=reversal, ratio=0.87, slope=-1.05, trend=downtrend, momentum=down, tradeSignal=null
+[TREND] M5 sideways → using M10 fallback (DOWNTREND).
+[STRAT] Trend:downtrend | M5 RSI:43.09 Stoch:49.30 | M1 RSI:54.87 Stoch:87.53
+[RSI] Reversal phase detected (BUY_REVERSAL).
+[RSI] phase=reversal, ratio=1.00, slope=3.56, trend=downtrend, momentum=up, tradeSignal=BUY_REVERSAL
+BUY blocked by cooldown/duplicate guard.
+[TREND] M5 sideways → using M10 fallback (DOWNTREND).
+[STRAT] Trend:downtrend | M5 RSI:47.11 Stoch:88.36 | M1 RSI:58.47 Stoch:88.36
+[RSI] Reversal phase detected (BUY_REVERSAL).
+[RSI] phase=reversal, ratio=1.00, slope=4.02, trend=downtrend, momentum=up, tradeSignal=BUY_REVERSAL
+BUY blocked by cooldown/duplicate guard.
+[TREND] M5 sideways → using M10 fallback (DOWNTREND).
+[STRAT] Trend:downtrend | M5 RSI:50.42 Stoch:87.62 | M1 RSI:60.84 Stoch:85.10
+[RSI] Reversal phase detected (BUY_REVERSAL).
+[RSI] phase=reversal, ratio=1.00, slope=3.31, trend=downtrend, momentum=up, tradeSignal=BUY_REVERSAL
+BUY blocked by cooldown/duplicate guard.
+[TREND] M5 sideways → using M10 fallback (DOWNTREND).
+[STRAT] Trend:downtrend | M5 RSI:54.46 Stoch:99.74 | M1 RSI:62.70 Stoch:94.35
+[RSI] Reversal phase detected (BUY_REVERSAL).
+[RSI] phase=reversal, ratio=1.00, slope=4.04, trend=downtrend, momentum=up, tradeSignal=BUY_REVERSAL
+BUY blocked by cooldown/duplicate guard.
+[TREND] M5 sideways → using M10 fallback (DOWNTREND).
+[STRAT] Trend:downtrend | M5 RSI:56.93 Stoch:94.81 | M1 RSI:65.17 Stoch:90.65
+[RSI] Reversal phase detected (BUY_REVERSAL).
+[RSI] phase=reversal, ratio=1.00, slope=2.47, trend=downtrend, momentum=up, tradeSignal=BUY_REVERSAL
+BUY blocked by cooldown/duplicate guard.
+[TREND] M5 sideways → using M10 fallback (DOWNTREND).
+[STRAT] Trend:downtrend | M5 RSI:51.65 Stoch:76.01 | M1 RSI:54.41 Stoch:50.50
+[RSI] Reversal phase detected (null).
+[RSI] phase=reversal, ratio=0.77, slope=-5.28, trend=downtrend, momentum=down, tradeSignal=null
+[TREND] M5 sideways → using M10 fallback (DOWNTREND).
+[STRAT] Trend:downtrend | M5 RSI:53.80 Stoch:84.78 | M1 RSI:56.19 Stoch:51.86
+[RSI] Reversal phase detected (BUY_REVERSAL).
+[RSI] phase=reversal, ratio=0.85, slope=2.15, trend=downtrend, momentum=up, tradeSignal=BUY_REVERSAL
+[PAIR OPENED - INTERNAL SL/TP] pair-1762170002351 {
+  pairId: 'pair-1762170002351',
+  side: 'BUY',
+  riskPercent: 0.02,
+  totalLot: 0.04,
+  trades: {
+    PARTIAL: { ticket: '2601356919', lot: 0.02 },
+    TRAILING: { ticket: '2601357240', lot: 0.02 }
+  },
+  intendedSl: 4000.571547488728,
+  intendedTp: 4014.5529050225437,
+  sl: 4000.571547488728,
+  tp: 4014.5529050225437,
+  internalTrailingSL: null,
+  partialClosed: false,
+  openedAt: '2025-11-03T11:40:02.351Z',
+  entryPrice: 4005.251
+}
+BUY pair placed: {
+  pairId: 'pair-1762170002351',
+  side: 'BUY',
+  riskPercent: 0.02,
+  totalLot: 0.04,
+  trades: {
+    PARTIAL: { ticket: '2601356919', lot: 0.02 },
+    TRAILING: { ticket: '2601357240', lot: 0.02 }
+  },
+  intendedSl: 4000.571547488728,
+  intendedTp: 4014.5529050225437,
+  sl: 4000.571547488728,
+  tp: 4014.5529050225437,
+  internalTrailingSL: null,
+  partialClosed: false,
+  openedAt: '2025-11-03T11:40:02.351Z',
+  entryPrice: 4005.251
+}
+[PAIR] Restored missing internalTrailingSL for pair-1762170002351
+[TREND] M5 sideways → using M10 fallback (DOWNTREND).
+[STRAT] Trend:downtrend | M5 RSI:55.11 Stoch:90.12 | M1 RSI:57.20 Stoch:66.12
+[RSI] Reversal phase detected (BUY_REVERSAL).
+[RSI] phase=reversal, ratio=0.90, slope=1.31, trend=downtrend, momentum=up, tradeSignal=BUY_REVERSAL
+BUY blocked by cooldown/duplicate guard.
+[TREND] M5 sideways → using M10 fallback (DOWNTREND).
+[STRAT] Trend:downtrend | M5 RSI:57.22 Stoch:90.10 | M1 RSI:60.33 Stoch:74.69
+[RSI] Reversal phase detected (BUY_REVERSAL).
+[RSI] phase=reversal, ratio=1.00, slope=2.11, trend=downtrend, momentum=up, tradeSignal=BUY_REVERSAL
+BUY blocked by cooldown/duplicate guard.
+[TREND] M5 sideways → using M10 fallback (DOWNTREND).
+[STRAT] Trend:downtrend | M5 RSI:57.38 Stoch:88.26 | M1 RSI:56.26 Stoch:65.70
+[RSI] Reversal phase detected (BUY_REVERSAL).
+[RSI] phase=reversal, ratio=1.00, slope=0.16, trend=downtrend, momentum=up, tradeSignal=BUY_REVERSAL
+BUY blocked by cooldown/duplicate guard.
+[TREND] M5 sideways → using M10 fallback (DOWNTREND).
+[STRAT] Trend:downtrend | M5 RSI:58.90 Stoch:93.46 | M1 RSI:58.79 Stoch:71.82
+[RSI] Reversal phase detected (BUY_REVERSAL).
+[RSI] phase=reversal, ratio=1.00, slope=1.52, trend=downtrend, momentum=up, tradeSignal=BUY_REVERSAL
+BUY blocked by cooldown/duplicate guard.
+[TREND] M5 sideways → using M10 fallback (DOWNTREND).
+[STRAT] Trend:downtrend | M5 RSI:52.99 Stoch:78.05 | M1 RSI:47.85 Stoch:15.42
+[RSI] phase=continuation, ratio=0.30, slope=-5.91, trend=downtrend, momentum=down, tradeSignal=null
+[TREND] M5 sideways → using M10 fallback (DOWNTREND).
+[STRAT] Trend:downtrend | M5 RSI:54.76 Stoch:83.51 | M1 RSI:51.49 Stoch:37.70
+[RSI] phase=sideways, ratio=0.43, slope=1.77, trend=downtrend, momentum=up, tradeSignal=null
+[TREND] M5 sideways → using M10 fallback (DOWNTREND).
+[STRAT] Trend:downtrend | M5 RSI:56.75 Stoch:86.54 | M1 RSI:54.64 Stoch:59.10
+[RSI] phase=sideways, ratio=0.70, slope=1.99, trend=downtrend, momentum=up, tradeSignal=null
+[TREND] M5 sideways → using M10 fallback (DOWNTREND).
+[STRAT] Trend:downtrend | M5 RSI:55.37 Stoch:79.69 | M1 RSI:51.44 Stoch:46.38
+[RSI] phase=sideways, ratio=0.51, slope=-1.38, trend=downtrend, momentum=down, tradeSignal=null
+[PAIR] Trend weakened (M10 sideways) → force-closing all for pair-1762170002351
+[TREND] ⚪ Both M5 & M10 sideways → skip trades.
+[STRAT] Trend:sideways | M5 RSI:54.61 Stoch:77.04 | M1 RSI:51.47 Stoch:64.08
+[RSI] phase=sideways, ratio=0.27, slope=-0.76, trend=sideways, momentum=down, tradeSignal=null
+[TREND] ⚪ Both M5 & M10 sideways → skip trades.
+[STRAT] Trend:sideways | M5 RSI:50.77 Stoch:55.39 | M1 RSI:46.00 Stoch:52.67
+[RSI] phase=continuation, ratio=0.00, slope=-3.84, trend=sideways, momentum=down, tradeSignal=null
+[TREND] ⚪ Both M5 & M10 sideways → skip trades.
+[STRAT] Trend:sideways | M5 RSI:60.91 Stoch:87.08 | M1 RSI:63.46 Stoch:85.60
+[RSI] Reversal phase detected (null).
+[RSI] phase=reversal, ratio=1.00, slope=10.14, trend=sideways, momentum=up, tradeSignal=null
+[TREND] ⚪ Both M5 & M10 sideways → skip trades.
+[STRAT] Trend:sideways | M5 RSI:61.98 Stoch:88.46 | M1 RSI:60.43 Stoch:84.79
+[RSI] Reversal phase detected (null).
+[RSI] phase=reversal, ratio=1.00, slope=1.07, trend=sideways, momentum=up, tradeSignal=null
+[TREND] ⚪ Both M5 & M10 sideways → skip trades.
+[STRAT] Trend:sideways | M5 RSI:57.14 Stoch:70.25 | M1 RSI:52.11 Stoch:63.89
+[RSI] Alert sent once for pullback
+[RSI] phase=pullback, ratio=0.57, slope=-4.84, trend=sideways, momentum=down, tradeSignal=null
+[TREND] ⚪ Both M5 & M10 sideways → skip trades.
+[STRAT] Trend:sideways | M5 RSI:63.99 Stoch:89.85 | M1 RSI:65.12 Stoch:78.91
+[RSI] Alert sent once for reversal
+[RSI] Reversal phase detected (null).
+[RSI] phase=reversal, ratio=1.00, slope=6.85, trend=sideways, momentum=up, tradeSignal=null
+[TREND] ⚪ Both M5 & M10 sideways → skip trades.
+[STRAT] Trend:sideways | M5 RSI:62.54 Stoch:85.36 | M1 RSI:61.42 Stoch:70.79
+[RSI] Reversal phase detected (null).
+[RSI] phase=reversal, ratio=0.89, slope=-1.45, trend=sideways, momentum=down, tradeSignal=null
+[TREND] ⚪ Both M5 & M10 sideways → skip trades.
+[STRAT] Trend:sideways | M5 RSI:65.67 Stoch:99.99 | M1 RSI:65.13 Stoch:100.00
+[RSI] Reversal phase detected (null).
+[RSI] phase=reversal, ratio=1.00, slope=3.13, trend=sideways, momentum=up, tradeSignal=null
+[TREND] ⚪ Both M5 & M10 sideways → skip trades.
+[STRAT] Trend:sideways | M5 RSI:68.18 Stoch:81.33 | M1 RSI:62.78 Stoch:64.61
+[RSI] Reversal phase detected (null).
+[RSI] phase=reversal, ratio=1.00, slope=2.51, trend=sideways, momentum=up, tradeSignal=null
+[TREND] ⚪ Both M5 & M10 sideways → skip trades.
+[STRAT] Trend:sideways | M5 RSI:66.07 Stoch:77.19 | M1 RSI:56.32 Stoch:44.92
+[RSI] Reversal phase detected (null).
+[RSI] phase=reversal, ratio=0.88, slope=-2.11, trend=sideways, momentum=down, tradeSignal=null
+[TREND] ⚪ Both M5 & M10 sideways → skip trades.
+[STRAT] Trend:sideways | M5 RSI:68.75 Stoch:84.90 | M1 RSI:59.19 Stoch:54.56
+[RSI] Reversal phase detected (null).
+[RSI] phase=reversal, ratio=1.00, slope=2.68, trend=sideways, momentum=up, tradeSignal=null
+[TREND] ⚪ Both M5 & M10 sideways → skip trades.
+[STRAT] Trend:sideways | M5 RSI:71.43 Stoch:96.23 | M1 RSI:65.56 Stoch:97.88
+[RSI] Reversal phase detected (null).
+[RSI] phase=reversal, ratio=1.00, slope=2.68, trend=sideways, momentum=up, tradeSignal=null
+[TREND] ⚪ Both M5 & M10 sideways → skip trades.
+[STRAT] Trend:sideways | M5 RSI:66.39 Stoch:81.14 | M1 RSI:52.73 Stoch:22.91
+[RSI] Alert sent once for pullback
+[RSI] phase=pullback, ratio=0.65, slope=-5.04, trend=sideways, momentum=down, tradeSignal=null
+[TREND] ⚪ Both M5 & M10 sideways → skip trades.
+[STRAT] Trend:sideways | M5 RSI:62.04 Stoch:73.11 | M1 RSI:46.24 Stoch:11.86
+[RSI] phase=continuation, ratio=0.34, slope=-4.35, trend=sideways, momentum=down, tradeSignal=null
+[TREND] ⚪ Both M5 & M10 sideways → skip trades.
+[STRAT] Trend:sideways | M5 RSI:64.02 Stoch:77.56 | M1 RSI:52.40 Stoch:63.17
+[RSI] phase=continuation, ratio=0.21, slope=1.98, trend=sideways, momentum=up, tradeSignal=null
+[TREND] ⚪ Both M5 & M10 sideways → skip trades.
+[STRAT] Trend:sideways | M5 RSI:68.24 Stoch:88.42 | M1 RSI:57.59 Stoch:79.31
+[RSI] phase=pullback, ratio=0.66, slope=4.22, trend=sideways, momentum=up, tradeSignal=null
+[TREND] ⚪ Both M5 & M10 sideways → skip trades.
+[STRAT] Trend:sideways | M5 RSI:65.46 Stoch:77.79 | M1 RSI:53.73 Stoch:64.39
+[RSI] phase=continuation, ratio=0.36, slope=-2.78, trend=sideways, momentum=down, tradeSignal=null
+[TREND] ⚪ Both M5 & M10 sideways → skip trades.
+[STRAT] Trend:sideways | M5 RSI:63.04 Stoch:71.21 | M1 RSI:49.36 Stoch:20.30
+[RSI] phase=continuation, ratio=0.11, slope=-2.42, trend=sideways, momentum=down, tradeSignal=null
+[TREND] ⚪ Both M5 & M10 sideways → skip trades.
+[STRAT] Trend:sideways | M5 RSI:62.50 Stoch:69.67 | M1 RSI:50.60 Stoch:33.47
+[RSI] phase=continuation, ratio=0.05, slope=-0.54, trend=sideways, momentum=down, tradeSignal=null
+[TREND] ⚪ Both M5 & M10 sideways → skip trades.
+[STRAT] Trend:sideways | M5 RSI:61.19 Stoch:62.17 | M1 RSI:47.12 Stoch:35.01
+[RSI] phase=continuation, ratio=0.00, slope=-1.31, trend=sideways, momentum=down, tradeSignal=null
+[TREND] ⚪ Both M5 & M10 sideways → skip trades.
+[STRAT] Trend:sideways | M5 RSI:63.59 Stoch:66.74 | M1 RSI:50.08 Stoch:31.61
+[RSI] phase=continuation, ratio=0.23, slope=2.40, trend=sideways, momentum=up, tradeSignal=null
+[TREND] ⚪ Both M5 & M10 sideways → skip trades.
+[STRAT] Trend:sideways | M5 RSI:51.52 Stoch:26.15 | M1 RSI:39.01 Stoch:14.17
+[RSI] phase=continuation, ratio=0.00, slope=-12.07, trend=sideways, momentum=down, tradeSignal=null
+[TREND] ⚪ Both M5 & M10 sideways → skip trades.
+[STRAT] Trend:sideways | M5 RSI:58.50 Stoch:58.54 | M1 RSI:54.86 Stoch:51.25
+[RSI] phase=pullback, ratio=0.42, slope=6.98, trend=sideways, momentum=up, tradeSignal=null
+[TREND] ⚪ Both M5 & M10 sideways → skip trades.
+[STRAT] Trend:sideways | M5 RSI:56.48 Stoch:51.08 | M1 RSI:50.06 Stoch:58.82
+[RSI] phase=continuation, ratio=0.30, slope=-2.02, trend=sideways, momentum=down, tradeSignal=null
+[TREND] ⚪ Both M5 & M10 sideways → skip trades.
+[STRAT] Trend:sideways | M5 RSI:58.33 Stoch:60.00 | M1 RSI:50.86 Stoch:47.04
+[RSI] phase=pullback, ratio=0.41, slope=1.85, trend=sideways, momentum=up, tradeSignal=null
+[TREND] ⚪ Both M5 & M10 sideways → skip trades.
+[STRAT] Trend:sideways | M5 RSI:43.00 Stoch:5.17 | M1 RSI:27.74 Stoch:0.00
+[RSI] phase=continuation, ratio=0.00, slope=-15.33, trend=sideways, momentum=down, tradeSignal=null
+[TREND] ⚪ Both M5 & M10 sideways → skip trades.
+[STRAT] Trend:sideways | M5 RSI:40.67 Stoch:36.39 | M1 RSI:40.03 Stoch:37.59
+[RSI] phase=continuation, ratio=0.00, slope=-2.33, trend=sideways, momentum=down, tradeSignal=null
+[TREND] ⚪ Both M5 & M10 sideways → skip trades.
+[STRAT] Trend:sideways | M5 RSI:44.01 Stoch:43.80 | M1 RSI:45.19 Stoch:60.57
+[RSI] phase=continuation, ratio=0.15, slope=3.34, trend=sideways, momentum=up, tradeSignal=null
+[TREND] ⚪ Both M5 & M10 sideways → skip trades.
+[STRAT] Trend:sideways | M5 RSI:49.74 Stoch:57.71 | M1 RSI:55.09 Stoch:97.00
+[RSI] phase=continuation, ratio=0.40, slope=5.73, trend=sideways, momentum=up, tradeSignal=null
+[TREND] ⚪ Both M5 & M10 sideways → skip trades.
+[STRAT] Trend:sideways | M5 RSI:62.71 Stoch:85.25 | M1 RSI:65.85 Stoch:79.09
+[RSI] Alert sent once for reversal
+[RSI] Reversal phase detected (null).
+[RSI] phase=reversal, ratio=0.96, slope=12.97, trend=sideways, momentum=up, tradeSignal=null
+[TREND] ⚪ Both M5 & M10 sideways → skip trades.
+[STRAT] Trend:sideways | M5 RSI:66.35 Stoch:93.26 | M1 RSI:70.50 Stoch:89.96
+[RSI] Reversal phase detected (null).
+[RSI] phase=reversal, ratio=1.00, slope=3.64, trend=sideways, momentum=up, tradeSignal=null
+[TREND] ⚪ Both M5 & M10 sideways → skip trades.
+[STRAT] Trend:sideways | M5 RSI:63.22 Stoch:86.94 | M1 RSI:64.63 Stoch:77.47
+[RSI] Reversal phase detected (null).
+[RSI] phase=reversal, ratio=0.88, slope=-3.13, trend=sideways, momentum=down, tradeSignal=null
+[TREND] ⚪ Both M5 & M10 sideways → skip trades.
+[STRAT] Trend:sideways | M5 RSI:66.60 Stoch:83.02 | M1 RSI:62.02 Stoch:50.67
+[RSI] Reversal phase detected (null).
+[RSI] phase=reversal, ratio=1.00, slope=3.38, trend=sideways, momentum=up, tradeSignal=null
+[TREND] ⚪ Both M5 & M10 sideways → skip trades.
+[STRAT] Trend:sideways | M5 RSI:66.68 Stoch:83.27 | M1 RSI:59.37 Stoch:43.95
+[RSI] Reversal phase detected (null).
+[RSI] phase=reversal, ratio=1.00, slope=0.08, trend=sideways, momentum=up, tradeSignal=null
+[TREND] ⚪ Both M5 & M10 sideways → skip trades.
+[STRAT] Trend:sideways | M5 RSI:68.49 Stoch:88.98 | M1 RSI:60.54 Stoch:52.81
+[RSI] Reversal phase detected (null).
+[RSI] phase=reversal, ratio=1.00, slope=1.81, trend=sideways, momentum=up, tradeSignal=null
+[TREND] ⚪ Both M5 & M10 sideways → skip trades.
+[STRAT] Trend:sideways | M5 RSI:67.68 Stoch:87.82 | M1 RSI:62.58 Stoch:68.60
+[RSI] Reversal phase detected (null).
+[RSI] phase=reversal, ratio=0.97, slope=-0.81, trend=sideways, momentum=down, tradeSignal=null
+[TREND] ⚪ Both M5 & M10 sideways → skip trades.
+[STRAT] Trend:sideways | M5 RSI:50.74 Stoch:57.35 | M1 RSI:32.24 Stoch:0.00
+[RSI] phase=continuation, ratio=0.27, slope=-16.94, trend=sideways, momentum=down, tradeSignal=null
+[TREND] ⚪ Both M5 & M10 sideways → skip trades.
+[STRAT] Trend:sideways | M5 RSI:42.23 Stoch:34.60 | M1 RSI:24.86 Stoch:11.86
+[RSI] phase=continuation, ratio=0.00, slope=-8.51, trend=sideways, momentum=down, tradeSignal=null
+[TREND] ⚪ Both M5 & M10 sideways → skip trades.
+[STRAT] Trend:sideways | M5 RSI:43.94 Stoch:38.43 | M1 RSI:34.76 Stoch:22.16
+[RSI] phase=continuation, ratio=0.07, slope=1.71, trend=sideways, momentum=up, tradeSignal=null
+[TREND] ⚪ Both M5 & M10 sideways → skip trades.
+[STRAT] Trend:sideways | M5 RSI:49.51 Stoch:51.74 | M1 RSI:51.75 Stoch:92.72
+[RSI] phase=continuation, ratio=0.28, slope=5.57, trend=sideways, momentum=up, tradeSignal=null
+[TREND] ⚪ Both M5 & M10 sideways → skip trades.
+[STRAT] Trend:sideways | M5 RSI:56.45 Stoch:66.42 | M1 RSI:60.78 Stoch:97.05
+[RSI] Alert sent once for pullback
+[RSI] phase=pullback, ratio=0.54, slope=6.94, trend=sideways, momentum=up, tradeSignal=null
+[TREND] ⚪ Both M5 & M10 sideways → skip trades.
+[STRAT] Trend:sideways | M5 RSI:51.95 Stoch:52.75 | M1 RSI:53.60 Stoch:75.27
+[RSI] phase=continuation, ratio=0.37, slope=-4.50, trend=sideways, momentum=down, tradeSignal=null
+[TREND] M10 sideways → using M5 (UPTREND).
+[STRAT] Trend:uptrend | M5 RSI:42.05 Stoch:15.23 | M1 RSI:38.01 Stoch:3.00
+[RSI] phase=continuation, ratio=0.00, slope=-9.90, trend=uptrend, momentum=down, tradeSignal=null
+[TREND] ⚪ Both M5 & M10 sideways → skip trades.
+[STRAT] Trend:sideways | M5 RSI:40.56 Stoch:16.18 | M1 RSI:40.13 Stoch:27.09
+[RSI] phase=continuation, ratio=0.00, slope=-1.49, trend=sideways, momentum=down, tradeSignal=null
+[TREND] ⚪ Both M5 & M10 sideways → skip trades.
+[STRAT] Trend:sideways | M5 RSI:45.25 Stoch:29.99 | M1 RSI:47.75 Stoch:69.24
+[RSI] phase=continuation, ratio=0.17, slope=4.69, trend=sideways, momentum=up, tradeSignal=null
+[TREND] ⚪ Both M5 & M10 sideways → skip trades.
+[STRAT] Trend:sideways | M5 RSI:40.58 Stoch:11.58 | M1 RSI:41.22 Stoch:32.35
+[RSI] phase=continuation, ratio=0.00, slope=-4.67, trend=sideways, momentum=down, tradeSignal=null
+[TREND] ⚪ Both M5 & M10 sideways → skip trades.
+[STRAT] Trend:sideways | M5 RSI:38.85 Stoch:10.66 | M1 RSI:39.14 Stoch:25.95
+[RSI] phase=continuation, ratio=0.00, slope=-1.73, trend=sideways, momentum=down, tradeSignal=null
+[TREND] M5 sideways → using M10 fallback (UPTREND).
+[STRAT] Trend:uptrend | M5 RSI:34.96 Stoch:12.94 | M1 RSI:35.90 Stoch:30.43
+[RSI] phase=continuation, ratio=0.00, slope=-3.89, trend=uptrend, momentum=down, tradeSignal=null
+[TREND] M5 sideways → using M10 fallback (UPTREND).
+[STRAT] Trend:uptrend | M5 RSI:33.63 Stoch:8.07 | M1 RSI:34.74 Stoch:19.71
+[RSI] phase=continuation, ratio=0.00, slope=-1.33, trend=uptrend, momentum=down, tradeSignal=null
+[TREND] M5 sideways → using M10 fallback (UPTREND).
+[STRAT] Trend:uptrend | M5 RSI:33.75 Stoch:8.42 | M1 RSI:37.10 Stoch:24.75
+[RSI] phase=continuation, ratio=0.01, slope=0.12, trend=uptrend, momentum=up, tradeSignal=null
+[TREND] M5 sideways → using M10 fallback (UPTREND).
+[STRAT] Trend:uptrend | M5 RSI:32.13 Stoch:2.48 | M1 RSI:35.97 Stoch:4.10
+[RSI] phase=continuation, ratio=0.00, slope=-1.62, trend=uptrend, momentum=down, tradeSignal=null
+[TREND] M5 sideways → using M10 fallback (UPTREND).
+[STRAT] Trend:uptrend | M5 RSI:41.85 Stoch:26.19 | M1 RSI:52.25 Stoch:76.92
+[RSI] Alert sent once for reversal
+[RSI] Reversal phase detected (null).
+[RSI] phase=reversal, ratio=0.74, slope=9.72, trend=uptrend, momentum=up, tradeSignal=null
+[TREND] M5 sideways → using M10 fallback (UPTREND).
+[STRAT] Trend:uptrend | M5 RSI:42.96 Stoch:29.16 | M1 RSI:55.00 Stoch:90.10
+[RSI] Reversal phase detected (null).
+[RSI] phase=reversal, ratio=0.83, slope=1.11, trend=uptrend, momentum=up, tradeSignal=null
+[TREND] ⚠️ M5 (downtrend) vs M10 (uptrend) conflict → skipping trade.
+[STRAT] Trend:conflict | M5 RSI:49.02 Stoch:46.45 | M1 RSI:66.05 Stoch:96.62
+[RSI] Reversal phase detected (null).
+[RSI] phase=reversal, ratio=1.00, slope=6.06, trend=conflict, momentum=up, tradeSignal=null
+[TREND] M10 sideways → using M5 (DOWNTREND).
+[STRAT] Trend:downtrend | M5 RSI:49.68 Stoch:48.44 | M1 RSI:66.42 Stoch:96.90
+[RSI] Reversal phase detected (BUY_REVERSAL).
+[RSI] phase=reversal, ratio=1.00, slope=0.66, trend=downtrend, momentum=up, tradeSignal=BUY_REVERSAL
+[PAIR OPENED - INTERNAL SL/TP] pair-1762188902374 {
+  pairId: 'pair-1762188902374',
+  side: 'BUY',
+  riskPercent: 0.02,
+  totalLot: 0.02,
+  trades: {
+    PARTIAL: { ticket: '2605153414', lot: 0.01 },
+    TRAILING: { ticket: '2605153583', lot: 0.01 }
+  },
+  intendedSl: 4002.0677768620158,
+  intendedTp: 4020.003334706977,
+  sl: 4002.0677768620158,
+  tp: 4020.003334706977,
+  internalTrailingSL: null,
+  partialClosed: false,
+  openedAt: '2025-11-03T16:55:02.374Z',
+  entryPrice: 4009.009
+}
+BUY pair placed: {
+  pairId: 'pair-1762188902374',
+  side: 'BUY',
+  riskPercent: 0.02,
+  totalLot: 0.02,
+  trades: {
+    PARTIAL: { ticket: '2605153414', lot: 0.01 },
+    TRAILING: { ticket: '2605153583', lot: 0.01 }
+  },
+  intendedSl: 4002.0677768620158,
+  intendedTp: 4020.003334706977,
+  sl: 4002.0677768620158,
+  tp: 4020.003334706977,
+  internalTrailingSL: null,
+  partialClosed: false,
+  openedAt: '2025-11-03T16:55:02.374Z',
+  entryPrice: 4009.009
+}
+[PAIR] Trend weakened (M10 sideways) → force-closing all for pair-1762188902374
+[TREND] M10 sideways → using M5 (DOWNTREND).
+[STRAT] Trend:downtrend | M5 RSI:48.98 Stoch:53.88 | M1 RSI:60.24 Stoch:77.59
+[RSI] Reversal phase detected (null).
+[RSI] phase=reversal, ratio=0.96, slope=-0.70, trend=downtrend, momentum=down, tradeSignal=null
+[TREND] M10 sideways → using M5 (DOWNTREND).
+[STRAT] Trend:downtrend | M5 RSI:46.51 Stoch:61.49 | M1 RSI:50.11 Stoch:1.35
+[RSI] Reversal phase detected (null).
+[RSI] phase=reversal, ratio=0.82, slope=-2.47, trend=downtrend, momentum=down, tradeSignal=null

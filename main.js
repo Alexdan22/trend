@@ -384,7 +384,7 @@ async function processTickForOpenPairs(price) {
         rec.trades.TRAILING.ticket = null;
       }
 
-      // --- PARTIAL CLOSE CHECK ---
+      // --- PARTIAL CLOSE CHECK + INTERNAL BREAK-EVEN ACTIVATION ---
       if (!rec.partialClosed && rec.tp && rec.entryPrice && partialRec?.ticket) {
         const totalDist = Math.abs(rec.tp - rec.entryPrice);
         const movedDist = Math.abs(current - rec.entryPrice);
@@ -392,14 +392,20 @@ async function processTickForOpenPairs(price) {
 
         if (progress >= 0.5) {
           console.log(`[PAIR] Partial target reached for ${pairId} (progress=${progress.toFixed(2)}) — closing PARTIAL leg.`);
+
           try {
+            // Close partial leg
             await safeClosePosition(partialRec.ticket, partialRec.lot);
             rec.partialClosed = true;
             rec.trades.PARTIAL.ticket = null;
-            rec.internalTrailingSL = rec.entryPrice; // break-even
+
+            // --- Activate internal break-even ---
+            rec.breakEvenActive = true;
+            rec.internalSL = rec.entryPrice; // set break-even
+            console.log(`[PAIR] Break-even level set at ${rec.internalSL.toFixed(2)} for ${pairId}`);
 
             await sendTelegram(
-              `🟠 *PARTIAL CLOSED*\n━━━━━━━━━━━━━━━\n🎫 *Pair:* ${pairId}\n📈 *Side:* ${side}\n💰 *Lot Closed:* ${partialRec.lot}\n🕒 ${new Date().toLocaleTimeString()}`,
+              `🟠 *PARTIAL CLOSED + BREAK-EVEN SET*\n━━━━━━━━━━━━━━━\n🎫 *Pair:* ${pairId}\n📈 *Side:* ${side}\n💰 *Lot Closed:* ${partialRec.lot}\n📊 *Internal SL (Break-even):* ${rec.internalSL.toFixed(2)}\n🕒 ${new Date().toLocaleTimeString()}`,
               { parse_mode: "Markdown" }
             );
 
@@ -410,6 +416,7 @@ async function processTickForOpenPairs(price) {
           }
         }
       }
+
 
       // --- FINAL TAKE PROFIT HIT CHECK (NEW) ---
       if (rec.tp && rec.entryPrice && (partialRec?.ticket || trailingRec?.ticket)) {
@@ -444,41 +451,41 @@ async function processTickForOpenPairs(price) {
       }
 
       // --- TRAILING / BREAK-EVEN LOGIC ---
-      if (rec.partialClosed) {
-        const atrVal = ind5?.atr?.at(-1) || 0;
-        if (atrVal > 0) {
-          const desiredTrailing =
-            side === 'BUY' ? current - atrVal * 1.0 : current + atrVal * 1.0;
+      // if (rec.partialClosed) {
+      //   const atrVal = ind5?.atr?.at(-1) || 0;
+      //   if (atrVal > 0) {
+      //     const desiredTrailing =
+      //       side === 'BUY' ? current - atrVal * 1.0 : current + atrVal * 1.0;
 
-          if (!rec.internalTrailingSL ||
-            (side === 'BUY' && desiredTrailing > rec.internalTrailingSL + 0.0005) ||
-            (side === 'SELL' && desiredTrailing < rec.internalTrailingSL - 0.0005)) {
-            rec.internalTrailingSL = desiredTrailing;
-          }
-        }
+      //     if (!rec.internalTrailingSL ||
+      //       (side === 'BUY' && desiredTrailing > rec.internalTrailingSL + 0.0005) ||
+      //       (side === 'SELL' && desiredTrailing < rec.internalTrailingSL - 0.0005)) {
+      //       rec.internalTrailingSL = desiredTrailing;
+      //     }
+      //   }
 
-        if (rec.internalTrailingSL && trailingRec?.ticket) {
-          const hit =
-            (side === 'BUY' && current <= rec.internalTrailingSL) ||
-            (side === 'SELL' && current >= rec.internalTrailingSL);
+      //   if (rec.internalTrailingSL && trailingRec?.ticket) {
+      //     const hit =
+      //       (side === 'BUY' && current <= rec.internalTrailingSL) ||
+      //       (side === 'SELL' && current >= rec.internalTrailingSL);
 
-          if (hit) {
-            console.log(`[PAIR] Internal trailing SL hit for ${pairId} -> closing trailing trade.`);
-            try {
-              await safeClosePosition(trailingRec.ticket, trailingRec.lot);
-              rec.trades.TRAILING.ticket = null;
-              await sendTelegram(
-                `🔴 *TRAILING STOP HIT*\n━━━━━━━━━━━━━━━\n🎫 *Pair:* ${pairId}\n📈 *Side:* ${side}\n💰 *Lot Closed:* ${trailingRec.lot}\n🕒 ${new Date().toLocaleTimeString()}`,
-                { parse_mode: "Markdown" }
-              );
-              const newBal = await safeGetAccountBalance();
-              if (newBal && newBal !== accountBalance) accountBalance = newBal;
-            } catch (err) {
-              console.warn(`[PAIR] Failed to close trailing trade ${pairId}:`, err.message || err);
-            }
-          }
-        }
-      }
+      //     if (hit) {
+      //       console.log(`[PAIR] Internal trailing SL hit for ${pairId} -> closing trailing trade.`);
+      //       try {
+      //         await safeClosePosition(trailingRec.ticket, trailingRec.lot);
+      //         rec.trades.TRAILING.ticket = null;
+      //         await sendTelegram(
+      //           `🔴 *TRAILING STOP HIT*\n━━━━━━━━━━━━━━━\n🎫 *Pair:* ${pairId}\n📈 *Side:* ${side}\n💰 *Lot Closed:* ${trailingRec.lot}\n🕒 ${new Date().toLocaleTimeString()}`,
+      //           { parse_mode: "Markdown" }
+      //         );
+      //         const newBal = await safeGetAccountBalance();
+      //         if (newBal && newBal !== accountBalance) accountBalance = newBal;
+      //       } catch (err) {
+      //         console.warn(`[PAIR] Failed to close trailing trade ${pairId}:`, err.message || err);
+      //       }
+      //     }
+      //   }
+      // }
 
 
       if (!rec.trades.PARTIAL.ticket && !rec.trades.TRAILING.ticket) {
@@ -815,21 +822,16 @@ if (trendM5 === 'sideways' && trendM10 !== 'sideways') {
   }
 
   // ===============================================================
-  // === RETRACEMENT + RESUMPTION STRATEGY LOGIC STARTS HERE ===
+  // === RSI-DRIVEN MOMENTUM STRATEGY (REFINED WITH MIN-MOVE FILTER)
   // ===============================================================
 
-
-  // ===============================================================
-  // === RSI-DRIVEN MOMENTUM STRATEGY STARTS HERE ===
-  // ===============================================================
-
-  // ✅ Persistent RSI phase memory and Telegram dedupe
   if (!globalThis.rsiPhaseState) {
     globalThis.rsiPhaseState = {
       lastPhase: null,          // 'continuation' | 'pullback' | 'reversal' | 'sideways'
       lastSlope: null,
       pullbackCount: 0,
       pullbackConfirmed: false,
+      phasePersistence: 0,
       lastUpdate: 0
     };
   }
@@ -837,51 +839,102 @@ if (trendM5 === 'sideways' && trendM10 !== 'sideways') {
     globalThis.lastRSIAlert = { type: null, timestamp: 0 };
   }
 
-  const rsiSeries = ind5.rsi.slice(-10);
+  const rsiSeries = ind5.rsi.slice(-14);
   if (rsiSeries.length < 5) return;
 
-  const minRSI = Math.min(...rsiSeries);
-  const maxRSI = Math.max(...rsiSeries);
+  // --- Core RSI Metrics ---
+  const diffs = [];
+  for (let i = 1; i < rsiSeries.length; i++) {
+    diffs.push(rsiSeries[i] - rsiSeries[i - 1]);
+  }
+  const avgSlope = diffs.reduce((a, b) => a + b, 0) / diffs.length;
+  const slopeDev = Math.sqrt(diffs.map(v => (v - avgSlope) ** 2).reduce((a, b) => a + b, 0) / diffs.length);
+  let threshold = Math.max(1.5, slopeDev * 1.5); // adaptive slope threshold
+
+  // --- Trend weight (reduce noise in strong trends) ---
+  if (effectiveTrend !== 'sideways') threshold *= 1.3;
+
+  // --- Latest RSI values ---
   const currentRSI = rsiSeries.at(-1);
   const prevRSI = rsiSeries.at(-2);
   const slope = currentRSI - prevRSI;
-  const range = maxRSI - minRSI;
-  const recoveryRatio = (currentRSI - minRSI) / Math.max(range, 1);
+  const momentumDir = slope > 0 ? 'up' : slope < 0 ? 'down' : 'flat';
 
-  // --- Base classification ---
-  let nowPhase;
-  if (range < 8) nowPhase = 'sideways';
-  else if (recoveryRatio < 0.4) nowPhase = 'continuation';
-  else if (recoveryRatio <= 0.7) nowPhase = 'pullback';
-  else nowPhase = 'reversal';
+  // --- Minimum RSI movement filter (to avoid noise) ---
+  const rsiDeltaAbs = Math.abs(currentRSI - prevRSI);
+  const minPullbackMove = 7; // require at least 7–8 RSI points to enter pullback
 
-  // --- Filter shallow noise ---
-  const rsiDelta = Math.abs(currentRSI - minRSI);
-  const isMeaningfulMove = rsiDelta >= 6;
-  if (nowPhase === 'pullback' && !isMeaningfulMove) nowPhase = 'continuation';
+  // --- Adaptive Phase Classification ---
+  let nowPhase = 'sideways';
 
-  // --- Determine trend bias ---
-  const mainTrend = effectiveTrend;
-  const momentumDir = slope > 0 ? 'up' : 'down';
+  if (Math.abs(slope) < threshold / 2) {
+    nowPhase = 'sideways';
+  } else if (effectiveTrend === 'uptrend') {
+    if (slope > threshold) {
+      nowPhase = 'continuation';
+    } else if (slope < -threshold) {
+      nowPhase = 'reversal';
+    } else {
+      // only consider pullback if RSI actually dropped by at least 7 points
+      nowPhase = (rsiDeltaAbs >= minPullbackMove) ? 'pullback' : 'continuation';
+    }
+  } else if (effectiveTrend === 'downtrend') {
+    if (slope < -threshold) {
+      nowPhase = 'continuation';
+    } else if (slope > threshold) {
+      nowPhase = 'reversal';
+    } else {
+      // only consider pullback if RSI actually rose by at least 7 points
+      nowPhase = (rsiDeltaAbs >= minPullbackMove) ? 'pullback' : 'continuation';
+    }
+  }
 
-  // --- Phase persistence and trade logic ---
+  // --- Phase Transition Logic (adaptive persistence) ---
   const prevPhase = globalThis.rsiPhaseState.lastPhase;
-  const prevSlope = globalThis.rsiPhaseState.lastSlope;
-  let tradeSignal = null;
 
-  // Track consecutive opposite-slope bars for pullback confirmation
+  // if phase unchanged, count persistence
+  if (nowPhase === prevPhase) {
+    globalThis.rsiPhaseState.phasePersistence++;
+  } else {
+    globalThis.rsiPhaseState.phasePersistence = 1;
+  }
+
+  // Adaptive confirmation behavior
+  if (nowPhase === 'continuation' && prevPhase === 'pullback') {
+    // Fast re-entry logic: if RSI flips back strongly, confirm immediately
+    const slopeStrength = Math.abs(slope);
+    const strongResume = slopeStrength >= 2 && momentumDir === (effectiveTrend === 'uptrend' ? 'up' : 'down');
+
+    if (strongResume) {
+      // immediate continuation confirmation, no persistence needed
+      globalThis.rsiPhaseState.phasePersistence = 3; 
+    } else {
+      // weak slope → wait for more evidence
+      if (globalThis.rsiPhaseState.phasePersistence < 2) {
+        nowPhase = prevPhase; // hold pullback phase
+      }
+    }
+  } else {
+    // other phases still need normal persistence
+    if (globalThis.rsiPhaseState.phasePersistence < 3 && nowPhase !== 'reversal') {
+      nowPhase = prevPhase || nowPhase;
+    }
+  }
+
+
+  // --- Track pullbacks ---
   if (nowPhase === 'pullback') {
-    if (prevPhase === 'pullback' && Math.sign(prevSlope) === Math.sign(slope)) {
+    if (prevPhase === 'pullback' && Math.sign(globalThis.rsiPhaseState.lastSlope) === Math.sign(slope)) {
       globalThis.rsiPhaseState.pullbackCount++;
     } else {
       globalThis.rsiPhaseState.pullbackCount = 1;
     }
-    if (globalThis.rsiPhaseState.pullbackCount >= 2) {
+    if (globalThis.rsiPhaseState.pullbackCount >= 3) {
       globalThis.rsiPhaseState.pullbackConfirmed = true;
     }
   }
 
-  // ---- ONE-TIME TELEGRAM ALERTS ----
+  // --- Helper: one-time Telegram alert ---
   async function sendOneTimeRSIAlert(type, message) {
     if (globalThis.lastRSIAlert.type !== type) {
       await sendTelegram(message, { parse_mode: 'Markdown' });
@@ -890,68 +943,61 @@ if (trendM5 === 'sideways' && trendM10 !== 'sideways') {
     }
   }
 
-  // Send alert when new pullback starts
+  // --- Alerts ---
   if (nowPhase === 'pullback' && prevPhase !== 'pullback') {
-    const msg =
-      mainTrend === 'uptrend'
-        ? `🔄 *Uptrend Pullback Detected*\n━━━━━━━━━━━━━━━\n📈 Trend: *${mainTrend.toUpperCase()}*\n🧮 RSI: ${currentRSI.toFixed(
-            2
-          )}\nAwaiting continuation...`
-        : `🔄 *Downtrend Pullback Detected*\n━━━━━━━━━━━━━━━\n📉 Trend: *${mainTrend.toUpperCase()}*\n🧮 RSI: ${currentRSI.toFixed(
-            2
-          )}\nAwaiting continuation...`;
+    const msg = effectiveTrend === 'uptrend'
+      ? `🔄 *Uptrend Pullback Detected*\n━━━━━━━━━━━━━━━\n📈 Trend: *${effectiveTrend.toUpperCase()}*\n🧮 RSI: ${currentRSI.toFixed(2)}\nAwaiting continuation...`
+      : `🔄 *Downtrend Pullback Detected*\n━━━━━━━━━━━━━━━\n📉 Trend: *${effectiveTrend.toUpperCase()}*\n🧮 RSI: ${currentRSI.toFixed(2)}\nAwaiting continuation...`;
     await sendOneTimeRSIAlert('pullback', msg);
   }
 
-  // Send alert when new reversal begins
   if (nowPhase === 'reversal' && prevPhase !== 'reversal') {
-    const msg =
-      momentumDir === 'up'
-        ? `🟢 *Potential Upward Reversal Zone*\n━━━━━━━━━━━━━━━\nRSI: ${currentRSI.toFixed(
-            2
-          )}\nMomentum turning bullish.`
-        : `🔴 *Potential Downward Reversal Zone*\n━━━━━━━━━━━━━━━\nRSI: ${currentRSI.toFixed(
-            2
-          )}\nMomentum turning bearish.`;
+    const msg = momentumDir === 'up'
+      ? `🟢 *Potential Upward Reversal Zone*\n━━━━━━━━━━━━━━━\nRSI: ${currentRSI.toFixed(2)}\nMomentum turning bullish.`
+      : `🔴 *Potential Downward Reversal Zone*\n━━━━━━━━━━━━━━━\nRSI: ${currentRSI.toFixed(2)}\nMomentum turning bearish.`;
     await sendOneTimeRSIAlert('reversal', msg);
   }
 
-  // When RSI resumes in main direction after confirmed pullback → trade trigger
+  // --- Trade Signal Logic ---
+  let tradeSignal = null;
+
   if (
     prevPhase === 'pullback' &&
     nowPhase === 'continuation' &&
     globalThis.rsiPhaseState.pullbackConfirmed
   ) {
-    if (mainTrend === 'uptrend' && momentumDir === 'up') tradeSignal = 'BUY';
-    if (mainTrend === 'downtrend' && momentumDir === 'down') tradeSignal = 'SELL';
+    if (effectiveTrend === 'uptrend' && momentumDir === 'up') tradeSignal = 'BUY';
+    if (effectiveTrend === 'downtrend' && momentumDir === 'down') tradeSignal = 'SELL';
     globalThis.rsiPhaseState.pullbackConfirmed = false;
     globalThis.rsiPhaseState.pullbackCount = 0;
-    globalThis.lastRSIAlert.type = null; // reset so next pullback alert can fire
+    globalThis.lastRSIAlert.type = null;
     console.log(`[RSI] Pullback → Continuation detected. Triggering ${tradeSignal}.`);
   }
 
-  // Handle fresh reversal (trend flip)
   if (nowPhase === 'reversal') {
-    if (momentumDir === 'up' && mainTrend === 'downtrend') tradeSignal = 'BUY_REVERSAL';
-    if (momentumDir === 'down' && mainTrend === 'uptrend') tradeSignal = 'SELL_REVERSAL';
+    if (momentumDir === 'up' && effectiveTrend === 'downtrend') tradeSignal = 'BUY_REVERSAL';
+    if (momentumDir === 'down' && effectiveTrend === 'uptrend') tradeSignal = 'SELL_REVERSAL';
     globalThis.rsiPhaseState.pullbackConfirmed = false;
     globalThis.rsiPhaseState.pullbackCount = 0;
     console.log(`[RSI] Reversal phase detected (${tradeSignal}).`);
   }
 
-  // Update memory
+  // --- Update memory ---
   globalThis.rsiPhaseState.lastPhase = nowPhase;
   globalThis.rsiPhaseState.lastSlope = slope;
   globalThis.rsiPhaseState.lastUpdate = Date.now();
 
-  // --- Convert RSI signals to trade flags ---
-  const buyReady = tradeSignal === 'BUY' || tradeSignal === 'BUY_REVERSAL';
+  // --- Debug log ---
+  console.log(
+    `[RSI] phase=${nowPhase}, ΔRSI=${rsiDeltaAbs.toFixed(2)}, slope=${slope.toFixed(2)}, threshold=${threshold.toFixed(2)}, ` +
+    `trend=${effectiveTrend}, momentum=${momentumDir}, tradeSignal=${tradeSignal}`
+  );
+
+  // --- Trade readiness mapping ---
+  const buyReady  = tradeSignal === 'BUY'  || tradeSignal === 'BUY_REVERSAL';
   const sellReady = tradeSignal === 'SELL' || tradeSignal === 'SELL_REVERSAL';
 
-  console.log(
-    `[RSI] phase=${nowPhase}, ratio=${recoveryRatio.toFixed(2)}, slope=${slope.toFixed(2)}, ` +
-      `trend=${mainTrend}, momentum=${momentumDir}, tradeSignal=${tradeSignal}`
-  );
+
 
 
 
@@ -1005,6 +1051,8 @@ if (trendM5 === 'sideways' && trendM10 !== 'sideways') {
             globalThis.retracementState = { active: false, type: null, startCandle: null, startedAt: 0, lastSeen: 0 };
             lastRetracementNotify.type = null;
             lastRetracementNotify.candleId = null;
+            globalThis.rsiPhaseState.pullbackCount = 0;
+
           }
 
         } catch (e) {
@@ -1034,6 +1082,8 @@ if (trendM5 === 'sideways' && trendM10 !== 'sideways') {
             globalThis.retracementState = { active: false, type: null, startCandle: null, startedAt: 0, lastSeen: 0 };
             lastRetracementNotify.type = null;
             lastRetracementNotify.candleId = null;
+            globalThis.rsiPhaseState.pullbackCount = 0;
+
           }
 
         } catch (e) {
@@ -1206,35 +1256,35 @@ async function monitorOpenTrades(ind10, ind5, ind1) {
       const current = side === 'BUY' ? price.bid : price.ask;
 
       // --- SAFETY CHECK: if market trend collapses to sideways, close both legs ---
-      if (!trendStrong) {
-        console.log(`[PAIR] Trend weakened (M10 sideways) → force-closing all for ${pairId}`);
-        for (const key of ['PARTIAL', 'TRAILING']) {
-          const trade = rec.trades[key];
-          if (trade?.ticket) {
-            try {
-              await safeClosePosition(trade.ticket, trade.lot);
-              trade.ticket = null;
-            } catch (err) {
-              console.warn(`[PAIR] Failed force-close (${key}) for ${pairId}:`, err.message);
-            }
-          }
-        }
+      // if (!trendStrong) {
+      //   console.log(`[PAIR] Trend weakened (M10 sideways) → force-closing all for ${pairId}`);
+      //   for (const key of ['PARTIAL', 'TRAILING']) {
+      //     const trade = rec.trades[key];
+      //     if (trade?.ticket) {
+      //       try {
+      //         await safeClosePosition(trade.ticket, trade.lot);
+      //         trade.ticket = null;
+      //       } catch (err) {
+      //         console.warn(`[PAIR] Failed force-close (${key}) for ${pairId}:`, err.message);
+      //       }
+      //     }
+      //   }
 
-        delete openPairs[pairId];
-        await sendTelegram(
-          `🔻 *PAIR CLOSED (TREND WEAKENED)*\n━━━━━━━━━━━━━━━\n🎫 *Pair:* ${pairId}\n📈 *Side:* ${side}\n🕒 ${new Date().toLocaleTimeString()}`,
-          { parse_mode: 'Markdown' }
-        );
+      //   delete openPairs[pairId];
+      //   await sendTelegram(
+      //     `🔻 *PAIR CLOSED (TREND WEAKENED)*\n━━━━━━━━━━━━━━━\n🎫 *Pair:* ${pairId}\n📈 *Side:* ${side}\n🕒 ${new Date().toLocaleTimeString()}`,
+      //     { parse_mode: 'Markdown' }
+      //   );
 
-        // Refresh balance after closure
-        try {
-          const newBal = await safeGetAccountBalance();
-          if (newBal && newBal !== accountBalance) accountBalance = newBal;
-        } catch (err) {
-          console.warn('[BALANCE] Post-close refresh failed:', err.message);
-        }
-        continue;
-      }
+      //   // Refresh balance after closure
+      //   try {
+      //     const newBal = await safeGetAccountBalance();
+      //     if (newBal && newBal !== accountBalance) accountBalance = newBal;
+      //   } catch (err) {
+      //     console.warn('[BALANCE] Post-close refresh failed:', err.message);
+      //   }
+      //   continue;
+      // }
 
       // --- HEALTH CHECK: internalTrailingSL sanity ---
       // If trailing SL somehow invalid (NaN/0), recompute from ATR as backup
