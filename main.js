@@ -653,6 +653,10 @@ async function handleTick(tick) {
       // optional light debug (comment out if too verbose)
       // console.debug(`[PRICE] Updated latestPrice: ${latestPrice.bid}/${latestPrice.ask}`);
     }
+    if(marketFrozen){
+      // optional light debug (comment out if too verbose)
+      console.debug(`[PRICE] Updated latestPrice: ${latestPrice.bid}/${latestPrice.ask}`);
+    }
 
     // --- Detect stagnant price movement ---
     if (lastTickPrice !== null) {
@@ -692,10 +696,6 @@ async function handleTick(tick) {
 
     lastTickPrice = tickPrice;
 
-    if(marketFrozen){
-      // optional light debug (comment out if too verbose)
-      console.debug(`[PRICE] Updated latestPrice: ${latestPrice.bid}/${latestPrice.ask}`);
-    }
 
     // --- Update candle arrays only when market is active ---
     if (!marketFrozen) {
