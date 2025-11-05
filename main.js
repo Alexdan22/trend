@@ -651,7 +651,7 @@ async function handleTick(tick) {
         timestamp: tickTime
       };
       // optional light debug (comment out if too verbose)
-      console.debug(`[PRICE] Updated latestPrice: ${latestPrice.bid}/${latestPrice.ask}`);
+      // console.debug(`[PRICE] Updated latestPrice: ${latestPrice.bid}/${latestPrice.ask}`);
     }
 
     // --- Detect stagnant price movement ---
