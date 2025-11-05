@@ -450,6 +450,47 @@ async function processTickForOpenPairs(price) {
         }
       }
 
+       // --- HARD STOP-LOSS HIT CHECK (with optional buffer) ---
+      if (rec.sl && rec.entryPrice && (partialRec?.ticket || trailingRec?.ticket)) {
+
+        // Optional tolerance buffer — set to 0.0003 for 0.03%
+        const USE_SL_BUFFER = true; // toggle ON/OFF here
+        const SL_BUFFER_PCT = 0.0003; // 0.03% buffer
+        const buffer = USE_SL_BUFFER ? rec.entryPrice * SL_BUFFER_PCT : 0;
+
+        const slHit =
+          (side === 'BUY' && current <= rec.sl - buffer) ||
+          (side === 'SELL' && current >= rec.sl + buffer);
+
+        if (slHit) {
+          console.log(`[PAIR] ⛔ STOP-LOSS hit for ${pairId} — closing both legs. (buffer=${buffer.toFixed(2)})`);
+
+          for (const key of ['PARTIAL', 'TRAILING']) {
+            const t = rec.trades[key];
+            if (t?.ticket) {
+              try {
+                await safeClosePosition(t.ticket, t.lot);
+                rec.trades[key].ticket = null;
+                console.log(`[PAIR] Closed ${key} leg for ${pairId} due to SL hit.`);
+              } catch (err) {
+                console.warn(`[PAIR] Failed to close ${key} leg for ${pairId}:`, err.message);
+              }
+            }
+          }
+
+          delete openPairs[pairId];
+          await sendTelegram(
+            `⛔ *STOP-LOSS HIT — PAIR CLOSED*\n━━━━━━━━━━━━━━━\n🎫 *Pair:* ${pairId}\n📈 *Side:* ${side}\n💀 *SL:* ${rec.sl.toFixed(2)}\n📊 *Buffer:* ${buffer.toFixed(2)}\n🕒 ${new Date().toLocaleTimeString()}`,
+            { parse_mode: 'Markdown' }
+          );
+
+          const newBal = await safeGetAccountBalance();
+          if (newBal && newBal !== accountBalance) accountBalance = newBal;
+          continue;
+        }
+      }
+
+
       // --- TRAILING / BREAK-EVEN LOGIC ---
       // if (rec.partialClosed) {
       //   const atrVal = ind5?.atr?.at(-1) || 0;
@@ -822,180 +863,152 @@ if (trendM5 === 'sideways' && trendM10 !== 'sideways') {
   }
 
   // ===============================================================
-  // === RSI-DRIVEN MOMENTUM STRATEGY (REFINED WITH MIN-MOVE FILTER)
+  // === ADAPTIVE RSI TREND–PULLBACK–REVERSAL ENGINE ===============
   // ===============================================================
-
   if (!globalThis.rsiPhaseState) {
     globalThis.rsiPhaseState = {
-      lastPhase: null,          // 'continuation' | 'pullback' | 'reversal' | 'sideways'
-      lastSlope: null,
-      pullbackCount: 0,
-      pullbackConfirmed: false,
-      phasePersistence: 0,
+      phase: 'trend',       // trend | pullback | continuation | reversal
+      lastRSI: null,
+      persistence: 0,
+      pullbackActive: false,
+      lastSignal: null,
+      lastAlertType: null,
       lastUpdate: 0
     };
-  }
-  if (!globalThis.lastRSIAlert) {
-    globalThis.lastRSIAlert = { type: null, timestamp: 0 };
   }
 
   const rsiSeries = ind5.rsi.slice(-14);
   if (rsiSeries.length < 5) return;
 
-  // --- Core RSI Metrics ---
-  const diffs = [];
-  for (let i = 1; i < rsiSeries.length; i++) {
-    diffs.push(rsiSeries[i] - rsiSeries[i - 1]);
-  }
-  const avgSlope = diffs.reduce((a, b) => a + b, 0) / diffs.length;
-  const slopeDev = Math.sqrt(diffs.map(v => (v - avgSlope) ** 2).reduce((a, b) => a + b, 0) / diffs.length);
-  let threshold = Math.max(1.5, slopeDev * 1.5); // adaptive slope threshold
-
-  // --- Trend weight (reduce noise in strong trends) ---
-  if (effectiveTrend !== 'sideways') threshold *= 1.3;
-
-  // --- Latest RSI values ---
   const currentRSI = rsiSeries.at(-1);
   const prevRSI = rsiSeries.at(-2);
   const slope = currentRSI - prevRSI;
+
+  // Compute adaptive bands
+  const avgRSI = rsiSeries.reduce((a, b) => a + b, 0) / rsiSeries.length;
+  const rsiStd = Math.sqrt(rsiSeries.map(v => (v - avgRSI) ** 2).reduce((a, b) => a + b, 0) / rsiSeries.length);
+  const upperBand = avgRSI + rsiStd;
+  const lowerBand = avgRSI - rsiStd;
+  const slopeZ = slope / (rsiStd || 1);
   const momentumDir = slope > 0 ? 'up' : slope < 0 ? 'down' : 'flat';
 
-  // --- Minimum RSI movement filter (to avoid noise) ---
-  const rsiDeltaAbs = Math.abs(currentRSI - prevRSI);
-  const minPullbackMove = 7; // require at least 7–8 RSI points to enter pullback
-
-  // --- Adaptive Phase Classification ---
-  let nowPhase = 'sideways';
-
-  if (Math.abs(slope) < threshold / 2) {
-    nowPhase = 'sideways';
-  } else if (effectiveTrend === 'uptrend') {
-    if (slope > threshold) {
-      nowPhase = 'continuation';
-    } else if (slope < -threshold) {
-      nowPhase = 'reversal';
-    } else {
-      // only consider pullback if RSI actually dropped by at least 7 points
-      nowPhase = (rsiDeltaAbs >= minPullbackMove) ? 'pullback' : 'continuation';
-    }
-  } else if (effectiveTrend === 'downtrend') {
-    if (slope < -threshold) {
-      nowPhase = 'continuation';
-    } else if (slope > threshold) {
-      nowPhase = 'reversal';
-    } else {
-      // only consider pullback if RSI actually rose by at least 7 points
-      nowPhase = (rsiDeltaAbs >= minPullbackMove) ? 'pullback' : 'continuation';
-    }
-  }
-
-  // --- Phase Transition Logic (adaptive persistence) ---
-  const prevPhase = globalThis.rsiPhaseState.lastPhase;
-
-  // if phase unchanged, count persistence
-  if (nowPhase === prevPhase) {
-    globalThis.rsiPhaseState.phasePersistence++;
-  } else {
-    globalThis.rsiPhaseState.phasePersistence = 1;
-  }
-
-  // Adaptive confirmation behavior
-  if (nowPhase === 'continuation' && prevPhase === 'pullback') {
-    // Fast re-entry logic: if RSI flips back strongly, confirm immediately
-    const slopeStrength = Math.abs(slope);
-    const strongResume = slopeStrength >= 2 && momentumDir === (effectiveTrend === 'uptrend' ? 'up' : 'down');
-
-    if (strongResume) {
-      // immediate continuation confirmation, no persistence needed
-      globalThis.rsiPhaseState.phasePersistence = 3; 
-    } else {
-      // weak slope → wait for more evidence
-      if (globalThis.rsiPhaseState.phasePersistence < 2) {
-        nowPhase = prevPhase; // hold pullback phase
-      }
-    }
-  } else {
-    // other phases still need normal persistence
-    if (globalThis.rsiPhaseState.phasePersistence < 3 && nowPhase !== 'reversal') {
-      nowPhase = prevPhase || nowPhase;
-    }
-  }
-
-
-  // --- Track pullbacks ---
-  if (nowPhase === 'pullback') {
-    if (prevPhase === 'pullback' && Math.sign(globalThis.rsiPhaseState.lastSlope) === Math.sign(slope)) {
-      globalThis.rsiPhaseState.pullbackCount++;
-    } else {
-      globalThis.rsiPhaseState.pullbackCount = 1;
-    }
-    if (globalThis.rsiPhaseState.pullbackCount >= 3) {
-      globalThis.rsiPhaseState.pullbackConfirmed = true;
-    }
-  }
-
-  // --- Helper: one-time Telegram alert ---
-  async function sendOneTimeRSIAlert(type, message) {
-    if (globalThis.lastRSIAlert.type !== type) {
-      await sendTelegram(message, { parse_mode: 'Markdown' });
-      globalThis.lastRSIAlert = { type, timestamp: Date.now() };
-      console.log(`[RSI] Alert sent once for ${type}`);
-    }
-  }
-
-  // --- Alerts ---
-  if (nowPhase === 'pullback' && prevPhase !== 'pullback') {
-    const msg = effectiveTrend === 'uptrend'
-      ? `🔄 *Uptrend Pullback Detected*\n━━━━━━━━━━━━━━━\n📈 Trend: *${effectiveTrend.toUpperCase()}*\n🧮 RSI: ${currentRSI.toFixed(2)}\nAwaiting continuation...`
-      : `🔄 *Downtrend Pullback Detected*\n━━━━━━━━━━━━━━━\n📉 Trend: *${effectiveTrend.toUpperCase()}*\n🧮 RSI: ${currentRSI.toFixed(2)}\nAwaiting continuation...`;
-    await sendOneTimeRSIAlert('pullback', msg);
-  }
-
-  if (nowPhase === 'reversal' && prevPhase !== 'reversal') {
-    const msg = momentumDir === 'up'
-      ? `🟢 *Potential Upward Reversal Zone*\n━━━━━━━━━━━━━━━\nRSI: ${currentRSI.toFixed(2)}\nMomentum turning bullish.`
-      : `🔴 *Potential Downward Reversal Zone*\n━━━━━━━━━━━━━━━\nRSI: ${currentRSI.toFixed(2)}\nMomentum turning bearish.`;
-    await sendOneTimeRSIAlert('reversal', msg);
-  }
-
-  // --- Trade Signal Logic ---
+  let nowPhase = globalThis.rsiPhaseState.phase;
   let tradeSignal = null;
 
-  if (
-    prevPhase === 'pullback' &&
-    nowPhase === 'continuation' &&
-    globalThis.rsiPhaseState.pullbackConfirmed
-  ) {
-    if (effectiveTrend === 'uptrend' && momentumDir === 'up') tradeSignal = 'BUY';
-    if (effectiveTrend === 'downtrend' && momentumDir === 'down') tradeSignal = 'SELL';
-    globalThis.rsiPhaseState.pullbackConfirmed = false;
-    globalThis.rsiPhaseState.pullbackCount = 0;
-    globalThis.lastRSIAlert.type = null;
-    console.log(`[RSI] Pullback → Continuation detected. Triggering ${tradeSignal}.`);
+  // --- Ignore micro fluctuations (RSI slope too small) ---
+  const minSlopeThreshold = rsiStd * 0.3; // require slope move ≥ 30% of current RSI std
+  if (Math.abs(slope) < minSlopeThreshold) {
+    // treat as noise; stay in current phase (no alerts, no trades)
+    console.log(
+      `[RSI] ⏸️ Ignored micro move (ΔRSI=${slope.toFixed(2)} < ${minSlopeThreshold.toFixed(2)}). Staying in ${nowPhase}.`
+    );
+    return; // exit early
   }
 
-  if (nowPhase === 'reversal') {
-    if (momentumDir === 'up' && effectiveTrend === 'downtrend') tradeSignal = 'BUY_REVERSAL';
-    if (momentumDir === 'down' && effectiveTrend === 'uptrend') tradeSignal = 'SELL_REVERSAL';
-    globalThis.rsiPhaseState.pullbackConfirmed = false;
-    globalThis.rsiPhaseState.pullbackCount = 0;
-    console.log(`[RSI] Reversal phase detected (${tradeSignal}).`);
+
+  // --- Adaptive phase transitions ---
+  switch (nowPhase) {
+    case 'trend': {
+      const pullbackCondition =
+        (effectiveTrend === 'uptrend' && slope < 0 && currentRSI > lowerBand && currentRSI < upperBand) ||
+        (effectiveTrend === 'downtrend' && slope > 0 && currentRSI < upperBand && currentRSI > lowerBand);
+      if (pullbackCondition) {
+        nowPhase = 'pullback';
+        globalThis.rsiPhaseState.pullbackActive = true;
+        console.log('[RSI] Pullback forming...');
+        if (globalThis.rsiPhaseState.lastAlertType !== 'pullback') {
+          const msg = `🔄 *Pullback Forming*\n━━━━━━━━━━━━━━━\n📈 Trend: *${effectiveTrend.toUpperCase()}*\n📊 RSI: ${currentRSI.toFixed(2)}\nAvg: ${avgRSI.toFixed(2)} ± ${rsiStd.toFixed(2)}\nAwaiting continuation/reversal...`;
+          await sendTelegram(msg, { parse_mode: 'Markdown' });
+          globalThis.rsiPhaseState.lastAlertType = 'pullback';
+        }
+      }
+      break;
+    }
+
+      case 'pullback': {
+      // Track consecutive confirmations
+      if (!globalThis.rsiPhaseState.persist) {
+        globalThis.rsiPhaseState.persist = { cont: 0, rev: 0 };
+      }
+
+      // --- Adaptive continuation condition ---
+      const continuationCondition =
+        (effectiveTrend === 'uptrend' && slope > 0 && currentRSI > avgRSI + (rsiStd * 0.1) && slopeZ > 0.6) ||
+        (effectiveTrend === 'downtrend' && slope < 0 && currentRSI < avgRSI - (rsiStd * 0.1) && slopeZ < -0.6);
+
+      // --- Strengthened adaptive reversal condition ---
+      const reversalCondition =
+        (effectiveTrend === 'uptrend' && slope < 0 &&
+          currentRSI < lowerBand - (rsiStd * 0.5) && slopeZ < -1.2) ||
+        (effectiveTrend === 'downtrend' && slope > 0 &&
+          currentRSI > upperBand + (rsiStd * 0.5) && slopeZ > 1.2);
+
+      // --- Two-bar persistence check ---
+      if (continuationCondition) {
+        globalThis.rsiPhaseState.persist.cont++;
+        globalThis.rsiPhaseState.persist.rev = 0;
+        if (globalThis.rsiPhaseState.persist.cont >= 2) {
+          nowPhase = 'continuation';
+          tradeSignal = effectiveTrend === 'uptrend' ? 'BUY' : 'SELL';
+          globalThis.rsiPhaseState.pullbackActive = false;
+          console.log(`[RSI] ✅ Pullback → Continuation confirmed (${tradeSignal}).`);
+          const msg = `✅ *Pullback Completed → Continuation*\n━━━━━━━━━━━━━━━\n📈 Trend: *${effectiveTrend.toUpperCase()}*\n💡 Trade Signal: *${tradeSignal}*\n📊 RSI: ${currentRSI.toFixed(2)} | Δ: ${slope.toFixed(2)} | z=${slopeZ.toFixed(2)}`;
+          await sendTelegram(msg, { parse_mode: 'Markdown' });
+          globalThis.rsiPhaseState.lastAlertType = 'continuation';
+          globalThis.rsiPhaseState.persist.cont = 0;
+        }
+      }
+      else if (reversalCondition) {
+        globalThis.rsiPhaseState.persist.rev++;
+        globalThis.rsiPhaseState.persist.cont = 0;
+        if (globalThis.rsiPhaseState.persist.rev >= 2) {
+          nowPhase = 'reversal';
+          tradeSignal = effectiveTrend === 'uptrend' ? 'SELL_REVERSAL' : 'BUY_REVERSAL';
+          globalThis.rsiPhaseState.pullbackActive = false;
+          console.log(`[RSI] ⚠️ Pullback → Reversal confirmed (${tradeSignal}).`);
+          const msg = `⚠️ *Trend Exhausted → Reversal Zone*\n━━━━━━━━━━━━━━━\n📉 Trend: *${effectiveTrend.toUpperCase()}*\n💡 Trade Signal: *${tradeSignal}*\n📊 RSI: ${currentRSI.toFixed(2)} | Δ: ${slope.toFixed(2)} | z=${slopeZ.toFixed(2)}`;
+          await sendTelegram(msg, { parse_mode: 'Markdown' });
+          globalThis.rsiPhaseState.lastAlertType = 'reversal';
+          globalThis.rsiPhaseState.persist.rev = 0;
+        }
+      }
+      else {
+        // reset counters if no confirmation continues
+        globalThis.rsiPhaseState.persist.cont = 0;
+        globalThis.rsiPhaseState.persist.rev = 0;
+        console.log('[RSI] Pullback ongoing...');
+      }
+      break;
+    }
+
+
+    case 'continuation':
+    case 'reversal': {
+      // let it persist for 3 candles max before resetting to trend
+      if (++globalThis.rsiPhaseState.persistence > 3) {
+        nowPhase = 'trend';
+        globalThis.rsiPhaseState.persistence = 0;
+        globalThis.rsiPhaseState.lastAlertType = null;
+      }
+      break;
+    }
   }
 
-  // --- Update memory ---
-  globalThis.rsiPhaseState.lastPhase = nowPhase;
-  globalThis.rsiPhaseState.lastSlope = slope;
+  // Update state
+  globalThis.rsiPhaseState.phase = nowPhase;
+  globalThis.rsiPhaseState.lastRSI = currentRSI;
   globalThis.rsiPhaseState.lastUpdate = Date.now();
 
-  // --- Debug log ---
+  // Debug
   console.log(
-    `[RSI] phase=${nowPhase}, ΔRSI=${rsiDeltaAbs.toFixed(2)}, slope=${slope.toFixed(2)}, threshold=${threshold.toFixed(2)}, ` +
-    `trend=${effectiveTrend}, momentum=${momentumDir}, tradeSignal=${tradeSignal}`
+    `[RSI] phase=${nowPhase}, RSI=${currentRSI.toFixed(2)}, avg=${avgRSI.toFixed(2)}, σ=${rsiStd.toFixed(2)}, bands=[${lowerBand.toFixed(1)}, ${upperBand.toFixed(1)}], slope=${slope.toFixed(2)}, z=${slopeZ.toFixed(2)}, trend=${effectiveTrend}, signal=${tradeSignal}`
   );
 
   // --- Trade readiness mapping ---
   const buyReady  = tradeSignal === 'BUY'  || tradeSignal === 'BUY_REVERSAL';
   const sellReady = tradeSignal === 'SELL' || tradeSignal === 'SELL_REVERSAL';
+
+  // reset pullback memory after actual entry (will happen below in your trade execution)
 
 
 
