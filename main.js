@@ -651,7 +651,7 @@ async function handleTick(tick) {
         timestamp: tickTime
       };
       // optional light debug (comment out if too verbose)
-      // console.debug(`[PRICE] Updated latestPrice: ${latestPrice.bid}/${latestPrice.ask}`);
+      console.debug(`[PRICE] Updated latestPrice: ${latestPrice.bid}/${latestPrice.ask}`);
     }
 
     // --- Detect stagnant price movement ---
@@ -896,7 +896,7 @@ if (trendM5 === 'sideways' && trendM10 !== 'sideways') {
   let tradeSignal = null;
 
   // --- Ignore micro fluctuations (RSI slope too small) ---
-  const minSlopeThreshold = rsiStd * 0.3; // require slope move ≥ 30% of current RSI std
+  const minSlopeThreshold = rsiStd * (effectiveTrend === 'sideways' ? 0.7 : 0.5);
   if (Math.abs(slope) < minSlopeThreshold) {
     // treat as noise; stay in current phase (no alerts, no trades)
     console.log(
@@ -998,6 +998,37 @@ if (trendM5 === 'sideways' && trendM10 !== 'sideways') {
   globalThis.rsiPhaseState.phase = nowPhase;
   globalThis.rsiPhaseState.lastRSI = currentRSI;
   globalThis.rsiPhaseState.lastUpdate = Date.now();
+
+  // --- [NEW] Pullback Timeout Reset Logic ---
+  if (globalThis.rsiPhaseState.phase === 'pullback') {
+    const now = Date.now();
+    const pullbackDuration = now - (globalThis.rsiPhaseState.pullbackStart || now);
+    
+    // mark the start time once
+    if (!globalThis.rsiPhaseState.pullbackStart) {
+      globalThis.rsiPhaseState.pullbackStart = now;
+    }
+
+    // timeout threshold: 12 M5 candles (~60 min)
+    const timeoutMs = 12 * 5 * 60 * 1000;
+
+    if (pullbackDuration > timeoutMs) {
+      console.log(`[RSI] ⏱️ Pullback expired (${(pullbackDuration/60000).toFixed(1)} min) → resetting to trend.`);
+      globalThis.rsiPhaseState.phase = 'trend';
+      globalThis.rsiPhaseState.pullbackStart = null;
+      globalThis.rsiPhaseState.persist = { cont: 0, rev: 0 };
+      globalThis.rsiPhaseState.lastAlertType = null;
+
+      await sendTelegram(
+        `⏱️ *RSI Pullback Expired*\n━━━━━━━━━━━━━━━\n📊 No continuation/reversal within 12 candles\nState reset to *trend*`,
+        { parse_mode: 'Markdown' }
+      );
+    }
+  } else {
+    // clear pullbackStart when leaving pullback phase
+    globalThis.rsiPhaseState.pullbackStart = null;
+  }
+
 
   // Debug
   console.log(
