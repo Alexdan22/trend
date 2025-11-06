@@ -745,6 +745,19 @@ async function checkStrategy(m5CandleTime = null) {
   // Max age for a remembered retracement (ms). Adjust if needed.
   if (!globalThis.retraceMaxAgeMs) globalThis.retraceMaxAgeMs = 60 * 60 * 1000; // 60 minutes
 
+  // --- LOGGING CACHE FOR CHECKSTRATEGY ---
+  if (!globalThis.logCache) {
+    globalThis.logCache = { trend: null, phase: null, tradable: null, pullback: 0, tick: 0 };
+  }
+  const cache = globalThis.logCache;
+  cache.tick++;
+
+  // --- Helper: compact logging ---
+  function logStrategySummary(tag, msg) {
+    if (cache.tick % 10 === 0) console.log(`[${tag}] ${msg}`);
+  }
+
+
   // ⏱️ Warm-up control
   const runtimeMinutes = (Date.now() - botStartTime) / 60000;
   const m10Ready = candlesM10.length >= 24;
@@ -799,51 +812,117 @@ async function checkStrategy(m5CandleTime = null) {
   }
 
 
-let effectiveTrend;
-if (trendM5 === 'sideways' && trendM10 !== 'sideways') {
-  effectiveTrend = trendM10;
-  usingM5Fallback = true;
-  console.log(`[TREND] M5 sideways → using M10 fallback (${trendM10.toUpperCase()}).`);
-} else if (trendM5 !== 'sideways' && trendM10 === 'sideways') {
-  effectiveTrend = trendM5;
-  usingM5Fallback = false;
-  console.log(`[TREND] M10 sideways → using M5 (${trendM5.toUpperCase()}).`);
-} else if (trendM5 !== 'sideways' && trendM10 !== 'sideways') {
-  if (trendM5 === trendM10) {
+  let effectiveTrend;
+  if (trendM5 === 'sideways' && trendM10 !== 'sideways') {
+    effectiveTrend = trendM10;
+    usingM5Fallback = true;
+    if (effectiveTrend !== cache.trend) {
+      console.log(`[TREND] → ${effectiveTrend.toUpperCase()} ${m10Ready ? '(M5/M10 aligned)' : '(M5 only)'}`);
+      cache.trend = effectiveTrend;
+    }
+  } else if (trendM5 !== 'sideways' && trendM10 === 'sideways') {
     effectiveTrend = trendM5;
     usingM5Fallback = false;
-    console.log(`[TREND] ✅ M5 and M10 aligned (${trendM5.toUpperCase()}).`);
+    if (effectiveTrend !== cache.trend) {
+      console.log(`[TREND] → ${effectiveTrend.toUpperCase()} ${m10Ready ? '(M5/M10 aligned)' : '(M5 only)'}`);
+      cache.trend = effectiveTrend;
+    }
+  } else if (trendM5 !== 'sideways' && trendM10 !== 'sideways') {
+    if (trendM5 === trendM10) {
+      effectiveTrend = trendM5;
+      usingM5Fallback = false;
+      if (effectiveTrend !== cache.trend) {
+        console.log(`[TREND] → ${effectiveTrend.toUpperCase()} ${m10Ready ? '(M5/M10 aligned)' : '(M5 only)'}`);
+        cache.trend = effectiveTrend;
+      }
+    } else {
+      effectiveTrend = 'conflict';
+      if (effectiveTrend !== cache.trend) {
+        console.log(`[TREND] → ${effectiveTrend.toUpperCase()} ${m10Ready ? '(M5/M10 aligned)' : '(M5 only)'}`);
+        cache.trend = effectiveTrend;
+      }
+    }
   } else {
-    effectiveTrend = 'conflict';
-    console.log(`[TREND] ⚠️ M5 (${trendM5}) vs M10 (${trendM10}) conflict → skipping trade.`);
+  // Both sideways — allow RSI/Stoch override
+  const rsi5 = ind5.rsi.at(-1) || 50;
+  const rsiPrev = ind5.rsi.at(-2) || 50;
+  const rsiSlope = rsi5 - rsiPrev;
+  const stoch5 = ind5.stochastic.at(-1)?.k || 50;
+  const stochPrev = ind5.stochastic.at(-2)?.k || 50;
+  const stochCrossUp = stochPrev < 50 && stoch5 > 50;
+  const stochCrossDown = stochPrev > 50 && stoch5 < 50;
+
+  if (rsiSlope > 1.0 || stochCrossUp) {
+    effectiveTrend = 'uptrend';
+    if (effectiveTrend !== cache.trend) {
+      console.log(`[TREND] → ${effectiveTrend.toUpperCase()} ${m10Ready ? '(M5/M10 aligned)' : '(M5 only)'}`);
+      cache.trend = effectiveTrend;
+    }
+  } else if (rsiSlope < -1.0 || stochCrossDown) {
+    effectiveTrend = 'downtrend';
+    if (effectiveTrend !== cache.trend) {
+      console.log(`[TREND] → ${effectiveTrend.toUpperCase()} ${m10Ready ? '(M5/M10 aligned)' : '(M5 only)'}`);
+      cache.trend = effectiveTrend;
+    }
+  } else {
+    effectiveTrend = 'sideways';
+    if (effectiveTrend !== cache.trend) {
+      console.log(`[TREND] → ${effectiveTrend.toUpperCase()} ${m10Ready ? '(M5/M10 aligned)' : '(M5 only)'}`);
+      cache.trend = effectiveTrend;
+    }
   }
-} else {
-  effectiveTrend = 'sideways';
-  console.log(`[TREND] ⚪ Both M5 & M10 sideways → skip trades.`);
 }
 
-  // --- Safety: skip if indicators incomplete ---
-  const lastRSI_M5 = ind5.rsi.at(-1);
-  const lastStoch_M5 = ind5.stochastic.at(-1);
-  const prevStoch_M5 = ind5.stochastic.at(-2);
-  const lastRSI_M1 = ind1.rsi.at(-1);
-  const lastStoch_M1 = ind1.stochastic.at(-1);
-  const lastATR_M5 = ind5.atr.at(-1) || 0;
-  if (!lastStoch_M5 || !prevStoch_M5 || !lastStoch_M1) return;
 
-  console.log(`[STRAT] Trend:${effectiveTrend} | M5 RSI:${lastRSI_M5?.toFixed(2)} Stoch:${lastStoch_M5?.k?.toFixed(2)} | M1 RSI:${lastRSI_M1?.toFixed(2)} Stoch:${lastStoch_M1?.k?.toFixed(2)}`);
-
-  // --- Market Regime Filter ---
-  const bbwM10 = ind10.bb?.length ? (ind10.bb.at(-1).upper - ind10.bb.at(-1).lower) / ind10.bb.at(-1).middle : 0;
+  // --- Market Regime Filter (SOFTENED) ---
+  const bbwM10 = ind10.bb?.length
+    ? (ind10.bb.at(-1).upper - ind10.bb.at(-1).lower) / ind10.bb.at(-1).middle
+    : 0;
   const atrM5 = ind5.atr.at(-1) || 0;
-  const lowVol = bbwM10 < 0.0012 || atrM5 < 0.2;
+
+  // Slightly relaxed thresholds
+  const lowVol = bbwM10 < 0.0010 || atrM5 < 0.18;
   const nowHour = new Date().getUTCHours();
-  const inDeadHours = (nowHour >= 0 && nowHour < 3);
-  if (lowVol || inDeadHours) {
-    console.log(`[STRAT] Market not tradable (lowVol=${lowVol}, deadHours=${inDeadHours}).`);
+  const inDeadHours = nowHour >= 0 && nowHour < 3;
+
+  // Momentum overrides
+  const rsiSeriesShort = ind5.rsi.slice(-5);
+  const rsiDelta = rsiSeriesShort.length >= 2 ? rsiSeriesShort.at(-1) - rsiSeriesShort.at(-2) : 0;
+  const rsiSlope = rsiDelta;
+  const stoch = ind5.stochastic.at(-1)?.k || 50;
+  const stochPrev = ind5.stochastic.at(-2)?.k || 50;
+  const stochCross = (stoch > 50 && stochPrev < 50) || (stoch < 50 && stochPrev > 50);
+  const trendAligned = effectiveTrend !== 'sideways';
+  const hasMomentum =
+    Math.abs(rsiSlope) > 0.6 || Math.abs(rsiDelta) > 0.6 || stochCross || trendAligned;
+
+  // Soft gate logic
+  if (lowVol && inDeadHours && !hasMomentum) {
+    const tradableStatus = lowVol && inDeadHours && !hasMomentum ? 'skip' : 'ok';
+    if (tradableStatus !== cache.tradable || cache.tick % 10 === 0) {
+      console.log(`[STRAT] tradable=${tradableStatus} | vol=${bbwM10.toFixed(4)} | ATR=${atrM5.toFixed(2)} | momentum=${hasMomentum}`);
+      cache.tradable = tradableStatus;
+    }
     await monitorOpenTrades(ind10, ind5, ind1);
     return;
   }
+
+  // Warning-only mode
+  if (lowVol && !inDeadHours) {
+    const tradableStatus = lowVol && inDeadHours && !hasMomentum ? 'skip' : 'ok';
+    if (tradableStatus !== cache.tradable || cache.tick % 10 === 0) {
+      console.log(`[STRAT] tradable=${tradableStatus} | vol=${bbwM10.toFixed(4)} | ATR=${atrM5.toFixed(2)} | momentum=${hasMomentum}`);
+      cache.tradable = tradableStatus;
+    }
+  }
+  if (inDeadHours && !lowVol) {
+    const tradableStatus = lowVol && inDeadHours && !hasMomentum ? 'skip' : 'ok';
+    if (tradableStatus !== cache.tradable || cache.tick % 10 === 0) {
+      console.log(`[STRAT] tradable=${tradableStatus} | vol=${bbwM10.toFixed(4)} | ATR=${atrM5.toFixed(2)} | momentum=${hasMomentum}`);
+      cache.tradable = tradableStatus;
+    }
+  }
+
 
   // --- Positions & Risk ---
   const openPositions = await safeGetPositions();
@@ -896,14 +975,22 @@ if (trendM5 === 'sideways' && trendM10 !== 'sideways') {
   let tradeSignal = null;
 
   // --- Ignore micro fluctuations (RSI slope too small) ---
-  const minSlopeThreshold = rsiStd * (effectiveTrend === 'sideways' ? 0.7 : 0.5);
+  const minSlopeThreshold = rsiStd * (effectiveTrend === 'sideways' ? 0.6 : 0.4);
   if (Math.abs(slope) < minSlopeThreshold) {
     // treat as noise; stay in current phase (no alerts, no trades)
-    console.log(
-      `[RSI] ⏸️ Ignored micro move (ΔRSI=${slope.toFixed(2)} < ${minSlopeThreshold.toFixed(2)}). Staying in ${nowPhase}.`
-    );
     return; // exit early
   }
+
+  if (nowPhase !== cache.phase) {
+    console.log(`[RSI] Phase → ${nowPhase.toUpperCase()} (${effectiveTrend})`);
+    cache.phase = nowPhase;
+  }
+
+  // occasional summary every 15 cycles
+  if (cache.tick % 15 === 0 && nowPhase === 'pullback') {
+    console.log(`[RSI] Pullback active | RSI=${currentRSI.toFixed(1)} Δ=${slope.toFixed(2)} z=${slopeZ.toFixed(2)}`);
+  }
+
 
 
   // --- Adaptive phase transitions ---
@@ -926,24 +1013,25 @@ if (trendM5 === 'sideways' && trendM10 !== 'sideways') {
     }
 
       case 'pullback': {
-      // Track consecutive confirmations
       if (!globalThis.rsiPhaseState.persist) {
         globalThis.rsiPhaseState.persist = { cont: 0, rev: 0 };
       }
 
-      // --- Adaptive continuation condition ---
+      // 🔄 Adaptive continuation (re-entry) logic
       const continuationCondition =
-        (effectiveTrend === 'uptrend' && slope > 0 && currentRSI > avgRSI + (rsiStd * 0.1) && slopeZ > 0.6) ||
-        (effectiveTrend === 'downtrend' && slope < 0 && currentRSI < avgRSI - (rsiStd * 0.1) && slopeZ < -0.6);
+        (effectiveTrend === 'uptrend' && slope > 0 &&
+          currentRSI > avgRSI - (rsiStd * 0.05) && slopeZ > 0.3) ||
+        (effectiveTrend === 'downtrend' && slope < 0 &&
+          currentRSI < avgRSI + (rsiStd * 0.05) && slopeZ < -0.3);
 
-      // --- Strengthened adaptive reversal condition ---
+      // 🔻 Adaptive reversal logic (slightly looser band)
       const reversalCondition =
         (effectiveTrend === 'uptrend' && slope < 0 &&
-          currentRSI < lowerBand - (rsiStd * 0.5) && slopeZ < -1.2) ||
+          currentRSI < lowerBand - (rsiStd * 0.25) && slopeZ < -0.8) ||
         (effectiveTrend === 'downtrend' && slope > 0 &&
-          currentRSI > upperBand + (rsiStd * 0.5) && slopeZ > 1.2);
+          currentRSI > upperBand + (rsiStd * 0.25) && slopeZ > 0.8);
 
-      // --- Two-bar persistence check ---
+      // ✅ 2-bar persistence
       if (continuationCondition) {
         globalThis.rsiPhaseState.persist.cont++;
         globalThis.rsiPhaseState.persist.rev = 0;
@@ -957,8 +1045,7 @@ if (trendM5 === 'sideways' && trendM10 !== 'sideways') {
           globalThis.rsiPhaseState.lastAlertType = 'continuation';
           globalThis.rsiPhaseState.persist.cont = 0;
         }
-      }
-      else if (reversalCondition) {
+      } else if (reversalCondition) {
         globalThis.rsiPhaseState.persist.rev++;
         globalThis.rsiPhaseState.persist.cont = 0;
         if (globalThis.rsiPhaseState.persist.rev >= 2) {
@@ -971,15 +1058,14 @@ if (trendM5 === 'sideways' && trendM10 !== 'sideways') {
           globalThis.rsiPhaseState.lastAlertType = 'reversal';
           globalThis.rsiPhaseState.persist.rev = 0;
         }
-      }
-      else {
-        // reset counters if no confirmation continues
+      } else {
+        // Reset persistence if neither confirmation continues
         globalThis.rsiPhaseState.persist.cont = 0;
         globalThis.rsiPhaseState.persist.rev = 0;
-        console.log('[RSI] Pullback ongoing...');
       }
       break;
     }
+
 
 
     case 'continuation':
@@ -1010,7 +1096,10 @@ if (trendM5 === 'sideways' && trendM10 !== 'sideways') {
     }
 
     // timeout threshold: 12 M5 candles (~60 min)
-    const timeoutMs = 12 * 5 * 60 * 1000;
+    const baseTimeout = 60 * 60 * 1000; // 60 min
+    const volFactor = Math.max(0.4, Math.min(1.6, (rsiStd || 1) / 3));
+    const timeoutMs = baseTimeout * volFactor;
+
 
     if (pullbackDuration > timeoutMs) {
       console.log(`[RSI] ⏱️ Pullback expired (${(pullbackDuration/60000).toFixed(1)} min) → resetting to trend.`);
@@ -1029,11 +1118,6 @@ if (trendM5 === 'sideways' && trendM10 !== 'sideways') {
     globalThis.rsiPhaseState.pullbackStart = null;
   }
 
-
-  // Debug
-  console.log(
-    `[RSI] phase=${nowPhase}, RSI=${currentRSI.toFixed(2)}, avg=${avgRSI.toFixed(2)}, σ=${rsiStd.toFixed(2)}, bands=[${lowerBand.toFixed(1)}, ${upperBand.toFixed(1)}], slope=${slope.toFixed(2)}, z=${slopeZ.toFixed(2)}, trend=${effectiveTrend}, signal=${tradeSignal}`
-  );
 
   // --- Trade readiness mapping ---
   const buyReady  = tradeSignal === 'BUY'  || tradeSignal === 'BUY_REVERSAL';
