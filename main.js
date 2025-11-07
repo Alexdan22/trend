@@ -893,8 +893,8 @@ async function checkStrategy(m5CandleTime = null) {
   const stochPrev = ind5.stochastic.at(-2)?.k || 50;
   const stochCross = (stoch > 50 && stochPrev < 50) || (stoch < 50 && stochPrev > 50);
   const trendAligned = effectiveTrend !== 'sideways';
-  const hasMomentum =
-    Math.abs(rsiSlope) > 0.6 || Math.abs(rsiDelta) > 0.6 || stochCross || trendAligned;
+  const hasMomentum = Math.abs(rsiSlope) > 0.6 || Math.abs(rsiDelta) > 0.6 || stochCross || trendAligned;
+  const lastATR_M5 = ind5.atr.at(-1) || 0;
 
   // Soft gate logic
   if (lowVol && inDeadHours && !hasMomentum) {
