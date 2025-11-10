@@ -1132,8 +1132,12 @@ async function checkStrategy(m5CandleTime = null) {
   // --- SL & TP Calculation ---
   const lastRetracementLow = Math.min(...candlesM5.slice(-3).map(c => c.low));
   const lastRetracementHigh = Math.max(...candlesM5.slice(-3).map(c => c.high));
-  const retracementDepth = Math.abs(lastRetracementHigh - lastRetracementLow);
+  const retracementDepth = Math.min(
+    Math.abs(lastRetracementHigh - lastRetracementLow),
+    lastATR_M5 * 3
+  );
   const slDistance = Math.max(retracementDepth * 0.5, lastATR_M5 * ATR_SL_MULTIPLIER);
+
 
   if (!accountBalance || accountBalance === 0) accountBalance = await safeGetAccountBalance();
   const slPriceDiff = slDistance;
