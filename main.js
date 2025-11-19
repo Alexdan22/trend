@@ -444,6 +444,38 @@ async function processTickForOpenPairs(price) {
         }
       }
 
+
+      // --- BREAK-EVEN EXECUTION ---
+      if (rec.breakEvenActive && rec.internalSL && trailingRec?.ticket) {
+        const hit =
+          (side === 'BUY'  && current <= rec.internalSL) ||
+          (side === 'SELL' && current >= rec.internalSL);
+
+        if (hit) {
+          console.log(`[PAIR] 🔵 BREAK-EVEN hit for ${pairId} — closing trailing leg.`);
+
+          try {
+            await safeClosePosition(trailingRec.ticket, trailingRec.lot);
+            rec.trades.TRAILING.ticket = null;
+
+            await sendTelegram(
+              `🔵 *BREAK-EVEN HIT*\n━━━━━━━━━━━━━━━\n🎫 *Pair:* ${pairId}\n📈 *Side:* ${side}\n💰 Lot Closed: ${trailingRec.lot}\n🧷 BE Level: ${rec.internalSL.toFixed(2)}\n🕒 ${new Date().toLocaleTimeString()}`,
+              { parse_mode: "Markdown" }
+            );
+          } catch (err) {
+            console.warn(`[PAIR] Failed to close trailing on BE for ${pairId}:`, err.message || err);
+          }
+
+          // cleanup if both legs gone
+          if (!rec.trades.PARTIAL.ticket && !rec.trades.TRAILING.ticket) {
+            delete openPairs[pairId];
+          }
+
+          continue;
+        }
+      }
+
+
        // --- HARD STOP-LOSS HIT CHECK (with optional buffer) ---
       if (rec.sl && rec.entryPrice && (partialRec?.ticket || trailingRec?.ticket)) {
 
@@ -1367,49 +1399,7 @@ async function monitorOpenTrades(ind10, ind5, ind1) {
       if (!price || price.bid == null || price.ask == null) continue;
       const current = side === 'BUY' ? price.bid : price.ask;
 
-      // --- SAFETY CHECK: if market trend collapses to sideways, close both legs ---
-      // if (!trendStrong) {
-      //   console.log(`[PAIR] Trend weakened (M10 sideways) → force-closing all for ${pairId}`);
-      //   for (const key of ['PARTIAL', 'TRAILING']) {
-      //     const trade = rec.trades[key];
-      //     if (trade?.ticket) {
-      //       try {
-      //         await safeClosePosition(trade.ticket, trade.lot);
-      //         trade.ticket = null;
-      //       } catch (err) {
-      //         console.warn(`[PAIR] Failed force-close (${key}) for ${pairId}:`, err.message);
-      //       }
-      //     }
-      //   }
-
-      //   delete openPairs[pairId];
-      //   await sendTelegram(
-      //     `🔻 *PAIR CLOSED (TREND WEAKENED)*\n━━━━━━━━━━━━━━━\n🎫 *Pair:* ${pairId}\n📈 *Side:* ${side}\n🕒 ${new Date().toLocaleTimeString()}`,
-      //     { parse_mode: 'Markdown' }
-      //   );
-
-      //   // Refresh balance after closure
-      //   try {
-      //     const newBal = await safeGetAccountBalance();
-      //     if (newBal && newBal !== accountBalance) accountBalance = newBal;
-      //   } catch (err) {
-      //     console.warn('[BALANCE] Post-close refresh failed:', err.message);
-      //   }
-      //   continue;
-      // }
-
-      // --- HEALTH CHECK: internalTrailingSL sanity ---
-      // If trailing SL somehow invalid (NaN/0), recompute from ATR as backup
-      if (!rec.internalTrailingSL || isNaN(rec.internalTrailingSL)) {
-        const atr = ind5?.atr?.at(-1) || 0;
-        if (atr > 0 && rec.entryPrice) {
-          rec.internalTrailingSL =
-            side === 'BUY'
-              ? rec.entryPrice - atr * 1.0
-              : rec.entryPrice + atr * 1.0;
-          console.log(`[PAIR] Restored missing internalTrailingSL for ${pairId}`);
-        }
-      }
+      
     }
   } catch (err) {
     console.error('[MONITOR] error:', err.message || err);
