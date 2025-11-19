@@ -26,7 +26,7 @@ const ACCOUNT_ID = process.env.METAAPI_ACCOUNT_ID;
 const SYMBOL = process.env.SYMBOL || "XAUUSDm"; // change to XAUUSDm/GOLD/etc. per broker
 const MIN_LOT = 0.01; // minimum lot size per broker
 // ---------------- LOT SIZING ----------------
-let FIXED_LOT = 0.02;   // default lot size for ALL trades
+let FIXED_LOT = 0.04;   // default lot size for ALL trades
 
 
 
@@ -133,11 +133,15 @@ function normalizeCategory(type, side) {
 }
 
 function countCategory(category) {
-  // Count only pairs still in "pair mode" — i.e., partial not closed
   return Object.values(openPairs)
-    .filter(p => p.category === category && !p.partialClosed)
-    .length;
+    .filter(p => 
+        p.category === category &&
+        !p.partialClosed &&                         // partial not closed
+        p.trades?.PARTIAL?.ticket &&                // partial exists
+        p.trades?.TRAILING?.ticket                  // trailing exists
+    ).length;
 }
+
 
 
 function parseSignalString(signalStr) {
@@ -1000,129 +1004,162 @@ startBot().catch(err => console.error('BOT start failed:', err));
 async function handleTradingViewSignal(req, res) {
   try {
     const payload = req.body;
+    console.log("\n\n======================");
+    console.log("[WEBHOOK] Incoming Payload:", JSON.stringify(payload, null, 2));
+    console.log("======================\n");
 
     if (!payload || !payload.signal) {
+      console.log("[WEBHOOK] ❌ Rejected: Missing 'signal'");
       return res.status(400).json({ ok: false, error: "Missing 'signal' in payload" });
     }
 
+    // Idempotency
     const signalId = payload.signalId ? String(payload.signalId) : null;
     if (signalId && processedSignalIds.has(signalId)) {
+      console.log(`[WEBHOOK] 🔁 Duplicate ignored (signalId=${signalId})`);
       return res.status(200).json({ ok: true, message: "Duplicate ignored (idempotent)" });
     }
 
+    // Parse the incoming signal
     const parsed = parseSignalString(payload.signal);
+    console.log("[WEBHOOK] Parsed Signal:", parsed);
+
     if (!parsed) {
+      console.log("[WEBHOOK] ❌ Invalid signal format");
       return res.status(400).json({ ok: false, error: "Invalid signal format" });
     }
 
-    // ENTRY signals
+    // ================================
+    //           ENTRY LOGIC
+    // ================================
     if (parsed.kind === "ENTRY") {
 
       const category = normalizeCategory(parsed.type, parsed.side);
+      const side = parsed.side;
+      const now = Date.now();
+
+      console.log(`[ENTRY] Received ENTRY → type=${parsed.type}, side=${side}, category=${category}`);
+
       if (!category) {
+        console.log("[ENTRY] ❌ Invalid category");
         return res.status(400).json({ ok: false, error: "Invalid category" });
       }
 
-      // category limit
+      // ---- CATEGORY LIMIT CHECK ----
+      console.log(`[ENTRY] Category Count(${category}) = ${countCategory(category)}, Max=${MAX_PER_CATEGORY}`);
+
       if (countCategory(category) >= MAX_PER_CATEGORY) {
+        console.log(`[ENTRY] ❌ Blocked: Category limit reached for ${category}`);
         return res.status(429).json({ ok: false, error: `Max trades reached for ${category}` });
       }
 
-      if (global.entryLock) {
-          return res.status(429).json({ ok: false, error: "Entry in progress" });
-      }
-      global.entryLock = true;
+      // ---- SAME-SIDE COOLDOWN CHECK ----
+      const elapsed = now - lastEntryTime[side];
+      console.log(`[ENTRY] Cooldown check: side=${side}, elapsed=${elapsed}ms, cooldown=${SIDE_COOLDOWN_MS}ms`);
 
-
-      // Mark signal ID before execution (avoid races)
-      if (signalId) processedSignalIds.add(signalId);
-
-      // 👉 LOT/SIZING/SL/TP WILL BE HANDLED INTERNALLY (not from webhook)
-      const side = parsed.side;
-
-            // ---- SIDE COOLDOWN CHECK ----
-      const now = Date.now();
-      if (now - lastEntryTime[side] < SIDE_COOLDOWN_MS) {
-        const remaining = SIDE_COOLDOWN_MS - (now - lastEntryTime[side]);
+      if (elapsed < SIDE_COOLDOWN_MS) {
+        const remaining = SIDE_COOLDOWN_MS - elapsed;
         const mins = Math.ceil(remaining / 60000);
+        console.log(`[ENTRY] ⛔ Same-side cooldown active → ${mins}m remaining`);
         return res.status(429).json({
           ok: false,
           error: `Cooldown active for ${side}. Try again in ${mins} min`
         });
       }
 
-      // 1. Determine lot
-      const totalLot = await internalLotSizing();
+      // Mark idempotency ID early
+      if (signalId) processedSignalIds.add(signalId);
 
-      // 2. Place order with no SL/TP
+      // ---- LOT SIZING ----
+      console.log("[ENTRY] Calculating lot size...");
+      const totalLot = await internalLotSizing();
+      console.log("[ENTRY] Lot decided:", totalLot);
+
+      // ---- PLACE PAIRED ORDER ----
+      console.log("[ENTRY] Placing paired order...");
       const prePair = await placePairedOrder(side, totalLot, null, null);
 
       if (!prePair) {
+        console.log("[ENTRY] ❌ Order failed → removing signalId & exiting");
         if (signalId) processedSignalIds.delete(signalId);
         return res.status(500).json({ ok: false, error: "Entry failed" });
       }
 
-      // 3. Use actual entry price to compute SL
+      console.log("[ENTRY] ✔ Paired order placed:", prePair);
+
+      // ---- SL CALCULATION ----
       const { sl } = await internalSLTPLogic(side, prePair.entryPrice);
+      console.log(`[ENTRY] SL calculated: ${sl}`);
 
-      // 4. Apply internal SL to the pair
       openPairs[prePair.pairId].sl = sl;
-      openPairs[prePair.pairId].tp = null; // ALWAYS null
-
-      // 5. Tag category, notify
+      openPairs[prePair.pairId].tp = null;
       openPairs[prePair.pairId].category = category;
       openPairs[prePair.pairId].signalId = signalId || null;
-      
+
+      // ---- START COOLDOWN NOW ----
       lastEntryTime[side] = Date.now();
-      global.entryLock = false;
+      console.log(`[ENTRY] Cooldown started for side=${side}`);
 
-
+      // ---- TELEGRAM ----
       await sendTelegram(
-        `🟢 *ENTRY* ${category}\n🎫 ${prePair.pairId}\n📈 ${side}\nSL: ${sl}\n🕒 ${new Date().toLocaleTimeString()}`,
-        { parse_mode: "Markdown" }
+        `🟢 <b>ENTRY</b> ${category}<br>🎫 ${prePair.pairId}<br>📈 ${side}<br>SL: ${sl}<br>🕒 ${new Date().toLocaleTimeString()}`,
+        { parse_mode: "HTML" }
       );
 
+      console.log("[ENTRY] ✔ ENTRY completed\n");
 
       return res.status(200).json({ ok: true, pair: openPairs[prePair.pairId] });
     }
 
-
+    // ================================
+    //           CLOSE LOGIC
+    // ================================
     if (parsed.kind === "CLOSE") {
-    const side = parsed.side; // BUY or SELL
+      const side = parsed.side;
+      console.log(`[CLOSE] Received CLOSE signal for side=${side}`);
 
-    const toClose = Object.entries(openPairs)
-      .filter(([id, rec]) => rec.side === side);
+      const toClose = Object.entries(openPairs).filter(([_, rec]) => rec.side === side);
 
-    if (signalId) processedSignalIds.add(signalId);
+      console.log(`[CLOSE] Found ${toClose.length} pairs to close`);
 
-    for (const [pairId, rec] of toClose) {
-      for (const key of ["PARTIAL", "TRAILING"]) {
-        const t = rec.trades[key];
-        if (t?.ticket) {
-          await safeClosePosition(t.ticket, t.lot).catch(() => {});
-          rec.trades[key].ticket = null;
+      if (signalId) processedSignalIds.add(signalId);
+
+      for (const [pairId, rec] of toClose) {
+        console.log(`[CLOSE] Closing pairId=${pairId}`);
+
+        for (const key of ["PARTIAL", "TRAILING"]) {
+          const t = rec.trades[key];
+          if (t?.ticket) {
+            console.log(`[CLOSE] Attempting to close ${key} → ticket=${t.ticket}`);
+            await safeClosePosition(t.ticket, t.lot).catch(e =>
+              console.log(`[CLOSE] Failed closing ${key}:`, e.message)
+            );
+            rec.trades[key].ticket = null;
+          }
         }
+
+        delete openPairs[pairId];
+
+        await sendTelegram(
+          `🔴 <b>CLOSE SIGNAL</b><br>Closed: ${pairId} (${side})`,
+          { parse_mode: "HTML" }
+        );
+
+        console.log(`[CLOSE] ✔ Pair closed: ${pairId}`);
       }
 
-      delete openPairs[pairId];
-
-      await sendTelegram(
-        `🔴 *CLOSE SIGNAL*\nClosed: ${pairId} (${side})`,
-        { parse_mode: "Markdown" }
-      );
+      return res.status(200).json({ ok: true, closed: toClose.length });
     }
 
-    return res.status(200).json({ ok: true, closed: toClose.length });
-  }
-
-
+    console.log("[WEBHOOK] ❌ Unknown signal type");
     return res.status(400).json({ ok: false, error: "Unknown signal" });
 
   } catch (err) {
-    console.error("[WEBHOOK] Error:", err);
+    console.error("[WEBHOOK] ❌ Unhandled Error:", err);
     return res.status(500).json({ ok: false, error: err.message });
   }
 }
+
 
 
 // ---- START EXPRESS SERVER ----
