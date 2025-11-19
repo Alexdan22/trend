@@ -1172,9 +1172,37 @@ async function checkStrategy(m5CandleTime = null) {
   if (!price || !price.bid || !price.ask) return;
   const ask = price.ask, bid = price.bid;
 
+  
+  // --- BLOCK ALL NEW TRADES FROM 12 AM TO 7 AM IST (18:30–01:30 UTC) ---
+  {
+    const nowUTC = new Date();
+    const utcHour = nowUTC.getUTCHours();
+    const utcMin = nowUTC.getUTCMinutes();
+
+    // 18:30 UTC → 23:59 UTC
+    const inEveningBlock =
+      (utcHour > 18 || (utcHour === 18 && utcMin >= 30));
+
+    // 00:00 UTC → 01:30 UTC
+    const inEarlyBlock =
+      (utcHour < 1 || (utcHour === 1 && utcMin <= 30));
+
+    if (inEveningBlock || inEarlyBlock) {
+      console.log(`[ENTRY-BLOCK] Trading window closed (IST 12AM–7AM). UTC=${utcHour}:${utcMin}`);
+      await sendTelegram(
+        `⛔ *Entry Blocked*\nTime: IST 12AM–7AM\nUTC: ${utcHour}:${utcMin}`,
+        { parse_mode: "Markdown" }
+      );
+      return; // <-- stops entries but keeps the bot alive
+    }
+  }
+
+
   // ===============================================================
   // === ENTRY EXECUTION ===========================================
   // ===============================================================
+
+  
   if (buyReady) {
     const candleTime = m5CandleTime || new Date().toISOString();
     if (!canTakeTrade('BUY', candleTime)) {
