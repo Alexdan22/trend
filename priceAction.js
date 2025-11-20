@@ -59,6 +59,20 @@ async function sendTelegram(message, options = {}) {
 let api, account, connection;
 let accountBalance = 0;
 
+// --- INTERNAL CANDLES (for ATR & other features) ---
+let candles_1m = [];   // array of {time, open, high, low, close}
+let candles_3m = [];   // array of {time, open, high, low, close}
+let candles_5m = [];   // array of {time, open, high, low, close}
+const MAX_CANDLES = 500; // keep last N candles
+
+// ATR / volatility config (tweakable)
+const ATR_PERIOD = 14;                // ATR period measured in M5 candles
+const ATR_LOW_THRESHOLD = 2.5;        // ATR < this => "low" volatility (tune for your symbol)
+const ATR_TRIGGER_MULTIPLIER = 1.5;   // used to compute dynamic trigger = ATR * multiplier
+const TRAIL_STEP_LOW = 5;             // 5 points when low vol
+const TRAIL_STEP_HIGH = 10;           // 10 points when mid/high vol
+
+
 
 let latestPrice = null;   // { bid, ask, timestamp }
 let lastTradeMonitorRun = 0;
@@ -69,6 +83,19 @@ let stagnantTickCount = 0;
 let stagnantSince = null;
 let marketFrozen = false;
 let openPairs = {}; // ticket -> metadata
+let entryProcessingLock = false;
+
+
+// ========================
+// APPROVAL ZONE STORAGE
+// ========================
+globalThis.zoneApproval = {
+  "T_BUY":  { "3M": false, "5M": false },
+  "T_SELL": { "3M": false, "5M": false },
+  "R_BUY":  { "3M": false, "5M": false },
+  "R_SELL": { "3M": false, "5M": false }
+};
+
 
 
 
@@ -165,7 +192,7 @@ async function internalLotSizing() {
 }
 
 async function internalSLTPLogic(side, entryPrice) {
-  const SL_DISTANCE = 10; // points or dollars
+  const SL_DISTANCE = 8; // points or dollars
 
   let sl = null;
 
@@ -179,6 +206,32 @@ async function internalSLTPLogic(side, entryPrice) {
     sl, 
     tp: null   // ALWAYS null, TradingView sends CLOSE signal instead
   };
+}
+
+// --- ATR computed on 5m candles (true range average) ---
+function computeATR_M5(period = ATR_PERIOD) {
+  // need at least (period + 1) candles to compute TRs using prev.close
+  if (candles_5m.length < period + 1) return 0;
+
+  const start = candles_5m.length - period;
+  const trs = [];
+
+  for (let i = start; i < candles_5m.length; i++) {
+    const curr = candles_5m[i];
+    const prev = candles_5m[i - 1];
+    if (!curr || !prev) continue;
+
+    const highLow = curr.high - curr.low;
+    const highClose = Math.abs(curr.high - prev.close);
+    const lowClose = Math.abs(curr.low - prev.close);
+
+    const tr = Math.max(highLow, highClose, lowClose);
+    trs.push(tr);
+  }
+
+  if (trs.length === 0) return 0;
+  const atr = trs.reduce((s, v) => s + v, 0) / trs.length;
+  return atr;
 }
 
 
@@ -312,11 +365,9 @@ async function processTickForOpenPairs(price) {
 
     const openTickets = new Set((posList || []).map(p => p.positionId || p.ticket || p.id).filter(Boolean));
 
-    // trailing config (single source of truth)
-    const SL_DISTANCE = 10;      // initial SL distance from entry (points/dollars)
-    const HALF_DISTANCE = SL_DISTANCE / 2; // first checkpoint
-    const TRAIL_TRIGGER = 20;    // when price is > SL + 20, advance SL
-    const TRAIL_STEP = SL_DISTANCE; // amount SL moves forward (10)
+    // NOTE: SL_DISTANCE and HALF_DISTANCE kept as before (fallback / checkpoint)
+    const SL_DISTANCE = 8;      // initial SL distance from entry (points/dollars)
+    const HALF_DISTANCE = 5; // first checkpoint
 
     for (const [pairId, rec] of Object.entries(openPairs)) {
       const side = rec.side;
@@ -424,35 +475,64 @@ async function processTickForOpenPairs(price) {
       } // end pre-partial
 
       // --- POST-PARTIAL / TRAILING logic (only after BE or partialClosed) ---
-      // If we have activated BE or partialClosed, enable step trailing
+      // If we have activated BE or partialClosed, enable ATR-driven 5/10 step trailing
       if (rec.partialClosed || rec.breakEvenActive) {
+        // compute ATR from 5m candles
+        const atr = (typeof computeATR_M5 === 'function') ? computeATR_M5(ATR_PERIOD) : 0;
+
+        // classify volatility
+        const isLowVol = (atr > 0 && atr < ATR_LOW_THRESHOLD) || (atr === 0); // treat missing ATR as "low" conservatively
+
+        // select fixed step based on volatility class
+        const TRAIL_STEP = isLowVol ? TRAIL_STEP_LOW : TRAIL_STEP_HIGH;
+
+        // dynamic trigger: require price to move beyond SL by either ATR*mult or TRAIL_STEP * 1.5 (stable floor)
+        const dynamicTrigger = Math.max((atr * ATR_TRIGGER_MULTIPLIER), (TRAIL_STEP * 1.5));
+        const TRAIL_TRIGGER = Math.max(dynamicTrigger, 1); // safety floor to avoid 0 triggers
+
+        // debug logging (optional)
+        console.debug && console.debug(`[TRAIL] M5_ATR=${atr.toFixed(4)} isLowVol=${isLowVol} TRAIL_STEP=${TRAIL_STEP} TRAIL_TRIGGER=${TRAIL_TRIGGER.toFixed(4)}`);
+
         if (side === 'BUY') {
-          // If price has moved sufficiently beyond current SL, advance SL to current - SL_DISTANCE
+          // distance from current internalSL to current price
           const distanceFromSL = current - rec.internalSL;
+
+          // Only advance if price moved beyond TRAIL_TRIGGER
           if (distanceFromSL > TRAIL_TRIGGER) {
             const newSL = current - TRAIL_STEP;
-            // Only advance if newSL is greater than previous SL (i.e., moves forward)
+
+            // only move SL forward (never backward)
             if (newSL > rec.internalSL) {
+              // Respect BE: do not move SL below BE when BE is active
+              const beLimit = rec.breakEvenActive ? rec.entryPrice : -Infinity;
+              const adjustedNewSL = Math.max(newSL, beLimit); // never set SL below BE entryPrice for BUY
+
               const oldSL = rec.internalSL;
-              rec.internalSL = newSL;
-              console.log(`[PAIR][${pairId}] TRAIL advanced from ${oldSL.toFixed(2)} -> ${rec.internalSL.toFixed(2)} (price=${current.toFixed(2)})`);
+              rec.internalSL = adjustedNewSL;
+              console.log(`[PAIR][${pairId}] TRAIL advanced (M5-ATR) from ${oldSL.toFixed(2)} -> ${rec.internalSL.toFixed(2)} (price=${current.toFixed(2)}, step=${TRAIL_STEP})`);
               await sendTelegram(
-                `➡️ *TRAIL ADVANCED*\nPair: ${pairId}\nSide: BUY\nOld SL: ${oldSL.toFixed(2)}\nNew SL: ${rec.internalSL.toFixed(2)}\nPrice: ${current.toFixed(2)}`,
+                `➡️ *TRAIL ADVANCED (M5-ATR)*\nPair: ${pairId}\nSide: BUY\nOld SL: ${oldSL.toFixed(2)}\nNew SL: ${rec.internalSL.toFixed(2)}\nPrice: ${current.toFixed(2)}\nM5 ATR: ${atr.toFixed(4)}`,
                 { parse_mode: 'Markdown' }
               );
             }
           }
         } else {
-          // SELL trailing
+          // SELL side
           const distanceFromSL = rec.internalSL - current;
+
           if (distanceFromSL > TRAIL_TRIGGER) {
             const newSL = current + TRAIL_STEP;
+
             if (newSL < rec.internalSL) {
+              // Respect BE: do not move SL above BE when BE is active (for SELL)
+              const beLimit = rec.breakEvenActive ? rec.entryPrice : Infinity;
+              const adjustedNewSL = Math.min(newSL, beLimit);
+
               const oldSL = rec.internalSL;
-              rec.internalSL = newSL;
-              console.log(`[PAIR][${pairId}] TRAIL advanced from ${oldSL.toFixed(2)} -> ${rec.internalSL.toFixed(2)} (price=${current.toFixed(2)})`);
+              rec.internalSL = adjustedNewSL;
+              console.log(`[PAIR][${pairId}] TRAIL advanced (M5-ATR) from ${oldSL.toFixed(2)} -> ${rec.internalSL.toFixed(2)} (price=${current.toFixed(2)}, step=${TRAIL_STEP})`);
               await sendTelegram(
-                `➡️ *TRAIL ADVANCED*\nPair: ${pairId}\nSide: SELL\nOld SL: ${oldSL.toFixed(2)}\nNew SL: ${rec.internalSL.toFixed(2)}\nPrice: ${current.toFixed(2)}`,
+                `➡️ *TRAIL ADVANCED (M5-ATR)*\nPair: ${pairId}\nSide: SELL\nOld SL: ${oldSL.toFixed(2)}\nNew SL: ${rec.internalSL.toFixed(2)}\nPrice: ${current.toFixed(2)}\nM5 ATR: ${atr.toFixed(4)}`,
                 { parse_mode: 'Markdown' }
               );
             }
@@ -460,27 +540,35 @@ async function processTickForOpenPairs(price) {
         }
       } // end trailing
 
-      // --- HARD STOP-LOSS HIT CHECK (use moving internalSL if present) ---
-      // Use a tiny buffer for tolerance if configured
-      const USE_SL_BUFFER = true;
-      const SL_BUFFER_PCT = 0.0003;
-      const buffer = USE_SL_BUFFER ? rec.entryPrice * SL_BUFFER_PCT : 0;
+      // --- HARD STOP-LOSS / TRAILING-SL HIT CHECK ---
+      // No buffer — clean raw SL comparison
       const effectiveSL = rec.internalSL ?? rec.sl;
 
+      // Detect hit (BUY/SELL opposite as usual)
       const slHit =
-        (side === 'BUY' && current <= effectiveSL - buffer) ||
-        (side === 'SELL' && current >= effectiveSL + buffer);
+        (side === 'BUY'  && current <= effectiveSL) ||
+        (side === 'SELL' && current >= effectiveSL);
 
       if (slHit) {
-        console.log(`[PAIR] ⛔ STOP-LOSS hit for ${pairId} — closing both legs. (effectiveSL=${effectiveSL.toFixed(2)}, buffer=${buffer.toFixed(2)})`);
 
+        // Determine if the SL was hit in profit or loss
+        const profitClosure =
+          (side === 'BUY'  && effectiveSL > rec.entryPrice) ||
+          (side === 'SELL' && effectiveSL < rec.entryPrice);
+
+        const alertType = profitClosure
+          ? "🟢 *PROFIT — TRAILING SL CLOSED*"
+          : "⛔ *STOP-LOSS HIT — LOSS CLOSED*";
+
+        console.log(`[PAIR] ${alertType} for ${pairId}`);
+
+        // Close both legs
         for (const key of ['PARTIAL', 'TRAILING']) {
           const t = rec.trades[key];
           if (t?.ticket) {
             try {
               await safeClosePosition(t.ticket, t.lot);
               rec.trades[key].ticket = null;
-              console.log(`[PAIR] Closed ${key} leg for ${pairId} due to SL hit.`);
             } catch (err) {
               console.warn(`[PAIR] Failed to close ${key} leg for ${pairId}:`, err.message);
             }
@@ -488,15 +576,18 @@ async function processTickForOpenPairs(price) {
         }
 
         delete openPairs[pairId];
+
         await sendTelegram(
-          `⛔ *STOP-LOSS HIT — PAIR CLOSED*\n━━━━━━━━━━━━━━━\n🎫 *Pair:* ${pairId}\n📈 *Side:* ${side}\n💀 *SL:* ${effectiveSL.toFixed(2)}\n🕒 ${new Date().toLocaleTimeString()}`,
-          { parse_mode: 'Markdown' }
+          `${alertType}\n━━━━━━━━━━━━━━━\n🎫 *Pair:* ${pairId}\n📈 *Side:* ${side}\nSL: ${effectiveSL.toFixed(2)}\nEntry: ${rec.entryPrice.toFixed(2)}\n🕒 ${new Date().toLocaleTimeString()}`,
+          { parse_mode: "Markdown" }
         );
 
         const newBal = await safeGetAccountBalance();
         if (newBal && newBal !== accountBalance) accountBalance = newBal;
-        continue; // skip further processing for this pair
+
+        continue;
       }
+
 
       // --- If both trade tickets are gone, cleanup pair ---
       if (!rec.trades.PARTIAL.ticket && !rec.trades.TRAILING.ticket) {
@@ -507,6 +598,7 @@ async function processTickForOpenPairs(price) {
     console.error('[TICK-PROCESS] processTickForOpenPairs error:', err.message || err);
   }
 }
+
 
 
 
@@ -629,6 +721,54 @@ async function handleTick(tick) {
       }
     }
 
+    // --- CANDLE BUILDER (1m, 3m, 5m) ---
+    try {
+      const nowMs = Date.now();
+      const minuteBucket = Math.floor(nowMs / 60000) * 60000;       // 1m bucket (ms)
+      const threeMinBucket = Math.floor(minuteBucket / 180000) * 180000; // 3m bucket (180000ms)
+      const fiveMinBucket = Math.floor(minuteBucket / 300000) * 300000;  // 5m bucket (300000ms)
+
+      const priceMid = (tick.bid != null && tick.ask != null) ? ((tick.bid + tick.ask) / 2) : (tick.bid ?? tick.ask ?? null);
+
+      if (priceMid != null) {
+        // 1m candle
+        let last1 = candles_1m[candles_1m.length - 1];
+        if (!last1 || last1.time !== minuteBucket) {
+          candles_1m.push({ time: minuteBucket, open: priceMid, high: priceMid, low: priceMid, close: priceMid });
+          if (candles_1m.length > MAX_CANDLES) candles_1m.shift();
+        } else {
+          last1.high = Math.max(last1.high, priceMid);
+          last1.low  = Math.min(last1.low, priceMid);
+          last1.close = priceMid;
+        }
+
+        // 3m candle (built directly from ticks)
+        let last3 = candles_3m[candles_3m.length - 1];
+        if (!last3 || last3.time !== threeMinBucket) {
+          candles_3m.push({ time: threeMinBucket, open: priceMid, high: priceMid, low: priceMid, close: priceMid });
+          if (candles_3m.length > MAX_CANDLES) candles_3m.shift();
+        } else {
+          last3.high = Math.max(last3.high, priceMid);
+          last3.low  = Math.min(last3.low, priceMid);
+          last3.close = priceMid;
+        }
+
+        // 5m candle (built directly from ticks)
+        let last5 = candles_5m[candles_5m.length - 1];
+        if (!last5 || last5.time !== fiveMinBucket) {
+          candles_5m.push({ time: fiveMinBucket, open: priceMid, high: priceMid, low: priceMid, close: priceMid });
+          if (candles_5m.length > MAX_CANDLES) candles_5m.shift();
+        } else {
+          last5.high = Math.max(last5.high, priceMid);
+          last5.low  = Math.min(last5.low, priceMid);
+          last5.close = priceMid;
+        }
+      }
+    } catch (err) {
+      console.log('[CANDLE BUILD] error:', err.message || err);
+    }
+
+
     // --- Backup monitor every 15 seconds ---
     if (Date.now() - lastTradeMonitorRun > 15000) {
       lastTradeMonitorRun = Date.now();
@@ -750,17 +890,106 @@ async function monitorOpenTrades() {
         continue;
       }
 
-      // 3️⃣ Fetch latest price
+      // 3️⃣ Refresh ENTRY PRICE & adjust internal SL baseline
+      try {
+        // Choose any existing leg to reference (prefer trailing leg)
+        const legTicket =
+          rec.trades?.TRAILING?.ticket ||
+          rec.trades?.PARTIAL?.ticket;
+
+        if (legTicket) {
+          const posObj = (positions || []).find(p =>
+            p.positionId === legTicket ||
+            p.ticket === legTicket ||
+            p.id === legTicket
+          );
+
+          if (posObj && posObj.price && posObj.price > 0) {
+            const oldEntry = rec.entryPrice;
+            const newEntry = posObj.price;
+
+            if (oldEntry !== newEntry) {
+              rec.entryPrice = newEntry;
+
+              // Only adjust internal SL baseline if BE is not yet active
+              // and partial is not yet closed
+              if (!rec.breakEvenActive && !rec.partialClosed) {
+                const SL_DISTANCE = 8; // must match your default
+
+                if (rec.side === "BUY") {
+                  rec.internalSL = newEntry - SL_DISTANCE;
+                } else {
+                  rec.internalSL = newEntry + SL_DISTANCE;
+                }
+              }
+
+              console.log(
+                `[ENTRY REFRESH] ${pairId} entry updated: ${oldEntry} → ${newEntry}, internalSL=${rec.internalSL}`
+              );
+            }
+          }
+        }
+      } catch (err) {
+        console.log(`[ENTRY REFRESH ERROR] ${pairId}`, err.message);
+      }
+
+      // 4️⃣ Fetch latest price
       const price = await safeGetPrice(SYMBOL);
       if (!price || price.bid == null || price.ask == null) continue;
 
       const current = side === 'BUY' ? price.bid : price.ask;
 
+
+      //----------------------------------------------------------
+      // TIGHT SL OVERRIDE WHEN OPPOSITE MATURED TRADE EXISTS
+      //----------------------------------------------------------
+      try {
+          // Check if there exists ANY opposite matured trade
+          const oppositeMaturedExists = Object.values(openPairs).some(other => {
+              return other.pairId !== rec.pairId &&
+                    other.side !== rec.side &&
+                    other.partialClosed === true &&
+                    other.trades?.TRAILING?.ticket;
+          });
+
+          if (oppositeMaturedExists && !rec.partialClosed && !rec.breakEvenActive) {
+              // Apply tight override SL only before BE activates
+              const TIGHT_SL = 5;
+
+              const desiredSL = rec.side === "BUY"
+                  ? rec.entryPrice - TIGHT_SL
+                  : rec.entryPrice + TIGHT_SL;
+
+              // Only tighten if it's STRICTLY tighter than current SL
+              if (!rec.internalSL || 
+                  (rec.side === "BUY"  && desiredSL > rec.internalSL) ||
+                  (rec.side === "SELL" && desiredSL < rec.internalSL)) {
+
+                  rec.internalSL = desiredSL;
+
+                  console.log(`[MONITOR] Tight SL override applied to ${pairId}: ${desiredSL}`);
+                  await sendTelegram(
+                      `⚠️ *TIGHT SL APPLIED*\nPair: ${pairId}\nReason: Opposite matured trade exists\nSL: ${desiredSL}`,
+                      { parse_mode: 'Markdown' }
+                  );
+              }
+          }
+      } catch (err) {
+          console.log(`[MONITOR] Tight SL override error for ${pairId}:`, err.message);
+      }
+
+
+      // --- NOTE ---
+      // This monitor layer remains intentionally light.
+      // All the heavy lifting (partial/BE/trailing/SL hit)
+      // is already handled inside processTickForOpenPairs().
     }
+
   } catch (err) {
     console.error('[MONITOR] error:', err.message || err);
   }
 }
+
 
 
 
@@ -1024,6 +1253,45 @@ async function handleTradingViewSignal(req, res) {
     const parsed = parseSignalString(payload.signal);
     console.log("[WEBHOOK] Parsed Signal:", parsed);
 
+    // ==========================================
+    // ZONE APPROVAL HANDLER
+    // Format example:
+    // signal: "3M ZONE T BUY"
+    // approval: true/false
+    // ==========================================
+    try {
+      const z = payload.signal.trim().toUpperCase().split(/\s+/);
+
+      // Expected: [ "3M", "ZONE", "T", "BUY" ]
+      if (z.length === 4 && z[1] === "ZONE") {
+          const timeframe = z[0];    // "3M" or "5M"
+          const type = z[2];         // "T" or "R"
+          const side = z[3];         // "BUY" or "SELL"
+
+          const category = `${type}_${side}`;  // T_BUY, T_SELL, R_BUY, R_SELL
+          const approval = Boolean(payload.approval);
+
+          if (globalThis.zoneApproval[category]) {
+              globalThis.zoneApproval[category][timeframe] = approval;
+
+              console.log(`[ZONE] Updated ${category} ${timeframe} → ${approval}`);
+
+              await sendTelegram(
+                `📍 *Zone Approval Updated*\nCategory: ${category}\nTF: ${timeframe}\nApproval: ${approval}`,
+                { parse_mode: 'Markdown' }
+              );
+
+              return res.status(200).json({
+                ok: true,
+                updated: { category, timeframe, approval }
+              });
+          }
+      }
+    } catch (err) {
+      console.log("[ZONE] Error updating zone:", err.message);
+    }
+
+
     if (!parsed) {
       console.log("[WEBHOOK] ❌ Invalid signal format");
       return res.status(400).json({ ok: false, error: "Invalid signal format" });
@@ -1034,11 +1302,49 @@ async function handleTradingViewSignal(req, res) {
     // ================================
     if (parsed.kind === "ENTRY") {
 
+
+      // --------------------------------------
+      // RAPID-FIRE ENTRY LOCK (2 seconds)
+      // --------------------------------------
+      if (entryProcessingLock) {
+        console.log("[ENTRY] ⛔ Blocked: Rapid-fire entry detected");
+        return res.status(429).json({
+          ok: false,
+          error: "Another entry is being processed. Try again."
+        });
+      }
+
+      // Activate lock
+      entryProcessingLock = true;
+
+      // Auto-clear after 2 seconds
+      setTimeout(() => {
+        entryProcessingLock = false;
+      }, 2000);
+
+
       const category = normalizeCategory(parsed.type, parsed.side);
       const side = parsed.side;
       const now = Date.now();
 
       console.log(`[ENTRY] Received ENTRY → type=${parsed.type}, side=${side}, category=${category}`);
+
+      // ==========================================
+      // APPROVAL ZONE CHECK
+      // ==========================================
+      const zone3 = globalThis.zoneApproval?.[category]?.["3M"];
+      const zone5 = globalThis.zoneApproval?.[category]?.["5M"];
+
+      console.log(`[ENTRY] Zone Check: 3M=${zone3}, 5M=${zone5}`);
+
+      if (!zone3 || !zone5) {
+        console.log(`[ENTRY] ⛔ Blocked: Approval zones not satisfied for ${category}`);
+        return res.status(403).json({
+            ok: false,
+            error: `Approval zones not satisfied: 3M=${zone3}, 5M=${zone5}`
+        });
+      }
+
 
       if (!category) {
         console.log("[ENTRY] ❌ Invalid category");
@@ -1099,12 +1405,18 @@ async function handleTradingViewSignal(req, res) {
       // ---- START COOLDOWN NOW ----
       lastEntryTime[side] = Date.now();
       console.log(`[ENTRY] Cooldown started for side=${side}`);
+      const safeCategory = category.replace(/[^a-zA-Z0-9 ]/g, '');
+
 
       // ---- TELEGRAM ----
       await sendTelegram(
-        `🟢 <b>ENTRY</b> ${category}<br>🎫 ${prePair.pairId}<br>📈 ${side}<br>SL: ${sl}<br>🕒 ${new Date().toLocaleTimeString()}`,
-        { parse_mode: "HTML" }
+        `🟢 ENTRY ${safeCategory}
+      🎫 ${prePair.pairId}
+      📈 ${side}
+      SL: ${sl}
+      🕒 ${new Date().toLocaleTimeString()}`
       );
+
 
       console.log("[ENTRY] ✔ ENTRY completed\n");
 
@@ -1141,9 +1453,10 @@ async function handleTradingViewSignal(req, res) {
         delete openPairs[pairId];
 
         await sendTelegram(
-          `🔴 <b>CLOSE SIGNAL</b><br>Closed: ${pairId} (${side})`,
-          { parse_mode: "HTML" }
+          `🔴 CLOSE SIGNAL
+        Closed: ${pairId} (${side})`
         );
+
 
         console.log(`[CLOSE] ✔ Pair closed: ${pairId}`);
       }
