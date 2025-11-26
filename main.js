@@ -1106,9 +1106,7 @@ async function checkStrategy(m5CandleTime = null) {
     }
 
     // timeout threshold: 12 M5 candles (~60 min)
-    const baseTimeout = 60 * 60 * 1000; // 60 min
-    const volFactor = Math.max(0.4, Math.min(1.6, (rsiStd || 1) / 3));
-    const timeoutMs = baseTimeout * volFactor;
+    const timeoutMs = 60 * 60 * 1000; // 60 min
 
 
     if (pullbackDuration > timeoutMs) {
@@ -1193,6 +1191,13 @@ async function checkStrategy(m5CandleTime = null) {
         `⛔ *Entry Blocked*\nTime: IST 12AM–7AM\nUTC: ${utcHour}:${utcMin}`,
         { parse_mode: "Markdown" }
       );
+
+      // Clear retracement memory and notify state after trade
+      globalThis.retracementState = { active: false, type: null, startCandle: null, startedAt: 0, lastSeen: 0 };
+      lastRetracementNotify.type = null;
+      lastRetracementNotify.candleId = null;
+      globalThis.rsiPhaseState.pullbackCount = 0;
+
       return; // <-- stops entries but keeps the bot alive
     }
   }
@@ -1276,15 +1281,18 @@ async function checkStrategy(m5CandleTime = null) {
 
 function canTakeTrade(type, m5CandleTime) {
   if (!lastSignal) return true;
+
+  // different side → always allowed
   if (lastSignal.type !== type) return true;
+
   if (!m5CandleTime) return true;
+
+  // same candle → block duplicate during the same M5 candle
   if (lastSignal.m5CandleTime === m5CandleTime) return false;
-  const lastTime = new Date(lastSignal.time);
-  const now = new Date();
-  const diffMin = (now - lastTime) / 60000;
-  if (diffMin < COOLDOWN_MINUTES && lastSignal.type === type) return false;
-  return true;
+
+  return true;  // ⚡ No cooldown anymore
 }
+
 
 
  // --------------------- SYNC: reconcile broker positions with tracked pairs ---------------------

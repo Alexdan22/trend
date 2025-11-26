@@ -54,6 +54,11 @@ async function sendTelegram(message, options = {}) {
   }
 }
 
+function md2(text) {
+  return text.replace(/([_\*\[\]\(\)~`>#+\-=|{}\.!])/g, '\\$1');
+}
+
+
 
 // --------------------- STATE ---------------------
 let api, account, connection;
@@ -412,7 +417,9 @@ async function processTickForOpenPairs(price) {
             if (rec.internalSL < desiredSL) { // move SL forward (less loss)
               rec.internalSL = desiredSL;
               console.log(`[PAIR][${pairId}] CHECKPOINT1 reached — SL moved to ${rec.internalSL.toFixed(2)}`);
-              await sendTelegram(`🔷 *Checkpoint 1* — ${pairId}\nSide: BUY\nSL moved → ${rec.internalSL.toFixed(2)}`, { parse_mode: 'Markdown' });
+              const safePairId = md2(pairId);
+
+              await sendTelegram(`🔷 *Checkpoint 1* — ${safePairId}\nSide: BUY\nSL moved → ${rec.internalSL.toFixed(2)}`, { parse_mode: 'MarkdownV2' });
             }
           }
 
@@ -428,9 +435,10 @@ async function processTickForOpenPairs(price) {
                 rec.breakEvenActive = true;
                 rec.internalSL = entry; // break-even
                 console.log(`[PAIR][${pairId}] PARTIAL closed; BE set at ${rec.internalSL.toFixed(2)}`);
+                const safePairId = md2(pairId);
                 await sendTelegram(
-                  `🟠 *PARTIAL CLOSED + BREAK-EVEN SET*\nPair: ${pairId}\nSide: BUY\nPartial lot: ${partialRec.lot}\nBE (internal SL): ${rec.internalSL.toFixed(2)}`,
-                  { parse_mode: 'Markdown' }
+                  `🟠 *PARTIAL CLOSED + BREAK-EVEN SET*\nPair: ${safePairId}\nSide: BUY\nPartial lot: ${partialRec.lot}\nBE (internal SL): ${rec.internalSL.toFixed(2)}`,
+                  { parse_mode: 'MarkdownV2' }
                 );
                 // Update account balance snapshot
                 const newBal = await safeGetAccountBalance();
@@ -447,7 +455,8 @@ async function processTickForOpenPairs(price) {
             if (rec.internalSL > desiredSL) { // move SL forward (less loss for SELL)
               rec.internalSL = desiredSL;
               console.log(`[PAIR][${pairId}] CHECKPOINT1 reached — SL moved to ${rec.internalSL.toFixed(2)}`);
-              await sendTelegram(`🔷 *Checkpoint 1* — ${pairId}\nSide: SELL\nSL moved → ${rec.internalSL.toFixed(2)}`, { parse_mode: 'Markdown' });
+              const safePairId = md2(pairId);
+              await sendTelegram(`🔷 *Checkpoint 1* — ${safePairId}\nSide: SELL\nSL moved → ${rec.internalSL.toFixed(2)}`, { parse_mode: 'MarkdownV2' });
             }
           }
 
@@ -460,9 +469,10 @@ async function processTickForOpenPairs(price) {
                 rec.breakEvenActive = true;
                 rec.internalSL = entry; // break-even
                 console.log(`[PAIR][${pairId}] PARTIAL closed; BE set at ${rec.internalSL.toFixed(2)}`);
+                const safePairId = md2(pairId);
                 await sendTelegram(
-                  `🟠 *PARTIAL CLOSED + BREAK-EVEN SET*\nPair: ${pairId}\nSide: SELL\nPartial lot: ${partialRec.lot}\nBE (internal SL): ${rec.internalSL.toFixed(2)}`,
-                  { parse_mode: 'Markdown' }
+                  `🟠 *PARTIAL CLOSED + BREAK-EVEN SET*\nPair: ${safePairId}\nSide: SELL\nPartial lot: ${partialRec.lot}\nBE (internal SL): ${rec.internalSL.toFixed(2)}`,
+                  { parse_mode: 'MarkdownV2' }
                 );
                 const newBal = await safeGetAccountBalance();
                 if (newBal && newBal !== accountBalance) accountBalance = newBal;
@@ -509,10 +519,11 @@ async function processTickForOpenPairs(price) {
 
               const oldSL = rec.internalSL;
               rec.internalSL = adjustedNewSL;
+              const safePairId = md2(pairId);
               console.log(`[PAIR][${pairId}] TRAIL advanced (M5-ATR) from ${oldSL.toFixed(2)} -> ${rec.internalSL.toFixed(2)} (price=${current.toFixed(2)}, step=${TRAIL_STEP})`);
               await sendTelegram(
-                `➡️ *TRAIL ADVANCED (M5-ATR)*\nPair: ${pairId}\nSide: BUY\nOld SL: ${oldSL.toFixed(2)}\nNew SL: ${rec.internalSL.toFixed(2)}\nPrice: ${current.toFixed(2)}\nM5 ATR: ${atr.toFixed(4)}`,
-                { parse_mode: 'Markdown' }
+                `➡️ *TRAIL ADVANCED (M5-ATR)*\nPair: ${safePairId}\nSide: BUY\nOld SL: ${oldSL.toFixed(2)}\nNew SL: ${rec.internalSL.toFixed(2)}\nPrice: ${current.toFixed(2)}\nM5 ATR: ${atr.toFixed(4)}`,
+                { parse_mode: 'MarkdownV2' }
               );
             }
           }
@@ -530,10 +541,11 @@ async function processTickForOpenPairs(price) {
 
               const oldSL = rec.internalSL;
               rec.internalSL = adjustedNewSL;
+              const safePairId = md2(pairId);
               console.log(`[PAIR][${pairId}] TRAIL advanced (M5-ATR) from ${oldSL.toFixed(2)} -> ${rec.internalSL.toFixed(2)} (price=${current.toFixed(2)}, step=${TRAIL_STEP})`);
               await sendTelegram(
-                `➡️ *TRAIL ADVANCED (M5-ATR)*\nPair: ${pairId}\nSide: SELL\nOld SL: ${oldSL.toFixed(2)}\nNew SL: ${rec.internalSL.toFixed(2)}\nPrice: ${current.toFixed(2)}\nM5 ATR: ${atr.toFixed(4)}`,
-                { parse_mode: 'Markdown' }
+                `➡️ *TRAIL ADVANCED (M5-ATR)*\nPair: ${safePairId}\nSide: SELL\nOld SL: ${oldSL.toFixed(2)}\nNew SL: ${rec.internalSL.toFixed(2)}\nPrice: ${current.toFixed(2)}\nM5 ATR: ${atr.toFixed(4)}`,
+                { parse_mode: 'MarkdownV2' }
               );
             }
           }
@@ -576,10 +588,11 @@ async function processTickForOpenPairs(price) {
         }
 
         delete openPairs[pairId];
+        const safePairId = md2(pairId);
 
         await sendTelegram(
-          `${alertType}\n━━━━━━━━━━━━━━━\n🎫 *Pair:* ${pairId}\n📈 *Side:* ${side}\nSL: ${effectiveSL.toFixed(2)}\nEntry: ${rec.entryPrice.toFixed(2)}\n🕒 ${new Date().toLocaleTimeString()}`,
-          { parse_mode: "Markdown" }
+          `${alertType}\n━━━━━━━━━━━━━━━\n🎫 *Pair:* ${safePairId}\n📈 *Side:* ${side}\nSL: ${effectiveSL.toFixed(2)}\nEntry: ${rec.entryPrice.toFixed(2)}\n🕒 ${new Date().toLocaleTimeString()}`,
+          { parse_mode: "MarkdownV2" }
         );
 
         const newBal = await safeGetAccountBalance();
@@ -684,7 +697,7 @@ async function handleTick(tick) {
           console.log(`[MARKET] ✅ Price feed resumed`);
           await sendTelegram(
             `✅ *MARKET ACTIVE AGAIN*\n━━━━━━━━━━━━━━━\n💹 Live price feed restored\n🕒 ${new Date().toLocaleTimeString()}`,
-            { parse_mode: 'Markdown' }
+            { parse_mode: 'MarkdownV2' }
           );
         } else {
           stagnantTickCount = 0;
@@ -701,7 +714,7 @@ async function handleTick(tick) {
           console.warn(`[MARKET] ⚠️ Price feed frozen since ${stagnantSince}`);
           await sendTelegram(
             `⚠️ *MARKET FREEZE DETECTED*\n━━━━━━━━━━━━━━━\n📉 No price movement detected\n🕒 Since: ${new Date().toLocaleTimeString()}`,
-            { parse_mode: 'Markdown' }
+            { parse_mode: 'MarkdownV2' }
           );
         }
 
@@ -968,9 +981,10 @@ async function monitorOpenTrades() {
                   rec.internalSL = desiredSL;
 
                   console.log(`[MONITOR] Tight SL override applied to ${pairId}: ${desiredSL}`);
+                  const safePairId = md2(pairId);
                   await sendTelegram(
-                      `⚠️ *TIGHT SL APPLIED*\nPair: ${pairId}\nReason: Opposite matured trade exists\nSL: ${desiredSL}`,
-                      { parse_mode: 'Markdown' }
+                      `⚠️ *TIGHT SL APPLIED*\nPair: ${safePairId}\nReason: Opposite matured trade exists\nSL: ${desiredSL}`,
+                      { parse_mode: 'MarkdownV2' }
                   );
               }
           }
@@ -1101,7 +1115,7 @@ async function startBot() {
     } catch (e) { console.warn('[METAAPI] fetching initial balance failed', e.message); }
 
     // notify
-    await sendTelegram(`✅ *BOT CONNECTED* — ${SYMBOL}\nBalance: ${accountBalance?.toFixed?.(2) ?? accountBalance}`, { parse_mode: 'Markdown' });
+    await sendTelegram(`✅ *BOT CONNECTED* — ${SYMBOL}\nBalance: ${accountBalance?.toFixed?.(2) ?? accountBalance}`, { parse_mode: 'MarkdownV2' });
 
     // reset maintenance timers
     retryDelay = 2 * 60 * 1000;
@@ -1195,7 +1209,7 @@ async function startBot() {
         const disconnectedFor = Date.now() - (lastDisconnectTime || Date.now());
         if (disconnectedFor >= MAINTENANCE_ALERT_THRESHOLD && !maintenanceAlertSent) {
           maintenanceAlertSent = true;
-          await sendTelegram(`⚠️ BROKER CONNECTION ALERT — disconnected >30m`, { parse_mode: 'Markdown' });
+          await sendTelegram(`⚠️ BROKER CONNECTION ALERT — disconnected >30m`, { parse_mode: 'MarkdownV2' });
         }
       }
     }
@@ -1208,7 +1222,7 @@ async function startBot() {
     const disconnectedFor = Date.now() - lastDisconnectTime;
     if (disconnectedFor >= MAINTENANCE_ALERT_THRESHOLD && !maintenanceAlertSent) {
       maintenanceAlertSent = true;
-      await sendTelegram(`⚠️ BROKER CONNECTION ALERT — disconnected >30m`, { parse_mode: 'Markdown' });
+      await sendTelegram(`⚠️ BROKER CONNECTION ALERT — disconnected >30m`, { parse_mode: 'MarkdownV2' });
     }
 
     // backoff and restart (non-blocking)
@@ -1275,11 +1289,6 @@ async function handleTradingViewSignal(req, res) {
               globalThis.zoneApproval[category][timeframe] = approval;
 
               console.log(`[ZONE] Updated ${category} ${timeframe} → ${approval}`);
-
-              await sendTelegram(
-                `📍 *Zone Approval Updated*\nCategory: ${category}\nTF: ${timeframe}\nApproval: ${approval}`,
-                { parse_mode: 'Markdown' }
-              );
 
               return res.status(200).json({
                 ok: true,
@@ -1406,16 +1415,19 @@ async function handleTradingViewSignal(req, res) {
       lastEntryTime[side] = Date.now();
       console.log(`[ENTRY] Cooldown started for side=${side}`);
       const safeCategory = category.replace(/[^a-zA-Z0-9 ]/g, '');
+      const safePairId = md2(prePair.pairId);
 
 
       // ---- TELEGRAM ----
       await sendTelegram(
-        `🟢 ENTRY ${safeCategory}
-      🎫 ${prePair.pairId}
-      📈 ${side}
-      SL: ${sl}
-      🕒 ${new Date().toLocaleTimeString()}`
+        `🟢 *ENTRY* ${safeCategory}\n` +
+        `🎫 ${safePairId}\n` +
+        `📈 ${side}\n` +
+        `SL: ${sl}\n` +
+        `🕒 ${new Date().toLocaleTimeString()}`,
+        { parse_mode: "MarkdownV2" }
       );
+
 
 
       console.log("[ENTRY] ✔ ENTRY completed\n");
@@ -1451,11 +1463,13 @@ async function handleTradingViewSignal(req, res) {
         }
 
         delete openPairs[pairId];
+        const safePairId = md2(pairId);
 
         await sendTelegram(
-          `🔴 CLOSE SIGNAL
-        Closed: ${pairId} (${side})`
+          `🔴 *CLOSE SIGNAL*\nClosed: ${safePairId} (${side})`,
+          { parse_mode: "MarkdownV2" }
         );
+
 
 
         console.log(`[CLOSE] ✔ Pair closed: ${pairId}`);
