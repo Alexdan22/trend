@@ -47,12 +47,18 @@ if (TELEGRAM_TOKEN && TELEGRAM_CHAT_ID) {
 
 async function sendTelegram(message, options = {}) {
   if (!tgBot || !TELEGRAM_CHAT_ID) return;
+
   try {
-    await tgBot.sendMessage(TELEGRAM_CHAT_ID, message, options);
+    // escape only unsafe characters WITHOUT breaking markdown syntax
+    const safeMessage = message.replace(/([\[\]\(\)~`>#+\-=|{}\.!])/g, '\\$1');
+
+    await tgBot.sendMessage(TELEGRAM_CHAT_ID, safeMessage, options);
+
   } catch (e) {
     console.warn('❌ Telegram send failed:', e.message);
   }
 }
+
 
 function md2(text) {
   return text.replace(/([_\*\[\]\(\)~`>#+\-=|{}\.!])/g, '\\$1');
