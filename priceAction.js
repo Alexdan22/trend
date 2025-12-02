@@ -14,7 +14,7 @@ const WEBHOOK_PORT = process.env.WEBHOOK_PORT || 3000;
 
 // Idempotency
 const processedSignalIds = new Set();
-const MAX_PER_CATEGORY = 2;
+const MAX_PER_CATEGORY = 1;
 // 15-minute cooldown between trades of the same side (BUY or SELL)
 const SIDE_COOLDOWN_MS = 15 * 60 * 1000;
 const lastEntryTime = { BUY: 0, SELL: 0 };
@@ -61,8 +61,13 @@ async function sendTelegram(message, options = {}) {
 
 
 function md2(text) {
-  return text.replace(/([_\*\[\]\(\)~`>#+\-=|{}\.!])/g, '\\$1');
+  return text
+    // escape all MarkdownV2 reserved characters
+    .replace(/([_*\[\]()~`>#+\-=|{}.!\\])/g, '\\$1')
+    // extra safety for hyphens (Telegram sometimes breaks even inside ranges)
+    .replace(/-/g, '\\-');
 }
+
 
 
 
@@ -495,84 +500,82 @@ async function processTickForOpenPairs(price) {
             }
           }
 
-          // -------------------------------------------
-          // IMPORTANT: NO NORMAL LOGIC MUST RUN
-          // -------------------------------------------
-          return;   // SAFE: Does NOT block BUY or SELL inside this block
+        }else{
+            if (side === 'BUY') {
+                // checkpoint 1: when price reaches entry + HALF_DISTANCE, move SL to entry - HALF_DISTANCE
+                if (current >= entry + HALF_DISTANCE) {
+                  const desiredSL = entry - HALF_DISTANCE;
+                  if (rec.internalSL < desiredSL) { // move SL forward (less loss)
+                    rec.internalSL = desiredSL;
+                    console.log(`[PAIR][${pairId}] CHECKPOINT1 reached — SL moved to ${rec.internalSL.toFixed(2)}`);
+                    const safePairId = md2(pairId);
+
+                    await sendTelegram(`🔷 *Checkpoint 1* — ${safePairId}\nSide: BUY\nSL moved → ${rec.internalSL.toFixed(2)}`, { parse_mode: 'MarkdownV2' });
+                  }
+                }
+
+                // checkpoint 2: when price reaches entry + SL_DISTANCE -> partial close + BE
+                if (current >= entry + SL_DISTANCE) {
+                  // perform partial close if partial leg still exists
+                  if (partialRec?.ticket && !rec.partialClosed) {
+                    try {
+                      await safeClosePosition(partialRec.ticket, partialRec.lot);
+                      rec.partialClosed = true;
+                      rec.trades.PARTIAL.ticket = null;
+                      // Activate break-even
+                      rec.breakEvenActive = true;
+                      rec.internalSL = entry; // break-even
+                      console.log(`[PAIR][${pairId}] PARTIAL closed; BE set at ${rec.internalSL.toFixed(2)}`);
+                      const safePairId = md2(pairId);
+                      await sendTelegram(
+                        `🟠 *PARTIAL CLOSED + BREAK-EVEN SET*\nPair: ${safePairId}\nSide: BUY\nPartial lot: ${partialRec.lot}\nBE (internal SL): ${rec.internalSL.toFixed(2)}`,
+                        { parse_mode: 'MarkdownV2' }
+                      );
+                      // Update account balance snapshot
+                      const newBal = await safeGetAccountBalance();
+                      if (newBal && newBal !== accountBalance) accountBalance = newBal;
+                    } catch (err) {
+                      console.warn(`[PAIR] Partial close failed for ${pairId}:`, err.message || err);
+                    }
+                  }
+                }
+              } else {
+                // SELL symmetric
+                if (current <= entry - HALF_DISTANCE) {
+                  const desiredSL = entry + HALF_DISTANCE;
+                  if (rec.internalSL > desiredSL) { // move SL forward (less loss for SELL)
+                    rec.internalSL = desiredSL;
+                    console.log(`[PAIR][${pairId}] CHECKPOINT1 reached — SL moved to ${rec.internalSL.toFixed(2)}`);
+                    const safePairId = md2(pairId);
+                    await sendTelegram(`🔷 *Checkpoint 1* — ${safePairId}\nSide: SELL\nSL moved → ${rec.internalSL.toFixed(2)}`, { parse_mode: 'MarkdownV2' });
+                  }
+                }
+
+                if (current <= entry - SL_DISTANCE) {
+                  if (partialRec?.ticket && !rec.partialClosed) {
+                    try {
+                      await safeClosePosition(partialRec.ticket, partialRec.lot);
+                      rec.partialClosed = true;
+                      rec.trades.PARTIAL.ticket = null;
+                      rec.breakEvenActive = true;
+                      rec.internalSL = entry; // break-even
+                      console.log(`[PAIR][${pairId}] PARTIAL closed; BE set at ${rec.internalSL.toFixed(2)}`);
+                      const safePairId = md2(pairId);
+                      await sendTelegram(
+                        `🟠 *PARTIAL CLOSED + BREAK-EVEN SET*\nPair: ${safePairId}\nSide: SELL\nPartial lot: ${partialRec.lot}\nBE (internal SL): ${rec.internalSL.toFixed(2)}`,
+                        { parse_mode: 'MarkdownV2' }
+                      );
+                      const newBal = await safeGetAccountBalance();
+                      if (newBal && newBal !== accountBalance) accountBalance = newBal;
+                    } catch (err) {
+                      console.warn(`[PAIR] Partial close failed for ${pairId}:`, err.message || err);
+                    }
+                  }
+                }
+              }
         }
 
-        if (side === 'BUY') {
-          // checkpoint 1: when price reaches entry + HALF_DISTANCE, move SL to entry - HALF_DISTANCE
-          if (current >= entry + HALF_DISTANCE) {
-            const desiredSL = entry - HALF_DISTANCE;
-            if (rec.internalSL < desiredSL) { // move SL forward (less loss)
-              rec.internalSL = desiredSL;
-              console.log(`[PAIR][${pairId}] CHECKPOINT1 reached — SL moved to ${rec.internalSL.toFixed(2)}`);
-              const safePairId = md2(pairId);
-
-              await sendTelegram(`🔷 *Checkpoint 1* — ${safePairId}\nSide: BUY\nSL moved → ${rec.internalSL.toFixed(2)}`, { parse_mode: 'MarkdownV2' });
-            }
-          }
-
-          // checkpoint 2: when price reaches entry + SL_DISTANCE -> partial close + BE
-          if (current >= entry + SL_DISTANCE) {
-            // perform partial close if partial leg still exists
-            if (partialRec?.ticket && !rec.partialClosed) {
-              try {
-                await safeClosePosition(partialRec.ticket, partialRec.lot);
-                rec.partialClosed = true;
-                rec.trades.PARTIAL.ticket = null;
-                // Activate break-even
-                rec.breakEvenActive = true;
-                rec.internalSL = entry; // break-even
-                console.log(`[PAIR][${pairId}] PARTIAL closed; BE set at ${rec.internalSL.toFixed(2)}`);
-                const safePairId = md2(pairId);
-                await sendTelegram(
-                  `🟠 *PARTIAL CLOSED + BREAK-EVEN SET*\nPair: ${safePairId}\nSide: BUY\nPartial lot: ${partialRec.lot}\nBE (internal SL): ${rec.internalSL.toFixed(2)}`,
-                  { parse_mode: 'MarkdownV2' }
-                );
-                // Update account balance snapshot
-                const newBal = await safeGetAccountBalance();
-                if (newBal && newBal !== accountBalance) accountBalance = newBal;
-              } catch (err) {
-                console.warn(`[PAIR] Partial close failed for ${pairId}:`, err.message || err);
-              }
-            }
-          }
-        } else {
-          // SELL symmetric
-          if (current <= entry - HALF_DISTANCE) {
-            const desiredSL = entry + HALF_DISTANCE;
-            if (rec.internalSL > desiredSL) { // move SL forward (less loss for SELL)
-              rec.internalSL = desiredSL;
-              console.log(`[PAIR][${pairId}] CHECKPOINT1 reached — SL moved to ${rec.internalSL.toFixed(2)}`);
-              const safePairId = md2(pairId);
-              await sendTelegram(`🔷 *Checkpoint 1* — ${safePairId}\nSide: SELL\nSL moved → ${rec.internalSL.toFixed(2)}`, { parse_mode: 'MarkdownV2' });
-            }
-          }
-
-          if (current <= entry - SL_DISTANCE) {
-            if (partialRec?.ticket && !rec.partialClosed) {
-              try {
-                await safeClosePosition(partialRec.ticket, partialRec.lot);
-                rec.partialClosed = true;
-                rec.trades.PARTIAL.ticket = null;
-                rec.breakEvenActive = true;
-                rec.internalSL = entry; // break-even
-                console.log(`[PAIR][${pairId}] PARTIAL closed; BE set at ${rec.internalSL.toFixed(2)}`);
-                const safePairId = md2(pairId);
-                await sendTelegram(
-                  `🟠 *PARTIAL CLOSED + BREAK-EVEN SET*\nPair: ${safePairId}\nSide: SELL\nPartial lot: ${partialRec.lot}\nBE (internal SL): ${rec.internalSL.toFixed(2)}`,
-                  { parse_mode: 'MarkdownV2' }
-                );
-                const newBal = await safeGetAccountBalance();
-                if (newBal && newBal !== accountBalance) accountBalance = newBal;
-              } catch (err) {
-                console.warn(`[PAIR] Partial close failed for ${pairId}:`, err.message || err);
-              }
-            }
-          }
-        }
+        
       } // end pre-partial
 
       // --- POST-PARTIAL / TRAILING logic (only after BE or partialClosed) ---
@@ -678,7 +681,7 @@ async function processTickForOpenPairs(price) {
           }
         }
 
-        delete openPairs[pairId];
+        rec.awaitingFinalClose = true;
         const safePairId = md2(pairId);
 
         await sendTelegram(
@@ -695,7 +698,8 @@ async function processTickForOpenPairs(price) {
 
       // --- If both trade tickets are gone, cleanup pair ---
       if (!rec.trades.PARTIAL.ticket && !rec.trades.TRAILING.ticket) {
-        delete openPairs[pairId];
+        rec.awaitingFinalClose = true;
+
       }
     }
   } catch (err) {
@@ -894,84 +898,123 @@ async function handleTick(tick) {
 
 
 // --------------------- SYNC: reconcile broker positions with tracked pairs ---------------------
+// --------------------- SYNC: reconcile broker positions with tracked pairs ---------------------
 async function syncOpenPairsWithPositions(positions) {
-try {
-  // Build a list of currently open tickets on broker side
-  const openTickets = new Set(
-    (positions || [])
-      .map(p => p.positionId || p.ticket || p.id)
-      .filter(Boolean)
-  );
+  try {
 
-  // Step 1️⃣ — verify all locally tracked pairs
-  for (const [pairId, rec] of Object.entries(openPairs)) {
-    const pTicket = rec.trades?.PARTIAL?.ticket;
-    const tTicket = rec.trades?.TRAILING?.ticket;
+    // Normalize broker tickets
+    const brokerTickets = new Set(
+      (positions || [])
+        .map(p => p.positionId || p.ticket || p.id)
+        .filter(Boolean)
+    );
 
-    // — Provide retry counters per pair
-    rec._missingRetries = rec._missingRetries || { PARTIAL: 0, TRAILING: 0 };
+    // ============================================
+    // RULE 1: Force-close any external trades
+    // ============================================
+    const ourTickets = new Set();
 
-    // Helper: retry check for missing trades
-    async function verifyStillMissing(ticket, label) {
-      rec._missingRetries[label]++;
-
-      // wait a moment for MetaApi sync (lighter than account.refresh())
-      await connection
-        .waitSynchronized({ timeoutInSeconds: 5 })
-        .catch(() => {});
-
-      // re-check positions
-      const refreshed = await safeGetPositions();
-      const refreshedTickets = new Set(
-        (refreshed || []).map(p => p.positionId || p.ticket || p.id).filter(Boolean)
-      );
-
-      // If it appears again, reset retry counter
-      if (refreshedTickets.has(ticket)) {
-        rec._missingRetries[label] = 0;
-        return false; // not missing anymore
-      }
-
-      // After 3 retries → consider permanently missing
-      return rec._missingRetries[label] >= 3;
+    for (const rec of Object.values(openPairs)) {
+      if (rec.trades?.PARTIAL?.ticket) ourTickets.add(rec.trades.PARTIAL.ticket);
+      if (rec.trades?.TRAILING?.ticket) ourTickets.add(rec.trades.TRAILING.ticket);
     }
 
-    // --- PARTIAL missing logic ---
-    if (pTicket && !openTickets.has(pTicket)) {
-      const confirmedMissing = await verifyStillMissing(pTicket, 'PARTIAL');
-      if (confirmedMissing) {
-        console.log(`[SYNC] PARTIAL trade ${pTicket} missing → marking closed (${pairId})`);
+    for (const pos of (positions || [])) {
+      const ticket = pos.positionId || pos.ticket || pos.id;
+      if (!ourTickets.has(ticket)) {
+        console.log(`[SYNC] External/Unknown trade detected → closing ${ticket}`);
+        try {
+          await safeClosePosition(ticket);
+        } catch (err) {
+          console.log(`[SYNC] Failed to close external trade ${ticket}:`, err.message);
+        }
+      }
+    }
+
+    // ============================================
+    // RULE 2: Validate each managed pair
+    // ============================================
+    for (const [pairId, rec] of Object.entries(openPairs)) {
+      const partialTicket  = rec.trades?.PARTIAL?.ticket;
+      const trailingTicket = rec.trades?.TRAILING?.ticket;
+
+      // PARTIAL missing → force close
+      if (partialTicket && !brokerTickets.has(partialTicket)) {
+        console.log(`[SYNC] PARTIAL missing → force closing ${partialTicket}`);
+        try {
+          await safeClosePosition(partialTicket, rec.trades.PARTIAL.lot);
+        } catch {}
         rec.trades.PARTIAL.ticket = null;
         rec.partialClosed = true;
       }
-    }
 
-    // --- TRAILING missing logic ---
-    if (tTicket && !openTickets.has(tTicket)) {
-      const confirmedMissing = await verifyStillMissing(tTicket, 'TRAILING');
-      if (confirmedMissing) {
-        console.log(`[SYNC] TRAILING trade ${tTicket} missing → marking closed (${pairId})`);
+      // TRAILING missing → force close
+      if (trailingTicket && !brokerTickets.has(trailingTicket)) {
+        console.log(`[SYNC] TRAILING missing → force closing ${trailingTicket}`);
+        try {
+          await safeClosePosition(trailingTicket, rec.trades.TRAILING.lot);
+        } catch {}
         rec.trades.TRAILING.ticket = null;
+      }
+
+      // ============================================
+      // RULE 3: If both legs gone → remove the pair
+      // ============================================
+      const pExists = rec.trades.PARTIAL.ticket;
+      const tExists = rec.trades.TRAILING.ticket;
+
+      if (!pExists && !tExists) {
+        console.log(`[SYNC] Pair fully closed → removing ${pairId}`);
+        delete openPairs[pairId];
+        continue;
+      }
+
+      // ============================================
+      // RULE 4: REFRESH ENTRY PRICE if broker has it
+      // ============================================
+      try {
+        const liveTicket =
+          rec.trades.TRAILING?.ticket ||
+          rec.trades.PARTIAL?.ticket;
+
+        if (liveTicket) {
+          const posObj = (positions || []).find(p =>
+            (p.positionId === liveTicket) ||
+            (p.ticket === liveTicket) ||
+            (p.id === liveTicket)
+          );
+
+          if (posObj && posObj.price && posObj.price > 0) {
+            const oldEntry = rec.entryPrice;
+            const newEntry = posObj.price;
+
+            if (oldEntry !== newEntry) {
+              rec.entryPrice = newEntry;
+
+              if (!rec.breakEvenActive && !rec.partialClosed) {
+                const SL_DISTANCE = 8;
+
+                rec.internalSL = rec.side === "BUY"
+                  ? newEntry - SL_DISTANCE
+                  : newEntry + SL_DISTANCE;
+              }
+
+              console.log(
+                `[ENTRY REFRESH] ${pairId} entry updated: ${oldEntry} → ${newEntry}, internalSL=${rec.internalSL}`
+              );
+            }
+          }
+        }
+      } catch (err) {
+        console.log(`[ENTRY REFRESH ERROR] ${pairId}`, err.message);
       }
     }
 
-    // If BOTH legs are gone → full cleanup
-    if (!rec.trades.PARTIAL.ticket && !rec.trades.TRAILING.ticket) {
-      console.log(`[SYNC] Both legs closed → deleting pair ${pairId}`);
-
-      // Cleanup memory for this record
-      delete rec._missingRetries;
-      delete openPairs[pairId];
-      continue;
-    }
+  } catch (err) {
+    console.error('[SYNC] Error syncing positions:', err.message || err);
   }
-
-  // Step 2️⃣ — Removed external singleton creation (TradingView bot shouldn't track manual trades)
-
-} catch (e) {
-  console.error('[SYNC] Error syncing positions:', e.message || e);
 }
-}
+
 
 
 
@@ -1555,7 +1598,8 @@ async function handleTradingViewSignal(req, res) {
           }
         }
 
-        delete openPairs[pairId];
+        rec.awaitingFinalClose = true;
+
         const safePairId = md2(pairId);
 
         await sendTelegram(
