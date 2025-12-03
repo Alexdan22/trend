@@ -952,33 +952,52 @@ async function syncOpenPairsWithPositions(positions) {
     // ============================================
     for (const [pairId, rec] of Object.entries(openPairs)) {
 
-      // === GRACE PERIOD: avoid false "missing ticket" for newly opened trades ===
+      // === EXTENDED GRACE PERIOD (15 seconds) ===
+      // Prevent any missing-ticket logic from firing too early
       if (rec.openedAt) {
         const ageMs = Date.now() - new Date(rec.openedAt).getTime();
-        if (ageMs < 5000) {  // 5 seconds
-          // Skip sync checks for this pair
-          console.log(`[SYNC] Skipping ${pairId} (trade too new: ${ageMs}ms)`);
-          continue;
+        const GRACE_MS = 15000; // 15s grace
+
+        if (!rec.firstSyncDone) {
+          if (ageMs < GRACE_MS) {
+            console.log(`[SYNC] Skipping ${pairId} (within grace: ${ageMs}ms < ${GRACE_MS}ms)`);
+            continue;
+          } else {
+            rec.firstSyncDone = true;
+            console.log(`[SYNC] Grace over → starting full sync for ${pairId}`);
+          }
         }
       }
+
 
       const partialTicket  = rec.trades?.PARTIAL?.ticket;
       const trailingTicket = rec.trades?.TRAILING?.ticket;
 
       // PARTIAL missing → only treat as missing after grace period
       if (partialTicket && !brokerTickets.has(partialTicket)) {
-        console.log(`[SYNC] PARTIAL missing after grace → force closing ${partialTicket}`);
-        try { await safeClosePosition(partialTicket, rec.trades.PARTIAL.lot); } catch {}
-        rec.trades.PARTIAL.ticket = null;
-        rec.partialClosed = true;
+        // Do not treat as missing until FIRST SYNC is completed
+        if (!rec.firstSyncDone) {
+          console.log(`[SYNC] PARTIAL missing but still in grace → ignoring (${pairId})`);
+        } else {
+          console.log(`[SYNC] PARTIAL confirmed missing → force closing ${partialTicket}`);
+          try { await safeClosePosition(partialTicket, rec.trades.PARTIAL.lot); } catch {}
+          rec.trades.PARTIAL.ticket = null;
+          rec.partialClosed = true;
+        }
       }
+
 
       // TRAILING missing → same rule
       if (trailingTicket && !brokerTickets.has(trailingTicket)) {
-        console.log(`[SYNC] TRAILING missing after grace → force closing ${trailingTicket}`);
-        try { await safeClosePosition(trailingTicket, rec.trades.TRAILING.lot); } catch {}
-        rec.trades.TRAILING.ticket = null;
+        if (!rec.firstSyncDone) {
+          console.log(`[SYNC] TRAILING missing but still in grace → ignoring (${pairId})`);
+        } else {
+          console.log(`[SYNC] TRAILING confirmed missing → force closing ${trailingTicket}`);
+          try { await safeClosePosition(trailingTicket, rec.trades.TRAILING.lot); } catch {}
+          rec.trades.TRAILING.ticket = null;
+        }
       }
+
 
 
       // ============================================
@@ -989,15 +1008,15 @@ async function syncOpenPairsWithPositions(positions) {
 
       // Ensure deletion also honors grace period
       if (!pExists && !tExists) {
-        const ageMs = Date.now() - new Date(rec.openedAt).getTime();
-        if (ageMs > 5000) {
+        if (!rec.firstSyncDone) {
+          console.log(`[SYNC] Both tickets missing but still in grace → NOT deleting ${pairId}`);
+        } else {
           console.log(`[SYNC] Pair fully closed → removing ${pairId}`);
           delete openPairs[pairId];
-        } else {
-          console.log(`[SYNC] Not deleting ${pairId} (both tickets missing but trade too new: ${ageMs}ms)`);
         }
         continue;
       }
+
 
 
       // ============================================
