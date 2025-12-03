@@ -386,6 +386,14 @@ async function processTickForOpenPairs(price) {
     const HALF_DISTANCE = 5; // first checkpoint
 
     for (const [pairId, rec] of Object.entries(openPairs)) {
+
+      // --- Grace period: do NOT run missing-ticket or trailing logic for first 5s ---
+      const ageMs = Date.now() - new Date(rec.openedAt).getTime();
+      if (ageMs < 5000) {
+        console.log(`[TRAIL] Skipping ${pairId} (trade too new: ${ageMs}ms)`);
+        continue;
+      }
+
       const side = rec.side;
       const partialRec = rec.trades?.PARTIAL;
       const trailingRec = rec.trades?.TRAILING;
@@ -399,15 +407,20 @@ async function processTickForOpenPairs(price) {
       if (current == null) continue;
 
       // --- Ticket validity check (existing) ---
-      if (partialRec?.ticket && !openTickets.has(partialRec.ticket)) {
-        console.log(`[PAIR] Partial ticket ${partialRec.ticket} missing for ${pairId} — marking as closed.`);
-        rec.trades.PARTIAL.ticket = null;
-        rec.partialClosed = true;
+      // Don't treat missing tickets as missing during the first 5 seconds
+      if (ageMs >= 5000) {
+        if (partialRec?.ticket && !openTickets.has(partialRec.ticket)) {
+          console.log(`[PAIR] Partial ticket ${partialRec.ticket} missing for ${pairId} — marking as closed.`);
+          rec.trades.PARTIAL.ticket = null;
+          rec.partialClosed = true;
+        }
+
+        if (trailingRec?.ticket && !openTickets.has(trailingRec.ticket)) {
+          console.log(`[PAIR] Trailing ticket ${trailingRec.ticket} missing for ${pairId} — marking trailing null.`);
+          rec.trades.TRAILING.ticket = null;
+        }
       }
-      if (trailingRec?.ticket && !openTickets.has(trailingRec.ticket)) {
-        console.log(`[PAIR] Trailing ticket ${trailingRec.ticket} missing for ${pairId} — marking trailing null.`);
-        rec.trades.TRAILING.ticket = null;
-      }
+
 
       // --- Ensure there is a baseline SL (rec.sl may be set at entry) ---
       // If rec.sl is not set (should be set at entry step), initialize it to entry ± SL_DISTANCE as fallback
@@ -595,8 +608,7 @@ async function processTickForOpenPairs(price) {
         const TRAIL_TRIGGER = Math.max(dynamicTrigger, 1); // safety floor to avoid 0 triggers
 
         // debug logging (optional)
-        console.debug && console.debug(`[TRAIL] M5_ATR=${atr.toFixed(4)} isLowVol=${isLowVol} TRAIL_STEP=${TRAIL_STEP} TRAIL_TRIGGER=${TRAIL_TRIGGER.toFixed(4)}`);
-
+        
         if (side === 'BUY') {
           // distance from current internalSL to current price
           const distanceFromSL = current - rec.internalSL;
@@ -1576,10 +1588,12 @@ async function handleTradingViewSignal(req, res) {
         `🟢 *ENTRY* ${safeCategory}\n` +
         `🎫 ${safePairId}\n` +
         `📈 ${side}\n` +
-        `SL: ${sl}\n` +
+        `💵 Entry: ${md2(prePair.entryPrice.toFixed(2))}\n` +
+        `SL: ${md2(sl.toFixed(2))}\n` +
         `🕒 ${new Date().toLocaleTimeString()}`,
         { parse_mode: "MarkdownV2" }
       );
+
 
 
 
