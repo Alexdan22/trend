@@ -1590,11 +1590,11 @@ async function handleTradingViewSignal(req, res) {
         `🟢 *ENTRY* ${safeCategory}\n` +
         `🎫 ${safePairId}\n` +
         `📈 ${side}\n` +
-        `💵 Entry: ${md2(prePair.entryPrice.toFixed(2))}\n` +
-        `SL: ${md2(sl.toFixed(2))}\n` +
-        `🕒 ${new Date().toLocaleTimeString()}`,
+        `Entry: ${prePair.entryPrice}\n` +
+        `SL: ${sl}`,
         { parse_mode: "MarkdownV2" }
       );
+
 
 
 
