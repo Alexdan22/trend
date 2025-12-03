@@ -597,11 +597,13 @@ async function processTickForOpenPairs(price) {
         // compute ATR from 5m candles
         const atr = (typeof computeATR_M5 === 'function') ? computeATR_M5(ATR_PERIOD) : 0;
 
-        // classify volatility
-        const isLowVol = (atr > 0 && atr < ATR_LOW_THRESHOLD) || (atr === 0); // treat missing ATR as "low" conservatively
+        // // classify volatility
+        // const isLowVol = (atr > 0 && atr < ATR_LOW_THRESHOLD) || (atr === 0); // treat missing ATR as "low" conservatively
 
-        // select fixed step based on volatility class
-        const TRAIL_STEP = isLowVol ? TRAIL_STEP_LOW : TRAIL_STEP_HIGH;
+        // // select fixed step based on volatility class
+        // const TRAIL_STEP = isLowVol ? TRAIL_STEP_LOW : TRAIL_STEP_HIGH;
+        const TRAIL_STEP = 5;
+
 
         // dynamic trigger: require price to move beyond SL by either ATR*mult or TRAIL_STEP * 1.5 (stable floor)
         const dynamicTrigger = Math.max((atr * ATR_TRIGGER_MULTIPLIER), (TRAIL_STEP * 1.5));
