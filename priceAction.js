@@ -83,23 +83,24 @@ const MAX_CANDLES = 500; // keep last N candles
 
 // ATR / volatility config (tweakable)
 const ATR_PERIOD = 14;                // ATR period measured in M5 candles
-const ATR_LOW_THRESHOLD = 2.5;        // ATR < this => "low" volatility (tune for your symbol)
 const ATR_TRIGGER_MULTIPLIER = 1.5;   // used to compute dynamic trigger = ATR * multiplier
-const TRAIL_STEP_LOW = 5;             // 5 points when low vol
-const TRAIL_STEP_HIGH = 10;           // 10 points when mid/high vol
 
 
 
 let latestPrice = null;   // { bid, ask, timestamp }
 let lastTradeMonitorRun = 0;
 
-const botStartTime = Date.now();
+
 let lastTickPrice = null;
 let stagnantTickCount = 0;
 let stagnantSince = null;
 let marketFrozen = false;
 let openPairs = {}; // ticket -> metadata
 let entryProcessingLock = false;
+
+// Prevent newly placed trades from being marked as external
+const recentTickets = new Set();
+
 
 
 // ========================
@@ -311,13 +312,24 @@ async function placePairedOrder(side, totalLot, slPrice, tpPrice, riskPercent) {
   try {
     // Place 1st leg (PARTIAL)
     first = await safePlaceMarketOrder(side, lotEach, null, null);
+    // After placing first leg
+    if (first?.positionId || first?.orderId) {
+      const id = first.positionId || first.orderId;
+      recentTickets.add(id);
+      setTimeout(() => recentTickets.delete(id), 15000);
+    }
 
     // Slight spacing to avoid broker-side conflicts
     await delay(300);
 
     // Place 2nd leg (TRAILING)
     second = await safePlaceMarketOrder(side, lotEach, null, null);
-
+    // After placing second leg
+    if (second?.positionId || second?.orderId) {
+      const id = second.positionId || second.orderId;
+      recentTickets.add(id);
+      setTimeout(() => recentTickets.delete(id), 15000);
+    }
   } catch (err) {
     console.error('[PAIR] Error placing paired orders:', err.message || err);
 
@@ -937,7 +949,14 @@ async function syncOpenPairsWithPositions(positions) {
 
     for (const pos of (positions || [])) {
       const ticket = pos.positionId || pos.ticket || pos.id;
+      // RULE 1: external trades — but ignore any newly placed trades
       if (!ourTickets.has(ticket)) {
+
+        if (recentTickets.has(ticket)) {
+          console.log(`[SYNC] Recently placed trade → NOT external: ${ticket}`);
+          continue; // skip
+        }
+
         console.log(`[SYNC] External/Unknown trade detected → closing ${ticket}`);
         try {
           await safeClosePosition(ticket);
@@ -945,6 +964,7 @@ async function syncOpenPairsWithPositions(positions) {
           console.log(`[SYNC] Failed to close external trade ${ticket}:`, err.message);
         }
       }
+
     }
 
     // ============================================
