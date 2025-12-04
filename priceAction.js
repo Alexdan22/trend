@@ -447,158 +447,42 @@ async function processTickForOpenPairs(price) {
       // --- PRE-PARTIAL: checkpoint logic (before partial close triggered) ---
       if (!rec.partialClosed) {
 
-          if (rec.tightSLMode) {
+          // --- PRE-PARTIAL: ALWAYS close partial at 5 points, SL unchanged ---
+          if (!rec.partialClosed && partialRec?.ticket) {
 
-          // ------------------------------
-          // TIGHT-SL MODE: BUY SIDE
-          // ------------------------------
-          if (side === 'BUY') {
+              // BUY partial at +5
+              if (side === 'BUY' && current >= entry + HALF_DISTANCE) {
 
-            // CHECKPOINT 1 → +5 → partial close ONLY
-            if (current >= entry + HALF_DISTANCE) {
-              if (partialRec?.ticket) {
-                await safeClosePosition(partialRec.ticket, partialRec.lot);
-                rec.partialClosed = true;
-                rec.trades.PARTIAL.ticket = null;
+                  await safeClosePosition(partialRec.ticket, partialRec.lot);
+                  rec.partialClosed = true;
+                  rec.trades.PARTIAL.ticket = null;
 
-                console.log(`[PAIR][${pairId}] (TIGHT MODE BUY) Partial closed at +5 (SL unchanged).`);
-                const safeId = md2(pairId);
-                await sendTelegram(
-                  `🟠 *PARTIAL CLOSED (TIGHT MODE)*\n${safeId}\nSide: BUY\nSL unchanged`,
-                  { parse_mode: 'MarkdownV2' }
-                );
+                  console.log(`[PAIR][${pairId}] PARTIAL closed at +5 (SL unchanged).`);
+                  const safePairId = md2(pairId);
+
+                  await sendTelegram(
+                    `🟠 *PARTIAL CLOSED*\n${safePairId}\nSide: BUY\nSL unchanged`,
+                    { parse_mode: 'MarkdownV2' }
+                  );
               }
-            }
 
-            // CHECKPOINT 2 → +8 → break-even
-            if (current >= entry + SL_DISTANCE) {
-              if (!rec.breakEvenActive) {
-                rec.breakEvenActive = true;
-                rec.internalSL = entry;
+              // SELL partial at –5
+              if (side === 'SELL' && current <= entry - HALF_DISTANCE) {
 
-                console.log(`[PAIR][${pairId}] (TIGHT MODE BUY) Break-even at +8.`);
-                const safeId = md2(pairId);
-                await sendTelegram(
-                  `🟢 *BREAK-EVEN (TIGHT MODE)*\n${safeId}\nSide: BUY\nSL → ${entry}`,
-                  { parse_mode: 'MarkdownV2' }
-                );
+                  await safeClosePosition(partialRec.ticket, partialRec.lot);
+                  rec.partialClosed = true;
+                  rec.trades.PARTIAL.ticket = null;
+
+                  console.log(`[PAIR][${pairId}] PARTIAL closed at -5 (SL unchanged).`);
+                  const safePairId = md2(pairId);
+
+                  await sendTelegram(
+                    `🟠 *PARTIAL CLOSED*\n${safePairId}\nSide: SELL\nSL unchanged`,
+                    { parse_mode: 'MarkdownV2' }
+                  );
               }
-            }
           }
 
-
-
-          // ------------------------------
-          // TIGHT-SL MODE: SELL SIDE
-          // ------------------------------
-          if (side === 'SELL') {
-
-            // CHECKPOINT 1 → -5 → partial close ONLY
-            if (current <= entry - HALF_DISTANCE) {
-              if (partialRec?.ticket) {
-                await safeClosePosition(partialRec.ticket, partialRec.lot);
-                rec.partialClosed = true;
-                rec.trades.PARTIAL.ticket = null;
-
-                console.log(`[PAIR][${pairId}] (TIGHT MODE SELL) Partial closed at -5 (SL unchanged).`);
-                const safeId = md2(pairId);
-                await sendTelegram(
-                  `🟠 *PARTIAL CLOSED (TIGHT MODE)*\n${safeId}\nSide: SELL\nSL unchanged`,
-                  { parse_mode: 'MarkdownV2' }
-                );
-              }
-            }
-
-            // CHECKPOINT 2 → -8 → break-even
-            if (current <= entry - SL_DISTANCE) {
-              if (!rec.breakEvenActive) {
-                rec.breakEvenActive = true;
-                rec.internalSL = entry;
-
-                console.log(`[PAIR][${pairId}] (TIGHT MODE SELL) Break-even at -8.`);
-                const safeId = md2(pairId);
-                await sendTelegram(
-                  `🟢 *BREAK-EVEN (TIGHT MODE)*\n${safeId}\nSide: SELL\nSL → ${entry}`,
-                  { parse_mode: 'MarkdownV2' }
-                );
-              }
-            }
-          }
-
-        }else{
-            if (side === 'BUY') {
-                // checkpoint 1: when price reaches entry + HALF_DISTANCE, move SL to entry - HALF_DISTANCE
-                if (current >= entry + HALF_DISTANCE) {
-                  const desiredSL = entry - HALF_DISTANCE;
-                  if (rec.internalSL < desiredSL) { // move SL forward (less loss)
-                    rec.internalSL = desiredSL;
-                    console.log(`[PAIR][${pairId}] CHECKPOINT1 reached — SL moved to ${rec.internalSL.toFixed(2)}`);
-                    const safePairId = md2(pairId);
-
-                    await sendTelegram(`🔷 *Checkpoint 1* — ${safePairId}\nSide: BUY\nSL moved → ${rec.internalSL.toFixed(2)}`, { parse_mode: 'MarkdownV2' });
-                  }
-                }
-
-                // checkpoint 2: when price reaches entry + SL_DISTANCE -> partial close + BE
-                if (current >= entry + SL_DISTANCE) {
-                  // perform partial close if partial leg still exists
-                  if (partialRec?.ticket && !rec.partialClosed) {
-                    try {
-                      await safeClosePosition(partialRec.ticket, partialRec.lot);
-                      rec.partialClosed = true;
-                      rec.trades.PARTIAL.ticket = null;
-                      // Activate break-even
-                      rec.breakEvenActive = true;
-                      rec.internalSL = entry; // break-even
-                      console.log(`[PAIR][${pairId}] PARTIAL closed; BE set at ${rec.internalSL.toFixed(2)}`);
-                      const safePairId = md2(pairId);
-                      await sendTelegram(
-                        `🟠 *PARTIAL CLOSED + BREAK-EVEN SET*\nPair: ${safePairId}\nSide: BUY\nPartial lot: ${partialRec.lot}\nBE (internal SL): ${rec.internalSL.toFixed(2)}`,
-                        { parse_mode: 'MarkdownV2' }
-                      );
-                      // Update account balance snapshot
-                      const newBal = await safeGetAccountBalance();
-                      if (newBal && newBal !== accountBalance) accountBalance = newBal;
-                    } catch (err) {
-                      console.warn(`[PAIR] Partial close failed for ${pairId}:`, err.message || err);
-                    }
-                  }
-                }
-              } else {
-                // SELL symmetric
-                if (current <= entry - HALF_DISTANCE) {
-                  const desiredSL = entry + HALF_DISTANCE;
-                  if (rec.internalSL > desiredSL) { // move SL forward (less loss for SELL)
-                    rec.internalSL = desiredSL;
-                    console.log(`[PAIR][${pairId}] CHECKPOINT1 reached — SL moved to ${rec.internalSL.toFixed(2)}`);
-                    const safePairId = md2(pairId);
-                    await sendTelegram(`🔷 *Checkpoint 1* — ${safePairId}\nSide: SELL\nSL moved → ${rec.internalSL.toFixed(2)}`, { parse_mode: 'MarkdownV2' });
-                  }
-                }
-
-                if (current <= entry - SL_DISTANCE) {
-                  if (partialRec?.ticket && !rec.partialClosed) {
-                    try {
-                      await safeClosePosition(partialRec.ticket, partialRec.lot);
-                      rec.partialClosed = true;
-                      rec.trades.PARTIAL.ticket = null;
-                      rec.breakEvenActive = true;
-                      rec.internalSL = entry; // break-even
-                      console.log(`[PAIR][${pairId}] PARTIAL closed; BE set at ${rec.internalSL.toFixed(2)}`);
-                      const safePairId = md2(pairId);
-                      await sendTelegram(
-                        `🟠 *PARTIAL CLOSED + BREAK-EVEN SET*\nPair: ${safePairId}\nSide: SELL\nPartial lot: ${partialRec.lot}\nBE (internal SL): ${rec.internalSL.toFixed(2)}`,
-                        { parse_mode: 'MarkdownV2' }
-                      );
-                      const newBal = await safeGetAccountBalance();
-                      if (newBal && newBal !== accountBalance) accountBalance = newBal;
-                    } catch (err) {
-                      console.warn(`[PAIR] Partial close failed for ${pairId}:`, err.message || err);
-                    }
-                  }
-                }
-              }
-        }
 
         
       } // end pre-partial
@@ -614,12 +498,11 @@ async function processTickForOpenPairs(price) {
 
         // // select fixed step based on volatility class
         // const TRAIL_STEP = isLowVol ? TRAIL_STEP_LOW : TRAIL_STEP_HIGH;
-        const TRAIL_STEP = 5;
+        const TRAIL_STEP = 8;
 
 
-        // dynamic trigger: require price to move beyond SL by either ATR*mult or TRAIL_STEP * 1.5 (stable floor)
-        const dynamicTrigger = Math.max((atr * ATR_TRIGGER_MULTIPLIER), (TRAIL_STEP * 1.5));
-        const TRAIL_TRIGGER = Math.max(dynamicTrigger, 1); // safety floor to avoid 0 triggers
+        // Trail Trigger: minimum distance from SL to current price before moving SL
+        const TRAIL_TRIGGER = 10
 
         // debug logging (optional)
         
@@ -642,7 +525,7 @@ async function processTickForOpenPairs(price) {
               const safePairId = md2(pairId);
               console.log(`[PAIR][${pairId}] TRAIL advanced (M5-ATR) from ${oldSL.toFixed(2)} -> ${rec.internalSL.toFixed(2)} (price=${current.toFixed(2)}, step=${TRAIL_STEP})`);
               await sendTelegram(
-                `➡️ *TRAIL ADVANCED (M5-ATR)*\nPair: ${safePairId}\nSide: BUY\nOld SL: ${oldSL.toFixed(2)}\nNew SL: ${rec.internalSL.toFixed(2)}\nPrice: ${current.toFixed(2)}\nM5 ATR: ${atr.toFixed(4)}`,
+                `➡️ *TRAIL ADVANCED*\nPair: ${safePairId}\nSide: BUY\nOld SL: ${oldSL.toFixed(2)}\nNew SL: ${rec.internalSL.toFixed(2)}\nPrice: ${current.toFixed(2)}\nM5 ATR: ${atr.toFixed(4)}`,
                 { parse_mode: 'MarkdownV2' }
               );
             }
@@ -980,11 +863,9 @@ async function syncOpenPairsWithPositions(positions) {
 
         if (!rec.firstSyncDone) {
           if (ageMs < GRACE_MS) {
-            console.log(`[SYNC] Skipping ${pairId} (within grace: ${ageMs}ms < ${GRACE_MS}ms)`);
             continue;
           } else {
             rec.firstSyncDone = true;
-            console.log(`[SYNC] Grace over → starting full sync for ${pairId}`);
           }
         }
       }
@@ -1156,47 +1037,6 @@ async function monitorOpenTrades() {
 
       const current = side === 'BUY' ? price.bid : price.ask;
 
-
-      //----------------------------------------------------------
-      // TIGHT SL OVERRIDE WHEN OPPOSITE MATURED TRADE EXISTS
-      //----------------------------------------------------------
-      try {
-          // Check if there exists ANY opposite matured trade
-          const oppositeMaturedExists = Object.values(openPairs).some(other => {
-              return other.pairId !== rec.pairId &&
-                    other.side !== rec.side &&
-                    other.partialClosed === true &&
-                    other.trades?.TRAILING?.ticket;
-          });
-
-          if (oppositeMaturedExists && !rec.partialClosed && !rec.breakEvenActive) {
-
-              rec.tightSLMode = true;   // <-- NEW FLAG
-              // Apply tight override SL only before BE activates
-              const TIGHT_SL = 5;
-
-              const desiredSL = rec.side === "BUY"
-                  ? rec.entryPrice - TIGHT_SL
-                  : rec.entryPrice + TIGHT_SL;
-
-              // Only tighten if it's STRICTLY tighter than current SL
-              if (!rec.internalSL || 
-                  (rec.side === "BUY"  && desiredSL > rec.internalSL) ||
-                  (rec.side === "SELL" && desiredSL < rec.internalSL)) {
-
-                  rec.internalSL = desiredSL;
-
-                  console.log(`[MONITOR] Tight SL override applied to ${pairId}: ${desiredSL}`);
-                  const safePairId = md2(pairId);
-                  await sendTelegram(
-                      `⚠️ *TIGHT SL APPLIED*\nPair: ${safePairId}\nReason: Opposite matured trade exists\nSL: ${desiredSL}`,
-                      { parse_mode: 'MarkdownV2' }
-                  );
-              }
-          }
-      } catch (err) {
-          console.log(`[MONITOR] Tight SL override error for ${pairId}:`, err.message);
-      }
 
 
       // --- NOTE ---
@@ -1453,9 +1293,6 @@ startBot().catch(err => console.error('BOT start failed:', err));
 async function handleTradingViewSignal(req, res) {
   try {
     const payload = req.body;
-    console.log("\n\n======================");
-    console.log("[WEBHOOK] Incoming Payload:", JSON.stringify(payload, null, 2));
-    console.log("======================\n");
 
     if (!payload || !payload.signal) {
       console.log("[WEBHOOK] ❌ Rejected: Missing 'signal'");
@@ -1471,7 +1308,6 @@ async function handleTradingViewSignal(req, res) {
 
     // Parse the incoming signal
     const parsed = parseSignalString(payload.signal);
-    console.log("[WEBHOOK] Parsed Signal:", parsed);
 
     // ==========================================
     // ZONE APPROVAL HANDLER
@@ -1493,8 +1329,6 @@ async function handleTradingViewSignal(req, res) {
 
           if (globalThis.zoneApproval[category]) {
               globalThis.zoneApproval[category][timeframe] = approval;
-
-              console.log(`[ZONE] Updated ${category} ${timeframe} → ${approval}`);
 
               return res.status(200).json({
                 ok: true,
@@ -1606,7 +1440,6 @@ async function handleTradingViewSignal(req, res) {
         return res.status(500).json({ ok: false, error: "Entry failed" });
       }
 
-      console.log("[ENTRY] ✔ Paired order placed:", prePair);
 
       // ---- SL CALCULATION ----
       const { sl } = await internalSLTPLogic(side, prePair.entryPrice);
