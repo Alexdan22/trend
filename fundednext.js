@@ -10,7 +10,7 @@ const { setTimeout: delay } = require('timers/promises');
 const express = require('express');
 const bodyParser = require('body-parser');
 
-const WEBHOOK_PORT = process.env.WEBHOOK_PORT || 5001;
+const FUNDEDNEXT_PORT = process.env.FUNDEDNEXT_PORT || 5001;
 
 // Idempotency
 const processedSignalIds = new Set();
@@ -447,9 +447,87 @@ async function processTickForOpenPairs(price) {
       // --- PRE-PARTIAL: checkpoint logic (before partial close triggered) ---
       if (!rec.partialClosed) {
 
-          // --- PRE-PARTIAL: ALWAYS close partial at 5 points, SL unchanged ---
-          if (!rec.partialClosed && partialRec?.ticket) {
+        if (rec.tightSLMode) {
 
+          // ------------------------------
+          // TIGHT-SL MODE: BUY SIDE
+          // ------------------------------
+          if (side === 'BUY') {
+
+            // CHECKPOINT 1 → +5 → partial close ONLY
+            if (current >= entry + HALF_DISTANCE) {
+              if (partialRec?.ticket) {
+                await safeClosePosition(partialRec.ticket, partialRec.lot);
+                rec.partialClosed = true;
+                rec.trades.PARTIAL.ticket = null;
+
+                console.log(`[PAIR][${pairId}] (TIGHT MODE BUY) Partial closed at +5 (SL unchanged).`);
+                const safeId = md2(pairId);
+                await sendTelegram(
+                  `🟠 *PARTIAL CLOSED (TIGHT MODE)*\n${safeId}\nSide: BUY\nSL unchanged`,
+                  { parse_mode: 'MarkdownV2' }
+                );
+              }
+            }
+
+            // CHECKPOINT 2 → +8 → break-even
+            if (current >= entry + SL_DISTANCE) {
+              if (!rec.breakEvenActive) {
+                rec.breakEvenActive = true;
+                rec.internalSL = entry;
+
+                console.log(`[PAIR][${pairId}] (TIGHT MODE BUY) Break-even at +8.`);
+                const safeId = md2(pairId);
+                await sendTelegram(
+                  `🟢 *BREAK-EVEN (TIGHT MODE)*\n${safeId}\nSide: BUY\nSL → ${entry}`,
+                  { parse_mode: 'MarkdownV2' }
+                );
+              }
+            }
+          }
+
+
+
+          // ------------------------------
+          // TIGHT-SL MODE: SELL SIDE
+          // ------------------------------
+          if (side === 'SELL') {
+
+            // CHECKPOINT 1 → -5 → partial close ONLY
+            if (current <= entry - HALF_DISTANCE) {
+              if (partialRec?.ticket) {
+                await safeClosePosition(partialRec.ticket, partialRec.lot);
+                rec.partialClosed = true;
+                rec.trades.PARTIAL.ticket = null;
+
+                console.log(`[PAIR][${pairId}] (TIGHT MODE SELL) Partial closed at -5 (SL unchanged).`);
+                const safeId = md2(pairId);
+                await sendTelegram(
+                  `🟠 *PARTIAL CLOSED (TIGHT MODE)*\n${safeId}\nSide: SELL\nSL unchanged`,
+                  { parse_mode: 'MarkdownV2' }
+                );
+              }
+            }
+
+            // CHECKPOINT 2 → -8 → break-even
+            if (current <= entry - SL_DISTANCE) {
+              if (!rec.breakEvenActive) {
+                rec.breakEvenActive = true;
+                rec.internalSL = entry;
+
+                console.log(`[PAIR][${pairId}] (TIGHT MODE SELL) Break-even at -8.`);
+                const safeId = md2(pairId);
+                await sendTelegram(
+                  `🟢 *BREAK-EVEN (TIGHT MODE)*\n${safeId}\nSide: SELL\nSL → ${entry}`,
+                  { parse_mode: 'MarkdownV2' }
+                );
+              }
+            }
+          }
+
+        }else{
+          // --- PRE-PARTIAL: ALWAYS close partial at 5 points, SL unchanged ---
+          
               // BUY partial at +5
               if (side === 'BUY' && current >= entry + HALF_DISTANCE) {
 
@@ -1037,6 +1115,47 @@ async function monitorOpenTrades() {
 
       const current = side === 'BUY' ? price.bid : price.ask;
 
+      //----------------------------------------------------------
+      // TIGHT SL OVERRIDE WHEN OPPOSITE MATURED TRADE EXISTS
+      //----------------------------------------------------------
+      try {
+          // Check if there exists ANY opposite matured trade
+          const oppositeMaturedExists = Object.values(openPairs).some(other => {
+              return other.pairId !== rec.pairId &&
+                    other.side !== rec.side &&
+                    other.partialClosed === true &&
+                    other.trades?.TRAILING?.ticket;
+          });
+
+          if (oppositeMaturedExists && !rec.partialClosed && !rec.breakEvenActive) {
+
+              rec.tightSLMode = true;   // <-- NEW FLAG
+              // Apply tight override SL only before BE activates
+              const TIGHT_SL = 5;
+
+              const desiredSL = rec.side === "BUY"
+                  ? rec.entryPrice - TIGHT_SL
+                  : rec.entryPrice + TIGHT_SL;
+
+              // Only tighten if it's STRICTLY tighter than current SL
+              if (!rec.internalSL || 
+                  (rec.side === "BUY"  && desiredSL > rec.internalSL) ||
+                  (rec.side === "SELL" && desiredSL < rec.internalSL)) {
+
+                  rec.internalSL = desiredSL;
+
+                  console.log(`[MONITOR] Tight SL override applied to ${pairId}: ${desiredSL}`);
+                  const safePairId = md2(pairId);
+                  await sendTelegram(
+                      `⚠️ *TIGHT SL APPLIED*\nPair: ${safePairId}\nReason: Opposite matured trade exists\nSL: ${desiredSL}`,
+                      { parse_mode: 'MarkdownV2' }
+                  );
+              }
+          }
+      } catch (err) {
+          console.log(`[MONITOR] Tight SL override error for ${pairId}:`, err.message);
+      }
+
 
 
       // --- NOTE ---
@@ -1539,8 +1658,8 @@ function startWebhookServer() {
   app.post("/webhook", handleTradingViewSignal);
   app.get("/_health", (_, res) => res.send("OK"));
 
-  app.listen(WEBHOOK_PORT, () =>
-    console.log(`[WEBHOOK] Ready on port ${WEBHOOK_PORT}`)
+  app.listen(FUNDEDNEXT_PORT, () =>
+    console.log(`[WEBHOOK] Ready on port ${FUNDEDNEXT_PORT}`)
   );
 }
 

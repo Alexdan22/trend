@@ -3,6 +3,7 @@ node_modules/
 
 # Environment & config files
 .env
+.secrets
 *.pem
 *.key
 config.json
