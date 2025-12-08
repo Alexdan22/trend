@@ -1387,11 +1387,14 @@ async function startBot() {
       process.env.METAAPI_TOKEN, 
         {
           application: "MetaApi",
-          timeout: 5000,
+          timeout: 4000,
           retryOpts: {
-            retries: 0,       // ❗Disable retry completely
+            retries: 0,
             minTimeout: 0,
             maxTimeout: 0
+          },
+          reconnectOpts: {
+            retries: 0
           }
         }
       );
