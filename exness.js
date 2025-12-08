@@ -20,6 +20,9 @@ const MAX_PER_CATEGORY = 1;
 // 15-minute cooldown between trades of the same side (BUY or SELL)
 const SIDE_COOLDOWN_MS = 15 * 60 * 1000;
 const lastEntryTime = { BUY: 0, SELL: 0 };
+let lastOrderHash = null;
+let lastOrderTime = 0;
+
 
 
 
@@ -339,6 +342,17 @@ async function safePlaceMarketOrder(action, lot, sl, tp, clientIdOverride = null
     console.log("[ORDER] Duplicate request blocked via clientId:", requestId, "->", existingTicket);
     return { duplicate: true, ticket: existingTicket, clientId: requestId, raw: null };
   }
+
+  const orderHash = `${action}-${lot}-${sl}-${tp}`;
+
+  if (orderHash === lastOrderHash && Date.now() - lastOrderTime < 4000) {
+    console.log("[ORDER] Duplicate order suppressed in 4s retry window");
+    return { suppressed: true };
+  }
+
+  lastOrderHash = orderHash;
+  lastOrderTime = Date.now();
+
 
   try {
     if (!connection) throw new Error("No connection");
@@ -1343,7 +1357,18 @@ async function startBot() {
 
   try {
     // initialize global API objects (do not shadow)
-    api = api || new MetaApi(process.env.METAAPI_TOKEN);
+    api = api || new MetaApi(
+      process.env.METAAPI_TOKEN, 
+        {
+          application: "MetaApi",
+          timeout: 5000,
+          retryOpts: {
+            retries: 0,       // ❗Disable retry completely
+            minTimeout: 0,
+            maxTimeout: 0
+          }
+        }
+      );
 
     // fetch fresh account object from MetaApi server (important)
     account = await api.metatraderAccountApi.getAccount(process.env.METAAPI_ACCOUNT_ID);
