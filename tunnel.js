@@ -66,6 +66,6 @@ app.all("*", (req, res) => {
 /* --------------------------------------------------
    START SERVER ON PORT 80
 ----------------------------------------------------- */
-app.listen(80, () => {
-  console.log("🚀 Tunnel running on port 80");
+app.listen(3000, () => {
+  console.log("🚀 Tunnel running on port 3000");
 });
