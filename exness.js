@@ -1094,7 +1094,7 @@ async function syncOpenPairsWithPositions(positions) {
         }
         // Ignore trades that are younger than 1500ms (MetaApi delay window)
         const age = Date.now() - (pos.time || pos.updateTime || Date.now());
-        if (age < 15000) {
+        if (age < 5000) {
           console.log(`[SYNC] Ignoring newborn trade ${ticket} (age ${age}ms)`);
           continue;
         }
