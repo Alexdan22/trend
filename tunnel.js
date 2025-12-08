@@ -20,20 +20,13 @@ const bots = [
   "http://localhost:5002/webhook"
 ];
 
-/* FORWARD FUNCTION */
+/* FORWARD FUNCTION — SINGLE ATTEMPT ONLY */
 async function forward(url, payload) {
   try {
     await axios.post(url, payload, { timeout: 2000 });
     console.log(`✔ Delivered → ${url}`);
   } catch (err) {
-    console.log(`⚠ First attempt failed → ${url}: ${err.message}`);
-
-    try {
-      await axios.post(url, payload);
-      console.log(`✔ Delivered on retry → ${url}`);
-    } catch (err2) {
-      console.log(`❌ FINAL FAILURE → ${url}: ${err2.message}`);
-    }
+    console.log(`❌ Delivery failed → ${url}: ${err.message}`);
   }
 }
 

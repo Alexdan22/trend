@@ -18,6 +18,8 @@ const MAX_PER_CATEGORY = 1;
 // 15-minute cooldown between trades of the same side (BUY or SELL)
 const SIDE_COOLDOWN_MS = 15 * 60 * 1000;
 const lastEntryTime = { BUY: 0, SELL: 0 };
+let entryInProgress = false;
+
 
 
 
@@ -300,7 +302,8 @@ async function safePlaceMarketOrder(action, lot, sl, tp) {
 
 // --------------------- EXECUTION: Paired Order Placement ---------------------
 async function placePairedOrder(side, totalLot, slPrice, tpPrice, riskPercent) {
-  const lotEach = Number((totalLot / 2).toFixed(2));
+
+  const lotEach = Number((totalLot / 2).toFixed(2))
   if (lotEach < MIN_LOT) {
     console.log('[PAIR] Computed lot too small — aborting.');
     return null;
@@ -1541,6 +1544,12 @@ async function handleTradingViewSignal(req, res) {
         });
       }
 
+      // 💥 Immediately lock cooldown BEFORE doing anything async
+      lastEntryTime[side] = Date.now();
+      entryInProgress = true;
+      console.log(`[ENTRY] Cooldown STARTED (pre-entry) for side=${side}`);
+
+
       // Mark idempotency ID early
       if (signalId) processedSignalIds.add(signalId);
 
@@ -1556,6 +1565,7 @@ async function handleTradingViewSignal(req, res) {
       if (!prePair) {
         console.log("[ENTRY] ❌ Order failed → removing signalId & exiting");
         if (signalId) processedSignalIds.delete(signalId);
+        entryInProgress = false;
         return res.status(500).json({ ok: false, error: "Entry failed" });
       }
 
@@ -1569,9 +1579,6 @@ async function handleTradingViewSignal(req, res) {
       openPairs[prePair.pairId].category = category;
       openPairs[prePair.pairId].signalId = signalId || null;
 
-      // ---- START COOLDOWN NOW ----
-      lastEntryTime[side] = Date.now();
-      console.log(`[ENTRY] Cooldown started for side=${side}`);
       const safeCategory = category.replace(/[^a-zA-Z0-9 ]/g, '');
       const safePairId = md2(prePair.pairId);
 
@@ -1589,6 +1596,7 @@ async function handleTradingViewSignal(req, res) {
 
 
 
+      entryInProgress = false;
 
       console.log("[ENTRY] ✔ ENTRY completed\n");
 

@@ -1540,6 +1540,12 @@ async function handleTradingViewSignal(req, res) {
           error: `Cooldown active for ${side}. Try again in ${mins} min`
         });
       }
+      
+      // 💥 Immediately lock cooldown BEFORE doing anything async
+      lastEntryTime[side] = Date.now();
+      entryInProgress = true;
+      console.log(`[ENTRY] Cooldown STARTED (pre-entry) for side=${side}`);
+
 
       // Mark idempotency ID early
       if (signalId) processedSignalIds.add(signalId);
@@ -1556,6 +1562,7 @@ async function handleTradingViewSignal(req, res) {
       if (!prePair) {
         console.log("[ENTRY] ❌ Order failed → removing signalId & exiting");
         if (signalId) processedSignalIds.delete(signalId);
+        entryInProgress = false;
         return res.status(500).json({ ok: false, error: "Entry failed" });
       }
 
@@ -1569,9 +1576,7 @@ async function handleTradingViewSignal(req, res) {
       openPairs[prePair.pairId].category = category;
       openPairs[prePair.pairId].signalId = signalId || null;
 
-      // ---- START COOLDOWN NOW ----
-      lastEntryTime[side] = Date.now();
-      console.log(`[ENTRY] Cooldown started for side=${side}`);
+      
       const safeCategory = category.replace(/[^a-zA-Z0-9 ]/g, '');
       const safePairId = md2(prePair.pairId);
 
@@ -1589,6 +1594,7 @@ async function handleTradingViewSignal(req, res) {
 
 
 
+      entryInProgress = false;
 
       console.log("[ENTRY] ✔ ENTRY completed\n");
 
