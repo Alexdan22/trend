@@ -886,46 +886,36 @@ async function handleTick(tick) {
 
 // --------------------- SYNC: reconcile broker positions with tracked pairs ---------------------
 async function syncOpenPairsWithPositions(positions) {
-  
-  const MIN_TRADE_AGE = 5000; // 5 seconds grace period
-
   try {
+    // 1️⃣ Only treat REAL MT5 positions (positionId) as active trades
+    const brokerPositions = (positions || []).filter(p => p && p.positionId);
+    const brokerTickets = new Set(brokerPositions.map(p => p.positionId));
 
-    // Normalize broker tickets
-    const brokerTickets = new Set(
-      (positions || [])
-        .map(p => p.positionId || p.ticket || p.id)
-        .filter(Boolean)
-    );
+    // Mark all real positions as recent to avoid premature closure
+    for (const pos of brokerPositions) {
+      recentTickets.add(pos.positionId);
+      setTimeout(() => recentTickets.delete(pos.positionId), 15000);
+    }
 
-    // ============================================
-    // RULE 1: Force-close any external trades
-    // ============================================
+    // 2️⃣ Collect our internal tickets (PAIR legs)
     const ourTickets = new Set();
-
     for (const rec of Object.values(openPairs)) {
       if (rec.trades?.PARTIAL?.ticket) ourTickets.add(rec.trades.PARTIAL.ticket);
       if (rec.trades?.TRAILING?.ticket) ourTickets.add(rec.trades.TRAILING.ticket);
     }
 
-    for (const pos of (positions || [])) {
-      const ticket = pos.positionId || pos.ticket || pos.id;
-      // RULE 1: external trades — but ignore any newly placed trades
+    // 3️⃣ Close ONLY external REAL positions (positionId only)
+    for (const pos of brokerPositions) {
+      const ticket = pos.positionId;
+
       if (!ourTickets.has(ticket)) {
-
         if (recentTickets.has(ticket)) {
-          console.log(`[SYNC] Recently placed trade → NOT external: ${ticket}`);
-          continue; // skip
+          console.log(`[SYNC] Recently placed position → NOT external: ${ticket}`);
+          continue;
         }
-
-        console.log(`[SYNC] External/Unknown trade detected → closing ${ticket}`);
-        try {
-          await safeClosePosition(ticket);
-        } catch (err) {
-          console.log(`[SYNC] Failed to close external trade ${ticket}:`, err.message);
-        }
+        console.log(`[SYNC] External REAL position detected → closing ${ticket}`);
+        await safeClosePosition(ticket);
       }
-
     }
 
     // ============================================
@@ -1576,7 +1566,7 @@ async function handleTradingViewSignal(req, res) {
       openPairs[prePair.pairId].category = category;
       openPairs[prePair.pairId].signalId = signalId || null;
 
-      
+
       const safeCategory = category.replace(/[^a-zA-Z0-9 ]/g, '');
       const safePairId = md2(prePair.pairId);
 
