@@ -94,6 +94,8 @@ const ATR_TRIGGER_MULTIPLIER = 1.5;   // used to compute dynamic trigger = ATR *
 
 let latestPrice = null;   // { bid, ask, timestamp }
 let lastTradeMonitorRun = 0;
+let entryInProgress = false;
+
 
 
 let lastTickPrice = null;
@@ -191,6 +193,35 @@ function countCategory(category) {
     ).length;
 }
 
+function parseOrderResponse(res) {
+  if (!res) return { ticket: null, clientId: null };
+
+  // Try all known possible fields MetaApi returns
+  const ticket =
+    res.positionId ||
+    res.orderId ||
+    res.ticket ||
+    res.id ||
+    res?.result?.positionId ||
+    res?.result?.orderId ||
+    res?.result?.ticket ||
+    res?.result?.id ||
+    null;
+
+  const clientId =
+    res.clientId ||
+    res.orderClientId ||
+    res?.response?.clientId ||
+    res?.result?.clientId ||
+    res?.order?.clientId ||
+    res?.position?.clientId ||
+    (res?.response && res.response.clientId) ||
+    null;
+
+  return { ticket, clientId };
+}
+
+
 
 
 function parseSignalString(signalStr) {
@@ -274,8 +305,9 @@ async function safeGetAccountBalance() {
 
 
 
- // safePlaceMarketOrder - robust attempts to call several API variants
+// safePlaceMarketOrder - uses parseOrderResponse and returns { ticket, clientId, raw }
 async function safePlaceMarketOrder(action, lot, sl, tp, clientIdOverride = null) {
+  // request id may be overridden by caller for idempotency
   let requestId = `req-${Date.now()}-${Math.floor(Math.random() * 100000)}`;
   if (clientIdOverride) requestId = clientIdOverride;
 
@@ -286,14 +318,8 @@ async function safePlaceMarketOrder(action, lot, sl, tp, clientIdOverride = null
     sl,
     tp,
     requestId,
-    stack: (new Error()).stack.split('\n').slice(1,5)
+    stack: (new Error()).stack.split('\n').slice(1,6)
   };
-
-  // If same requestId was somehow retried → block immediately
-  if (clientOrderMap.has(requestId)) {
-    console.log("[ORDER] Duplicate request blocked via clientId:", requestId);
-    return { duplicate: true, ticket: clientOrderMap.get(requestId) };
-  }
 
   function logRaw(note, res, err = null) {
     const entry = {
@@ -304,8 +330,14 @@ async function safePlaceMarketOrder(action, lot, sl, tp, clientIdOverride = null
       response: res,
       error: err ? (err.message || err) : null
     };
-    try { fs.appendFileSync(RAW_ORDERS_LOG, JSON.stringify(entry) + "\n"); }
-    catch (_) {}
+    try { fs.appendFileSync(RAW_ORDERS_LOG, JSON.stringify(entry) + "\n"); } catch (_) {}
+  }
+
+  // Prevent duplicate attempt if same requestId already mapped
+  if (clientOrderMap.has(requestId)) {
+    const existingTicket = clientOrderMap.get(requestId);
+    console.log("[ORDER] Duplicate request blocked via clientId:", requestId, "->", existingTicket);
+    return { duplicate: true, ticket: existingTicket, clientId: requestId, raw: null };
   }
 
   try {
@@ -317,50 +349,48 @@ async function safePlaceMarketOrder(action, lot, sl, tp, clientIdOverride = null
       volume: lot,
       stopLoss: sl,
       takeProfit: tp,
-      clientId: requestId   // ⭐ IDempotency tag
+      clientId: requestId // idempotency tag we expect MetaApi to preserve somewhere in response
     };
 
     console.log("[ORDER-ATTEMPT-IDEMPOTENT]", orderPayload);
 
     let res;
-
-    // Try preferred path
     if (typeof connection.createMarketOrder === "function") {
       res = await connection.createMarketOrder(orderPayload);
       logRaw("createMarketOrder", res);
-    }
-    else if (action === "BUY" && typeof connection.createMarketBuyOrder === "function") {
+    } else if (action === "BUY" && typeof connection.createMarketBuyOrder === "function") {
       res = await connection.createMarketBuyOrder(SYMBOL, lot, { stopLoss: sl, takeProfit: tp, clientId: requestId });
       logRaw("createMarketBuyOrder", res);
-    }
-    else if (action === "SELL" && typeof connection.createMarketSellOrder === "function") {
+    } else if (action === "SELL" && typeof connection.createMarketSellOrder === "function") {
       res = await connection.createMarketSellOrder(SYMBOL, lot, { stopLoss: sl, takeProfit: tp, clientId: requestId });
       logRaw("createMarketSellOrder", res);
-    }
-    else if (typeof connection.sendOrder === "function") {
+    } else if (typeof connection.sendOrder === "function") {
       res = await connection.sendOrder(orderPayload);
       logRaw("sendOrder", res);
-    }
-    else {
+    } else {
       throw new Error("No valid order method found");
     }
 
-    // Extract ticket
-    const ticket =
-      res?.positionId ||
-      res?.orderId ||
-      res?.ticket ||
-      res?.id ||
-      res?.result?.positionId ||
-      null;
+    // parse ticket & clientId from any nested shape
+    const parsed = parseOrderResponse(res);
+    const ticket = parsed.ticket || null;
+    // returnedClientId: prefer parser result; fallback to our requestId
+    const returnedClientId = parsed.clientId || requestId;
 
-    if (ticket) {
-      clientOrderMap.set(requestId, ticket); // save idempotency map
-      recentTickets.add(ticket);
-      setTimeout(() => recentTickets.delete(ticket), 12000);
+    // Save mapping so sync can later match by clientId even if ticket arrives later
+    if (returnedClientId) {
+      // store mapping to ticket (might be null for now); will be reconciled later
+      clientOrderMap.set(returnedClientId, ticket || null);
     }
 
-    return { ticket, raw: res, requestId };
+    // If ticket present, also add to recentTickets and update mapping to concrete ticket
+    if (ticket) {
+      clientOrderMap.set(returnedClientId, ticket);
+      recentTickets.add(ticket);
+      setTimeout(() => recentTickets.delete(ticket), 15000);
+    }
+
+    return { ticket, clientId: returnedClientId, raw: res, requestId };
 
   } catch (err) {
     logRaw("exception", null, err);
@@ -368,6 +398,7 @@ async function safePlaceMarketOrder(action, lot, sl, tp, clientIdOverride = null
     throw err;
   }
 }
+
 
 
 
@@ -388,77 +419,72 @@ async function placePairedOrder(side, totalLot, slPrice, tpPrice, riskPercent) {
     const clientId1 = `leg1-${Date.now()}-${Math.floor(Math.random()*100000)}`;
     first = await safePlaceMarketOrder(side, lotEach, null, null, clientId1);
 
-    // After placing first leg
+    // After placing first leg — use parsed ticket (first.ticket) not nested fields
     if (first?.ticket) {
       recentTickets.add(first.ticket);
       setTimeout(() => recentTickets.delete(first.ticket), 15000);
     }
 
-
-    // Slight spacing to avoid broker-side conflicts
+    // Small spacing to allow broker bookkeeping
     await delay(300);
 
     // LEG 2 — trailing
     const clientId2 = `leg2-${Date.now()}-${Math.floor(Math.random()*100000)}`;
     second = await safePlaceMarketOrder(side, lotEach, null, null, clientId2);
 
-    // After placing second leg
-    if (second?.positionId || second?.orderId) {
-      const id = second.positionId || second.orderId;
-      recentTickets.add(id);
-      setTimeout(() => recentTickets.delete(id), 15000);
+    if (second?.ticket) {
+      recentTickets.add(second.ticket);
+      setTimeout(() => recentTickets.delete(second.ticket), 15000);
     }
+
   } catch (err) {
     console.error('[PAIR] Error placing paired orders:', err.message || err);
 
-    // Rollback if partially placed
-    try { if (first?.positionId) await safeClosePosition(first.positionId); } catch {}
-    try { if (second?.positionId) await safeClosePosition(second.positionId); } catch {}
+    // Deterministic rollback using tickets if available
+    try { if (first?.ticket) await safeClosePosition(first.ticket); } catch (_) {}
+    try { if (second?.ticket) await safeClosePosition(second.ticket); } catch (_) {}
 
     return null;
   }
 
-  // Construct internal pair record
+  // Construct internal pair record (store both clientId and ticket where available)
   const pairId = `pair-${Date.now()}`;
   const entryPrice =
     side === 'BUY'
-      ? (first?.price || latestPrice?.ask)
-      : (first?.price || latestPrice?.bid);
+      ? (first?.raw?.price || first?.raw?.averagePrice || latestPrice?.ask || first?.price || null)
+      : (first?.raw?.price || first?.raw?.averagePrice || latestPrice?.bid || first?.price || null);
 
   openPairs[pairId] = {
     pairId,
     side,
     riskPercent,
-
     totalLot: lotEach * 2,
-
     trades: {
       PARTIAL: {
         ticket: first?.ticket || null,
+        clientId: first?.clientId || first?.requestId || null,
         lot: lotEach
       },
       TRAILING: {
         ticket: second?.ticket || null,
+        clientId: second?.clientId || second?.requestId || null,
         lot: lotEach
       }
     },
-
     entryPrice,
     sl: slPrice,
     tp: tpPrice,
-
     breakEvenActive: false,
     internalSL: null,
     internalTrailingSL: null,
-
     partialClosed: false,
-
     openedAt: new Date().toISOString()
   };
 
   console.log(`[PAIR OPENED] ${pairId}`, openPairs[pairId]);
   return openPairs[pairId];
 }
+
 
 
 
@@ -977,22 +1003,48 @@ async function syncOpenPairsWithPositions(positions) {
     );
 
     // ============================================
-    // RULE 1: Force-close any external trades
+    // Build ourTickets by ticket and by clientId mapping
     // ============================================
     const ourTickets = new Set();
 
-    // If a broker ticket corresponds to our clientId, it's ours even if late
+    // 1) add tickets from openPairs
+    for (const rec of Object.values(openPairs)) {
+      if (rec.trades?.PARTIAL?.ticket) ourTickets.add(String(rec.trades.PARTIAL.ticket));
+      if (rec.trades?.TRAILING?.ticket) ourTickets.add(String(rec.trades.TRAILING.ticket));
+    }
+
+    // 2) add tickets known from clientOrderMap (clientId -> ticket)
+    for (const [cid, savedTicket] of clientOrderMap.entries()) {
+      if (savedTicket) ourTickets.add(String(savedTicket));
+    }
+
+    // 3) If a broker position carries a clientId that matches our clientOrderMap key,
+    //    treat it as ours (even if its ticket doesn't yet match anything)
     for (const pos of (positions || [])) {
-      const ticket = String(pos.positionId || pos.ticket || pos.id);
-      for (const [cid, savedTicket] of clientOrderMap.entries()) {
-        if (ticket === String(savedTicket)) {
-          ourTickets.add(ticket);
-        }
+      const brokerTicket = String(pos.positionId || pos.ticket || pos.id || '');
+      // gather possible clientId fields from broker pos
+      const brokerClientId =
+        pos?.clientId ||
+        pos?.orderClientId ||
+        pos?.meta?.clientId ||
+        pos?.comment ||
+        pos?.label ||
+        null;
+
+      if (brokerClientId && clientOrderMap.has(String(brokerClientId))) {
+        const mappedTicket = clientOrderMap.get(String(brokerClientId));
+        if (mappedTicket) ourTickets.add(String(mappedTicket));
+        // Also include the brokerTicket itself in ourTickets so we don't close it
+        if (brokerTicket) ourTickets.add(brokerTicket);
       }
     }
 
-
-
+    
+    
+    
+    // ============================================
+    // RULE 1: Force-close any external trades
+    // ============================================
     for (const rec of Object.values(openPairs)) {
       if (rec.trades?.PARTIAL?.ticket) ourTickets.add(rec.trades.PARTIAL.ticket);
       if (rec.trades?.TRAILING?.ticket) ourTickets.add(rec.trades.TRAILING.ticket);
