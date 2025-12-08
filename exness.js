@@ -907,7 +907,26 @@ async function syncOpenPairsWithPositions(positions) {
       if (rec.trades?.PARTIAL?.ticket) ourTickets.add(rec.trades.PARTIAL.ticket);
       if (rec.trades?.TRAILING?.ticket) ourTickets.add(rec.trades.TRAILING.ticket);
     }
+    
+    for (const pos of (positions || [])) {
+      const ticket = pos.positionId || pos.ticket || pos.id;
+      // RULE 1: external trades — but ignore any newly placed trades
+      if (!ourTickets.has(ticket)) {
 
+        if (recentTickets.has(ticket)) {
+          console.log(`[SYNC] Recently placed trade → NOT external: ${ticket}`);
+          continue; // skip
+        }
+
+        console.log(`[SYNC] External/Unknown trade detected → closing ${ticket}`);
+        try {
+          await safeClosePosition(ticket);
+        } catch (err) {
+          console.log(`[SYNC] Failed to close external trade ${ticket}:`, err.message);
+        }
+      }
+
+    }
 
     // ============================================
     // RULE 2: Validate each managed pair
