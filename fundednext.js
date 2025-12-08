@@ -889,37 +889,28 @@ async function handleTick(tick) {
 
 // --------------------- SYNC: reconcile broker positions with tracked pairs ---------------------
 async function syncOpenPairsWithPositions(positions) {
+  
+  const MIN_TRADE_AGE = 5000; // 5 seconds grace period
+
   try {
-    // 1️⃣ Only treat REAL MT5 positions (positionId) as active trades
-    const brokerPositions = (positions || []).filter(p => p && p.positionId);
-    const brokerTickets = new Set(brokerPositions.map(p => p.positionId));
 
-    // Mark all real positions as recent to avoid premature closure
-    for (const pos of brokerPositions) {
-      recentTickets.add(pos.positionId);
-      setTimeout(() => recentTickets.delete(pos.positionId), 15000);
-    }
+    // Normalize broker tickets
+    const brokerTickets = new Set(
+      (positions || [])
+        .map(p => p.positionId || p.ticket || p.id)
+        .filter(Boolean)
+    );
 
-    // 2️⃣ Collect our internal tickets (PAIR legs)
+    // ============================================
+    // RULE 1: Force-close any external trades
+    // ============================================
     const ourTickets = new Set();
+
     for (const rec of Object.values(openPairs)) {
       if (rec.trades?.PARTIAL?.ticket) ourTickets.add(rec.trades.PARTIAL.ticket);
       if (rec.trades?.TRAILING?.ticket) ourTickets.add(rec.trades.TRAILING.ticket);
     }
 
-    // 3️⃣ Close ONLY external REAL positions (positionId only)
-    for (const pos of brokerPositions) {
-      const ticket = pos.positionId;
-
-      if (!ourTickets.has(ticket)) {
-        if (recentTickets.has(ticket)) {
-          console.log(`[SYNC] Recently placed position → NOT external: ${ticket}`);
-          continue;
-        }
-        console.log(`[SYNC] External REAL position detected → closing ${ticket}`);
-        await safeClosePosition(ticket);
-      }
-    }
 
     // ============================================
     // RULE 2: Validate each managed pair
