@@ -20,6 +20,8 @@ const SIDE_COOLDOWN_MS = 15 * 60 * 1000;
 const lastEntryTime = { BUY: 0, SELL: 0 };
 
 
+const fs = require('fs');
+const RAW_ORDERS_LOG = '/tmp/raw_order_responses.log';
 
 // --------------------- CONFIG ---------------------
 const ACCOUNT_ID = process.env.METAAPI_ACCOUNT_ID;
@@ -268,34 +270,95 @@ async function safeGetAccountBalance() {
 }
 
 
+
 // safePlaceMarketOrder - robust attempts to call several API variants
 async function safePlaceMarketOrder(action, lot, sl, tp) {
+  const context = {
+    ts: new Date().toISOString(),
+    action,
+    lot,
+    sl,
+    tp,
+    pid: process.pid,
+    stack: (new Error()).stack.split('\n').slice(1,6).map(s => s.trim()) // slim stack
+  };
+
+  // helper to persist raw responses and context
+  function persistRaw(res, note = '') {
+    const entry = {
+      ts: new Date().toISOString(),
+      context,
+      note,
+      res
+    };
+    try {
+      fs.appendFileSync(RAW_ORDERS_LOG, JSON.stringify(entry) + '\n');
+    } catch (err) {
+      // never throw from logging - but still print warn
+      console.warn('[RAW_LOG] failed to persist order response:', err.message || err);
+    }
+  }
+
   try {
-    if (!connection) throw new Error('No connection');
+    if (!connection) {
+      const err = new Error('No connection');
+      persistRaw({ error: err.message }, 'pre-check');
+      throw err;
+    }
+
+    // Try specific CREATE BUY
     if (action === 'BUY' && typeof connection.createMarketBuyOrder === 'function') {
-      return await connection.createMarketBuyOrder(SYMBOL, lot, { stopLoss: sl, takeProfit: tp });
+      console.log('[ORDER-ATTEMPT]', context, 'using createMarketBuyOrder');
+      const res = await connection.createMarketBuyOrder(SYMBOL, lot, { stopLoss: sl, takeProfit: tp });
+      persistRaw(res, 'createMarketBuyOrder');
+      return res;
     }
+
+    // Try specific CREATE SELL
     if (action === 'SELL' && typeof connection.createMarketSellOrder === 'function') {
-      return await connection.createMarketSellOrder(SYMBOL, lot, { stopLoss: sl, takeProfit: tp });
+      console.log('[ORDER-ATTEMPT]', context, 'using createMarketSellOrder');
+      const res = await connection.createMarketSellOrder(SYMBOL, lot, { stopLoss: sl, takeProfit: tp });
+      persistRaw(res, 'createMarketSellOrder');
+      return res;
     }
+
+    // Try generic createMarketOrder
     if (typeof connection.createMarketOrder === 'function') {
-      return await connection.createMarketOrder({
+      console.log('[ORDER-ATTEMPT]', context, 'using createMarketOrder');
+      const payload = {
         symbol: SYMBOL,
         type: action === 'BUY' ? 'buy' : 'sell',
         volume: lot,
         stopLoss: sl,
         takeProfit: tp
-      });
+      };
+      const res = await connection.createMarketOrder(payload);
+      persistRaw({ payload, res }, 'createMarketOrder');
+      return res;
     }
+
+    // Try sendOrder
     if (typeof connection.sendOrder === 'function') {
-      return await connection.sendOrder({ symbol: SYMBOL, type: action === 'BUY' ? 'buy' : 'sell', volume: lot, stopLoss: sl, takeProfit: tp });
+      console.log('[ORDER-ATTEMPT]', context, 'using sendOrder');
+      const payload = { symbol: SYMBOL, type: action === 'BUY' ? 'buy' : 'sell', volume: lot, stopLoss: sl, takeProfit: tp };
+      const res = await connection.sendOrder(payload);
+      persistRaw({ payload, res }, 'sendOrder');
+      return res;
     }
+
   } catch (e) {
+    // Persist the error plus context for later analysis
+    persistRaw({ error: (e && (e.message || e)).toString() }, 'exception');
     safeLog(`[ORDER] ${action} ${lot} failed:`, e.message || e);
     throw e;
   }
-  throw new Error('No supported market order method found on connection');
+
+  // none of the methods present
+  const noMethodErr = new Error('No supported market order method found on connection');
+  persistRaw({ error: noMethodErr.message }, 'no-method');
+  throw noMethodErr;
 }
+
 
 
 // --------------------- EXECUTION: Paired Order Placement ---------------------
