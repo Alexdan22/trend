@@ -98,6 +98,8 @@ const ATR_TRIGGER_MULTIPLIER = 1.5;   // used to compute dynamic trigger = ATR *
 let latestPrice = null;   // { bid, ask, timestamp }
 let lastTradeMonitorRun = 0;
 let entryInProgress = false;
+let orderInFlight = false;
+
 
 
 
@@ -309,7 +311,7 @@ async function safeGetAccountBalance() {
 
 
 // safePlaceMarketOrder - uses parseOrderResponse and returns { ticket, clientId, raw }
-async function safePlaceMarketOrder(action, lot, sl, tp, clientIdOverride = null) {
+async function safePlaceMarketOrder(action, lot, sl, tp, clientIdOverride = null, legIndex = 0) {
   // request id may be overridden by caller for idempotency
   let requestId = `req-${Date.now()}-${Math.floor(Math.random() * 100000)}`;
   if (clientIdOverride) requestId = clientIdOverride;
@@ -343,11 +345,12 @@ async function safePlaceMarketOrder(action, lot, sl, tp, clientIdOverride = null
     return { duplicate: true, ticket: existingTicket, clientId: requestId, raw: null };
   }
 
-  const orderHash = `${action}-${lot}-${sl}-${tp}`;
+   // create a leg-aware order hash so L1 != L2
+  const orderHash = `${action}-${Number(lot)}-${sl || ''}-${tp || ''}-L${legIndex}`;
 
   if (orderHash === lastOrderHash && Date.now() - lastOrderTime < 4000) {
-    console.log("[ORDER] Duplicate order suppressed in 4s retry window");
-    return { suppressed: true };
+    console.log("[ORDER] Duplicate order suppressed in 4s retry window (leg-aware)", orderHash);
+    return { suppressed: true, orderHash };
   }
 
   lastOrderHash = orderHash;
@@ -419,6 +422,10 @@ async function safePlaceMarketOrder(action, lot, sl, tp, clientIdOverride = null
 
 // --------------------- EXECUTION: Paired Order Placement ---------------------
 async function placePairedOrder(side, totalLot, slPrice, tpPrice, riskPercent) {
+
+  try {
+  orderInFlight = true;
+  // place both legs (first then second)
   const lotEach = Number((totalLot / 2).toFixed(2));
   if (lotEach < MIN_LOT) {
     console.log('[PAIR] Computed lot too small — aborting.');
@@ -431,7 +438,7 @@ async function placePairedOrder(side, totalLot, slPrice, tpPrice, riskPercent) {
   try {
     // LEG 1 — partial
     const clientId1 = `leg1-${Date.now()}-${Math.floor(Math.random()*100000)}`;
-    first = await safePlaceMarketOrder(side, lotEach, null, null, clientId1);
+    first = await safePlaceMarketOrder(side, lotEach, null, null, clientId1, 1);
 
     // After placing first leg — use parsed ticket (first.ticket) not nested fields
     if (first?.ticket) {
@@ -444,7 +451,7 @@ async function placePairedOrder(side, totalLot, slPrice, tpPrice, riskPercent) {
 
     // LEG 2 — trailing
     const clientId2 = `leg2-${Date.now()}-${Math.floor(Math.random()*100000)}`;
-    second = await safePlaceMarketOrder(side, lotEach, null, null, clientId2);
+    second = await safePlaceMarketOrder(side, lotEach, null, null, clientId2, 2);
 
     if (second?.ticket) {
       recentTickets.add(second.ticket);
@@ -497,6 +504,11 @@ async function placePairedOrder(side, totalLot, slPrice, tpPrice, riskPercent) {
 
   console.log(`[PAIR OPENED] ${pairId}`, openPairs[pairId]);
   return openPairs[pairId];
+
+  } finally {
+  // small grace delay so MetaApi has time to add positions to the feed
+  setTimeout(() => { orderInFlight = false; }, 1200);
+}
 }
 
 
@@ -1007,6 +1019,13 @@ async function syncOpenPairsWithPositions(positions) {
   
   const MIN_TRADE_AGE = 5000; // 5 seconds grace period
 
+  if (orderInFlight) {
+  // do not treat positions as external while we're creating a pair
+  console.log("[SYNC] Skipping external detection — order in-flight");
+  return;
+}
+
+
   try {
 
     // Normalize broker tickets
@@ -1073,6 +1092,13 @@ async function syncOpenPairsWithPositions(positions) {
           console.log(`[SYNC] Recently placed trade → NOT external: ${ticket}`);
           continue; // skip
         }
+        // Ignore trades that are younger than 1500ms (MetaApi delay window)
+        const age = Date.now() - (pos.time || pos.updateTime || Date.now());
+        if (age < 15000) {
+          console.log(`[SYNC] Ignoring newborn trade ${ticket} (age ${age}ms)`);
+          continue;
+        }
+
 
         console.log(`[SYNC] External/Unknown trade detected → closing ${ticket}`);
         try {
