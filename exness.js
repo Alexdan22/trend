@@ -9,6 +9,8 @@ const MetaApi = require('metaapi.cloud-sdk').default;
 const { setTimeout: delay } = require('timers/promises');
 const express = require('express');
 const bodyParser = require('body-parser');
+const fs = require('fs');
+const RAW_ORDERS_LOG = '/tmp/raw_order_responses.log';
 
 const EXNESS_PORT = process.env.EXNESS_PORT || 5002;
 
@@ -20,8 +22,6 @@ const SIDE_COOLDOWN_MS = 15 * 60 * 1000;
 const lastEntryTime = { BUY: 0, SELL: 0 };
 
 
-const fs = require('fs');
-const RAW_ORDERS_LOG = '/tmp/raw_order_responses.log';
 
 // --------------------- CONFIG ---------------------
 const ACCOUNT_ID = process.env.METAAPI_ACCOUNT_ID;
@@ -31,6 +31,9 @@ const MIN_LOT = 0.01; // minimum lot size per broker
 let FIXED_LOT = 0.02;   // default lot size for ALL trades
 
 
+
+// global map to track idempotency
+const clientOrderMap = new Map();   // clientId -> ticket
 
 
 // --------------------- TELEGRAM SETUP ---------------------
@@ -271,93 +274,101 @@ async function safeGetAccountBalance() {
 
 
 
-// safePlaceMarketOrder - robust attempts to call several API variants
-async function safePlaceMarketOrder(action, lot, sl, tp) {
+ // safePlaceMarketOrder - robust attempts to call several API variants
+async function safePlaceMarketOrder(action, lot, sl, tp, clientIdOverride = null) {
+  let requestId = `req-${Date.now()}-${Math.floor(Math.random() * 100000)}`;
+  if (clientIdOverride) requestId = clientIdOverride;
+
   const context = {
     ts: new Date().toISOString(),
     action,
     lot,
     sl,
     tp,
-    pid: process.pid,
-    stack: (new Error()).stack.split('\n').slice(1,6).map(s => s.trim()) // slim stack
+    requestId,
+    stack: (new Error()).stack.split('\n').slice(1,5)
   };
 
-  // helper to persist raw responses and context
-  function persistRaw(res, note = '') {
+  // If same requestId was somehow retried → block immediately
+  if (clientOrderMap.has(requestId)) {
+    console.log("[ORDER] Duplicate request blocked via clientId:", requestId);
+    return { duplicate: true, ticket: clientOrderMap.get(requestId) };
+  }
+
+  function logRaw(note, res, err = null) {
     const entry = {
       ts: new Date().toISOString(),
-      context,
       note,
-      res
+      requestId,
+      context,
+      response: res,
+      error: err ? (err.message || err) : null
     };
-    try {
-      fs.appendFileSync(RAW_ORDERS_LOG, JSON.stringify(entry) + '\n');
-    } catch (err) {
-      // never throw from logging - but still print warn
-      console.warn('[RAW_LOG] failed to persist order response:', err.message || err);
-    }
+    try { fs.appendFileSync(RAW_ORDERS_LOG, JSON.stringify(entry) + "\n"); }
+    catch (_) {}
   }
 
   try {
-    if (!connection) {
-      const err = new Error('No connection');
-      persistRaw({ error: err.message }, 'pre-check');
-      throw err;
+    if (!connection) throw new Error("No connection");
+
+    const orderPayload = {
+      symbol: SYMBOL,
+      type: action === "BUY" ? "buy" : "sell",
+      volume: lot,
+      stopLoss: sl,
+      takeProfit: tp,
+      clientId: requestId   // ⭐ IDempotency tag
+    };
+
+    console.log("[ORDER-ATTEMPT-IDEMPOTENT]", orderPayload);
+
+    let res;
+
+    // Try preferred path
+    if (typeof connection.createMarketOrder === "function") {
+      res = await connection.createMarketOrder(orderPayload);
+      logRaw("createMarketOrder", res);
+    }
+    else if (action === "BUY" && typeof connection.createMarketBuyOrder === "function") {
+      res = await connection.createMarketBuyOrder(SYMBOL, lot, { stopLoss: sl, takeProfit: tp, clientId: requestId });
+      logRaw("createMarketBuyOrder", res);
+    }
+    else if (action === "SELL" && typeof connection.createMarketSellOrder === "function") {
+      res = await connection.createMarketSellOrder(SYMBOL, lot, { stopLoss: sl, takeProfit: tp, clientId: requestId });
+      logRaw("createMarketSellOrder", res);
+    }
+    else if (typeof connection.sendOrder === "function") {
+      res = await connection.sendOrder(orderPayload);
+      logRaw("sendOrder", res);
+    }
+    else {
+      throw new Error("No valid order method found");
     }
 
-    // Try specific CREATE BUY
-    if (action === 'BUY' && typeof connection.createMarketBuyOrder === 'function') {
-      console.log('[ORDER-ATTEMPT]', context, 'using createMarketBuyOrder');
-      const res = await connection.createMarketBuyOrder(SYMBOL, lot, { stopLoss: sl, takeProfit: tp });
-      persistRaw(res, 'createMarketBuyOrder');
-      return res;
+    // Extract ticket
+    const ticket =
+      res?.positionId ||
+      res?.orderId ||
+      res?.ticket ||
+      res?.id ||
+      res?.result?.positionId ||
+      null;
+
+    if (ticket) {
+      clientOrderMap.set(requestId, ticket); // save idempotency map
+      recentTickets.add(ticket);
+      setTimeout(() => recentTickets.delete(ticket), 12000);
     }
 
-    // Try specific CREATE SELL
-    if (action === 'SELL' && typeof connection.createMarketSellOrder === 'function') {
-      console.log('[ORDER-ATTEMPT]', context, 'using createMarketSellOrder');
-      const res = await connection.createMarketSellOrder(SYMBOL, lot, { stopLoss: sl, takeProfit: tp });
-      persistRaw(res, 'createMarketSellOrder');
-      return res;
-    }
+    return { ticket, raw: res, requestId };
 
-    // Try generic createMarketOrder
-    if (typeof connection.createMarketOrder === 'function') {
-      console.log('[ORDER-ATTEMPT]', context, 'using createMarketOrder');
-      const payload = {
-        symbol: SYMBOL,
-        type: action === 'BUY' ? 'buy' : 'sell',
-        volume: lot,
-        stopLoss: sl,
-        takeProfit: tp
-      };
-      const res = await connection.createMarketOrder(payload);
-      persistRaw({ payload, res }, 'createMarketOrder');
-      return res;
-    }
-
-    // Try sendOrder
-    if (typeof connection.sendOrder === 'function') {
-      console.log('[ORDER-ATTEMPT]', context, 'using sendOrder');
-      const payload = { symbol: SYMBOL, type: action === 'BUY' ? 'buy' : 'sell', volume: lot, stopLoss: sl, takeProfit: tp };
-      const res = await connection.sendOrder(payload);
-      persistRaw({ payload, res }, 'sendOrder');
-      return res;
-    }
-
-  } catch (e) {
-    // Persist the error plus context for later analysis
-    persistRaw({ error: (e && (e.message || e)).toString() }, 'exception');
-    safeLog(`[ORDER] ${action} ${lot} failed:`, e.message || e);
-    throw e;
+  } catch (err) {
+    logRaw("exception", null, err);
+    safeLog("[ORDER ERROR]", err.message || err);
+    throw err;
   }
-
-  // none of the methods present
-  const noMethodErr = new Error('No supported market order method found on connection');
-  persistRaw({ error: noMethodErr.message }, 'no-method');
-  throw noMethodErr;
 }
+
 
 
 
@@ -373,20 +384,24 @@ async function placePairedOrder(side, totalLot, slPrice, tpPrice, riskPercent) {
   let second = null;
 
   try {
-    // Place 1st leg (PARTIAL)
-    first = await safePlaceMarketOrder(side, lotEach, null, null);
+    // LEG 1 — partial
+    const clientId1 = `leg1-${Date.now()}-${Math.floor(Math.random()*100000)}`;
+    first = await safePlaceMarketOrder(side, lotEach, null, null, clientId1);
+
     // After placing first leg
-    if (first?.positionId || first?.orderId) {
-      const id = first.positionId || first.orderId;
-      recentTickets.add(id);
-      setTimeout(() => recentTickets.delete(id), 15000);
+    if (first?.ticket) {
+      recentTickets.add(first.ticket);
+      setTimeout(() => recentTickets.delete(first.ticket), 15000);
     }
+
 
     // Slight spacing to avoid broker-side conflicts
     await delay(300);
 
-    // Place 2nd leg (TRAILING)
-    second = await safePlaceMarketOrder(side, lotEach, null, null);
+    // LEG 2 — trailing
+    const clientId2 = `leg2-${Date.now()}-${Math.floor(Math.random()*100000)}`;
+    second = await safePlaceMarketOrder(side, lotEach, null, null, clientId2);
+
     // After placing second leg
     if (second?.positionId || second?.orderId) {
       const id = second.positionId || second.orderId;
@@ -419,11 +434,11 @@ async function placePairedOrder(side, totalLot, slPrice, tpPrice, riskPercent) {
 
     trades: {
       PARTIAL: {
-        ticket: first?.positionId || first?.orderId || null,
+        ticket: first?.ticket || null,
         lot: lotEach
       },
       TRAILING: {
-        ticket: second?.positionId || second?.orderId || null,
+        ticket: second?.ticket || null,
         lot: lotEach
       }
     },
@@ -965,6 +980,18 @@ async function syncOpenPairsWithPositions(positions) {
     // RULE 1: Force-close any external trades
     // ============================================
     const ourTickets = new Set();
+
+    // If a broker ticket corresponds to our clientId, it's ours even if late
+    for (const pos of (positions || [])) {
+      const ticket = String(pos.positionId || pos.ticket || pos.id);
+      for (const [cid, savedTicket] of clientOrderMap.entries()) {
+        if (ticket === String(savedTicket)) {
+          ourTickets.add(ticket);
+        }
+      }
+    }
+
+
 
     for (const rec of Object.values(openPairs)) {
       if (rec.trades?.PARTIAL?.ticket) ourTickets.add(rec.trades.PARTIAL.ticket);
