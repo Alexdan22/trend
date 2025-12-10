@@ -37,6 +37,8 @@ let FIXED_LOT = 0.02;   // default lot size for ALL trades
 
 // global map to track idempotency
 const clientOrderMap = new Map();   // clientId -> ticket
+const ticketOwnershipMap = new Set();   // ticket -> true
+
 
 
 // --------------------- TELEGRAM SETUP ---------------------
@@ -393,6 +395,7 @@ async function placePairedOrder(side, totalLot, slPrice, tpPrice, riskPercent) {
     // Register ticket into recentTickets if present
     if (first?.ticket) {
       recentTickets.add(String(first.ticket));
+      ticketOwnershipMap.add(String(first.ticket));
       setTimeout(() => recentTickets.delete(String(first.ticket)), 15000);
     }
 
@@ -501,6 +504,9 @@ async function processTickForOpenPairs(price) {
           rec.trades.PARTIAL.ticket = null;
           rec.partialClosed = true;
         }
+
+        const trailingTicket = rec.trades?.TRAILING?.ticket;
+
 
         if (trailingTicket && !brokerTickets.has(trailingTicket)) {
           // If trailing was just placed/placed recently, skip marking it null immediately.
@@ -1010,12 +1016,30 @@ async function syncOpenPairsWithPositions(positions) {
 
         if (found) {
           console.log(`[PAIR] LEG1 confirmed for ${pairId} (orderInFlight confirmation pass)`);
+          const leg1Ticket = String(rec.trades.PARTIAL.ticket || '');
+          if (leg1Ticket) ticketOwnershipMap.add(leg1Ticket);
+
           // mark orderInFlight cleared (we have confirmation)
           orderInFlight = false;
 
           // record mapping and change status as in normal flow
-          if (rec.trades?.PARTIAL?.clientId) clientOrderMap.set(String(rec.trades.PARTIAL.clientId), String(rec.trades.PARTIAL.ticket || ''));
+          // --- Record mapping using BOTH clientId and ticketId ---
+          const leg1Cid = rec.trades?.PARTIAL?.clientId;
+          const leg1Tid = rec.trades?.PARTIAL?.ticket;
+
+          // If clientId exists, map it to ticket
+          if (leg1Cid) {
+              clientOrderMap.set(String(leg1Cid), String(leg1Tid));
+          }
+
+          // Always map ticket → true (ownership mark)
+          if (leg1Tid) {
+              ticketOwnershipMap.add(String(leg1Tid));
+          }
+
+          // Continue flow
           rec.status = 'WAITING_LEG2';
+
           // ensure we set confirmDeadlineForLeg2 (3s window) if not set
           if (!rec.confirmDeadlineForLeg2) rec.confirmDeadlineForLeg2 = Date.now() + 3000;
           // we can break early or continue confirming others; continue to allow multiple concurrent pairs
@@ -1080,7 +1104,29 @@ async function syncOpenPairsWithPositions(positions) {
     for (const pos of (positions || [])) {
       const ticket = String(pos.positionId || pos.ticket || pos.id || '');
       if (!ticket) continue;
-      if (ourTickets.has(ticket)) continue;
+      const brokerClientId = String(pos.clientId || pos.orderClientId || pos.meta?.clientId || '');
+      const isOurs =
+          ourTickets.has(ticket) ||
+          ticketOwnershipMap.has(ticket) ||          // NEW
+          clientOrderMap.has(brokerClientId);        // existing
+
+      if (isOurs) {
+          continue; // do NOT close this trade
+      }
+
+      // --- NEW GUARD: If ANY pair is WAITING_LEG2, skip closing ANY external trade ---
+      let hasWaitingLeg2 = false;
+      for (const rec of Object.values(openPairs)) {
+          if (rec.status === "WAITING_LEG2") {
+              hasWaitingLeg2 = true;
+              break;
+          }
+      }
+
+      if (hasWaitingLeg2) {
+          console.log(`[SYNC] Pair awaiting LEG2 → skipping external close for ${ticket}`);
+          continue;
+      }
 
       // recentTickets: any very recently placed ticket (ours or manual) — skip
       if (recentTickets.has(ticket)) {
@@ -1208,20 +1254,25 @@ async function syncOpenPairsWithPositions(positions) {
         });
 
         if (candidate) {
-          // Adopt candidate as LEG2
-          const leg2Ticket = String(candidate.positionId || candidate.ticket || candidate.id || '');
-          const leg2ClientId = String(candidate.clientId || candidate.orderClientId || candidate.meta?.clientId || '');
 
-          console.log(`[PAIR] EXNESS-PROVIDED LEG2 adopted for ${pairId} -> ${leg2Ticket}`);
-          rec.trades.TRAILING.ticket = leg2Ticket;
-          rec.trades.TRAILING.clientId = leg2ClientId || null;
-          if (leg2ClientId) clientOrderMap.set(leg2ClientId, leg2Ticket);
-          // mark entry complete
-          rec.status = 'ENTRY_COMPLETE';
-          // ensure rec.entryPrice set if missing
-          if (!rec.entryPrice && candidate.price) rec.entryPrice = candidate.price;
-          continue;
+            const brokerTicket = String(candidate.positionId || candidate.ticket || candidate.id || '');
+            const brokerClientId = String(candidate.clientId || candidate.orderClientId || candidate.meta?.clientId || '');
+
+            console.log(`[PAIR] EXNESS-PROVIDED LEG2 adopted for ${pairId} → ${brokerTicket}`);
+
+            rec.trades.TRAILING.ticket = brokerTicket;
+            rec.trades.TRAILING.clientId = brokerClientId || null;
+
+            // Ownership map
+            ticketOwnershipMap.add(brokerTicket);
+            if (brokerClientId) {
+                clientOrderMap.set(brokerClientId, brokerTicket);
+            }
+
+            rec.status = "ENTRY_COMPLETE";
+            continue;  // VALID — now inside the rec-loop
         }
+
 
         // LEG2 not found — check deadline
         if (Date.now() >= (rec.confirmDeadlineForLeg2 || 0)) {
@@ -1233,6 +1284,7 @@ async function syncOpenPairsWithPositions(positions) {
 
             if (placed?.ticket) {
               rec.trades.TRAILING.ticket = String(placed.ticket);
+              ticketOwnershipMap.add(String(placed.ticket));     // ← REQUIRED
               rec.trades.TRAILING.clientId = String(placed.clientId || clientId2);
               clientOrderMap.set(String(placed.clientId || clientId2), String(placed.ticket));
               recentTickets.add(String(placed.ticket));
@@ -1290,6 +1342,10 @@ async function syncOpenPairsWithPositions(positions) {
           console.log(`[SYNC] Both tickets missing but still in grace → NOT deleting ${pairId}`);
         } else {
           console.log(`[SYNC] Pair fully closed → removing ${pairId}`);
+          // When closing a trade or when it disappears:
+          ticketOwnershipMap.delete(String(trailingTicket));
+          ticketOwnershipMap.delete(String(partialTicket));
+
           delete openPairs[pairId];
         }
         continue;
