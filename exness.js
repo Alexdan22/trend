@@ -463,11 +463,23 @@ async function processTickForOpenPairs(price) {
 
     for (const [pairId, rec] of Object.entries(openPairs)) {
 
-      // --- Grace period: do NOT run missing-ticket or trailing logic for first 5s ---
+      // ---------------------------------------------------------------
+      // NEW BLOCK — prevent ALL internal trade logic during entry building
+      // ---------------------------------------------------------------
+      if (rec.status === "WAITING_LEG1_CONFIRM" || rec.status === "WAITING_LEG2") {
+
+          // While waiting for Exness to create leg2 (duplicate),
+          // skip ALL partial/missing/trailing logic completely.
+          continue;
+      }
+
+      // ---------------------------------------------------------------
+      // Original age-based guard (you already have this)
+      // ---------------------------------------------------------------
       const ageMs = Date.now() - new Date(rec.openedAt).getTime();
       if (ageMs < 5000) {
-        console.log(`[TRAIL] Skipping ${pairId} (trade too new: ${ageMs}ms)`);
-        continue;
+          console.log(`[TRAIL] Skipping ${pairId} (trade too new: ${ageMs}ms)`);
+          continue;
       }
 
       const side = rec.side;
