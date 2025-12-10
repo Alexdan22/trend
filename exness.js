@@ -439,8 +439,7 @@ async function placePairedOrder(side, totalLot, slPrice, tpPrice, riskPercent) {
     return openPairs[pairId];
 
   } finally {
-    // leave orderInFlight true briefly to avoid race in sync; clear after short grace
-    setTimeout(() => { orderInFlight = false; }, 1200);
+    // orderInFlight stays true until LEG1 is confirmed inside sync()
   }
 }
 
@@ -1080,6 +1079,7 @@ async function syncOpenPairsWithPositions(positions) {
         if (found) {
           console.log(`[PAIR] LEG1 confirmed for ${pairId}`);
           // Ensure mapping captured
+          orderInFlight = false;
           if (leg1ClientId) clientOrderMap.set(leg1ClientId, leg1Ticket || '');
           rec.status = 'WAITING_LEG2';
           // set a confirmDeadline (if not already set)
