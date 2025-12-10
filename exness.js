@@ -312,46 +312,49 @@ async function safeGetAccountBalance() {
 
 // safePlaceMarketOrder - uses parseOrderResponse and returns { ticket, clientId, raw }
 async function safePlaceMarketOrder(action, lot, sl, tp, clientIdOverride = null, legIndex = 0) {
-  if (!connection) throw new Error("No streaming connection");
+  if (!connection) throw new Error("No connection");
 
-  // Generate a stable unique clientId for idempotency
   let requestId = clientIdOverride || `req-${Date.now()}-${Math.floor(Math.random() * 100000)}-L${legIndex}`;
 
-  // Build the payload for MetaApi
-  const orderPayload = {
-    symbol: SYMBOL,
-    type: action === "BUY" ? "buy" : "sell",
-    volume: lot,
-    stopLoss: sl,
-    takeProfit: tp,
-    clientId: requestId
-  };
+  console.log("[ORDER] Using streaming API order method");
 
-  console.log("[ORDER] createMarketOrder:", orderPayload);
-
-  // ---- SINGLE OFFICIAL METAAPI ORDER CALL ----
-  // This is the ONLY method MetaApi recommends and supports reliably.
-  let res;
   try {
-    res = await connection.createMarketOrder(orderPayload);
+    let res;
+
+    if (action === "BUY") {
+      res = await connection.createMarketBuyOrder(
+        SYMBOL,
+        lot,
+        { stopLoss: sl, takeProfit: tp, clientId: requestId }
+      );
+    } else {
+      res = await connection.createMarketSellOrder(
+        SYMBOL,
+        lot,
+        { stopLoss: sl, takeProfit: tp, clientId: requestId }
+      );
+    }
+
+    const parsed = parseOrderResponse(res);
+    const ticket = parsed.ticket || null;
+    const clientId = parsed.clientId || requestId;
+
+    if (ticket) {
+      recentTickets.add(ticket);
+      setTimeout(() => recentTickets.delete(ticket), 15000);
+    }
+
+    return { ticket, clientId, raw: res, requestId };
+
   } catch (err) {
-    console.error("[ORDER ERROR] createMarketOrder failed:", err.message);
+    console.error("[ORDER ERROR] Streaming order failed:", err.message);
+
+    // OPTIONAL: fallback only if required
+    // But safest approach: NO FALLBACK to avoid double entries
     throw err;
   }
-
-  // Parse the result
-  const parsed = parseOrderResponse(res);
-  const ticket = parsed.ticket || null;
-  const clientId = parsed.clientId || requestId;
-
-  // Track for external-trade filtering
-  if (ticket) {
-    recentTickets.add(ticket);
-    setTimeout(() => recentTickets.delete(ticket), 15000);
-  }
-
-  return { ticket, clientId, raw: res, requestId };
 }
+
 
 
 
