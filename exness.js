@@ -966,17 +966,20 @@ async function syncOpenPairsWithPositions(positions) {
   // If we are in the middle of placing orders, skip external detection
   if (orderInFlight) {
 
-    // failsafe: if orderInFlight has lasted more than 5 seconds, drop it
-    if (orderInFlight && Date.now() - rec.entryTimestamp > 5000) {
-        console.warn("[PAIR] Failsafe: orderInFlight expired without confirmation");
-        orderInFlight = false;
-    }
 
     try {
       // confirmation pass: try to confirm any waiting LEG1 before blocking everything
       for (const [pairId, rec] of Object.entries(openPairs)) {
         if (rec.status !== 'WAITING_LEG1_CONFIRM') continue;
 
+        // Failsafe: orderInFlight should not stay true forever
+        if (orderInFlight && rec.status === "WAITING_LEG1_CONFIRM") {
+            const age = Date.now() - rec.entryTimestamp;
+            if (age > 5000) {
+                console.warn(`[PAIR] Failsafe: There was no LEG1 confirmation for ${pairId} after 5s — clearing orderInFlight`);
+                orderInFlight = false;
+            }
+        }
         const leg1Ticket = String(rec.trades?.PARTIAL?.ticket || '');
         const leg1ClientId = String(rec.trades?.PARTIAL?.clientId || '');
         const entryTs = rec.entryTimestamp || Date.now();
