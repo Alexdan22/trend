@@ -312,108 +312,45 @@ async function safeGetAccountBalance() {
 
 // safePlaceMarketOrder - uses parseOrderResponse and returns { ticket, clientId, raw }
 async function safePlaceMarketOrder(action, lot, sl, tp, clientIdOverride = null, legIndex = 0) {
-  // request id may be overridden by caller for idempotency
-  let requestId = `req-${Date.now()}-${Math.floor(Math.random() * 100000)}`;
-  if (clientIdOverride) requestId = clientIdOverride;
+  if (!connection) throw new Error("No streaming connection");
 
-  const context = {
-    ts: new Date().toISOString(),
-    action,
-    lot,
-    sl,
-    tp,
-    requestId,
-    stack: (new Error()).stack.split('\n').slice(1,6)
+  // Generate a stable unique clientId for idempotency
+  let requestId = clientIdOverride || `req-${Date.now()}-${Math.floor(Math.random() * 100000)}-L${legIndex}`;
+
+  // Build the payload for MetaApi
+  const orderPayload = {
+    symbol: SYMBOL,
+    type: action === "BUY" ? "buy" : "sell",
+    volume: lot,
+    stopLoss: sl,
+    takeProfit: tp,
+    clientId: requestId
   };
 
-  function logRaw(note, res, err = null) {
-    const entry = {
-      ts: new Date().toISOString(),
-      note,
-      requestId,
-      context,
-      response: res,
-      error: err ? (err.message || err) : null
-    };
-    try { fs.appendFileSync(RAW_ORDERS_LOG, JSON.stringify(entry) + "\n"); } catch (_) {}
-  }
+  console.log("[ORDER] createMarketOrder:", orderPayload);
 
-  // Prevent duplicate attempt if same requestId already mapped
-  if (clientOrderMap.has(requestId)) {
-    const existingTicket = clientOrderMap.get(requestId);
-    console.log("[ORDER] Duplicate request blocked via clientId:", requestId, "->", existingTicket);
-    return { duplicate: true, ticket: existingTicket, clientId: requestId, raw: null };
-  }
-
-   // create a leg-aware order hash so L1 != L2
-  const orderHash = `${action}-${Number(lot)}-${sl || ''}-${tp || ''}-L${legIndex}`;
-
-  if (orderHash === lastOrderHash && Date.now() - lastOrderTime < 4000) {
-    console.log("[ORDER] Duplicate order suppressed in 4s retry window (leg-aware)", orderHash);
-    return { suppressed: true, orderHash };
-  }
-
-  lastOrderHash = orderHash;
-  lastOrderTime = Date.now();
-
-
+  // ---- SINGLE OFFICIAL METAAPI ORDER CALL ----
+  // This is the ONLY method MetaApi recommends and supports reliably.
+  let res;
   try {
-    if (!connection) throw new Error("No connection");
-
-    const orderPayload = {
-      symbol: SYMBOL,
-      type: action === "BUY" ? "buy" : "sell",
-      volume: lot,
-      stopLoss: sl,
-      takeProfit: tp,
-      clientId: requestId // idempotency tag we expect MetaApi to preserve somewhere in response
-    };
-
-    console.log("[ORDER-ATTEMPT-IDEMPOTENT]", orderPayload);
-
-    let res;
-    if (typeof connection.createMarketOrder === "function") {
-      res = await connection.createMarketOrder(orderPayload);
-      logRaw("createMarketOrder", res);
-    } else if (action === "BUY" && typeof connection.createMarketBuyOrder === "function") {
-      res = await connection.createMarketBuyOrder(SYMBOL, lot, { stopLoss: sl, takeProfit: tp, clientId: requestId });
-      logRaw("createMarketBuyOrder", res);
-    } else if (action === "SELL" && typeof connection.createMarketSellOrder === "function") {
-      res = await connection.createMarketSellOrder(SYMBOL, lot, { stopLoss: sl, takeProfit: tp, clientId: requestId });
-      logRaw("createMarketSellOrder", res);
-    } else if (typeof connection.sendOrder === "function") {
-      res = await connection.sendOrder(orderPayload);
-      logRaw("sendOrder", res);
-    } else {
-      throw new Error("No valid order method found");
-    }
-
-    // parse ticket & clientId from any nested shape
-    const parsed = parseOrderResponse(res);
-    const ticket = parsed.ticket || null;
-    // returnedClientId: prefer parser result; fallback to our requestId
-    const returnedClientId = parsed.clientId || requestId;
-
-    // Save mapping so sync can later match by clientId even if ticket arrives later
-    if (returnedClientId) {
-      // store mapping to ticket (might be null for now); will be reconciled later
-      clientOrderMap.set(returnedClientId, ticket || null);
-    }
-
-    // If ticket present, also add to recentTickets and update mapping to concrete ticket
-    if (ticket) {
-      clientOrderMap.set(returnedClientId, ticket);
-      recentTickets.add(ticket);
-      setTimeout(() => recentTickets.delete(ticket), 15000);
-    }
-
-    return { ticket, clientId: returnedClientId, raw: res, requestId };
-
+    res = await connection.createMarketOrder(orderPayload);
   } catch (err) {
-    logRaw("exception", null, err);
-    safeLog("[ORDER ERROR]", err.message || err);
+    console.error("[ORDER ERROR] createMarketOrder failed:", err.message);
     throw err;
   }
+
+  // Parse the result
+  const parsed = parseOrderResponse(res);
+  const ticket = parsed.ticket || null;
+  const clientId = parsed.clientId || requestId;
+
+  // Track for external-trade filtering
+  if (ticket) {
+    recentTickets.add(ticket);
+    setTimeout(() => recentTickets.delete(ticket), 15000);
+  }
+
+  return { ticket, clientId, raw: res, requestId };
 }
 
 
