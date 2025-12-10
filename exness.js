@@ -362,94 +362,88 @@ async function safePlaceMarketOrder(action, lot, sl, tp, clientIdOverride = null
 
 // --------------------- EXECUTION: Paired Order Placement ---------------------
 async function placePairedOrder(side, totalLot, slPrice, tpPrice, riskPercent) {
-
   try {
-  orderInFlight = true;
-  // place both legs (first then second)
-  const lotEach = Number((totalLot / 2).toFixed(2));
-  if (lotEach < MIN_LOT) {
-    console.log('[PAIR] Computed lot too small — aborting.');
-    return null;
-  }
+    orderInFlight = true;
 
-  let first = null;
-  let second = null;
+    const lotEach = Number((totalLot / 2).toFixed(2));
+    if (lotEach < MIN_LOT) {
+      console.log('[PAIR] Computed lot too small — aborting.');
+      return null;
+    }
 
-  try {
-    // LEG 1 — partial
+    // Create pair state with WAITING_LEG1_CONFIRM
+    const pairId = `pair-${Date.now()}`;
+    const entryTimestamp = Date.now();
+
+    // Prepare leg1 clientId
     const clientId1 = `leg1-${Date.now()}-${Math.floor(Math.random()*100000)}`;
-    first = await safePlaceMarketOrder(side, lotEach, null, null, clientId1, 1);
 
-    // After placing first leg — use parsed ticket (first.ticket) not nested fields
+    console.log(`[PAIR] Creating pair ${pairId}, placing LEG1 only (clientId=${clientId1})`);
+
+    // Place LEG1 only
+    let first = null;
+    try {
+      first = await safePlaceMarketOrder(side, lotEach, null, null, clientId1, 1);
+    } catch (err) {
+      console.error('[PAIR] Error placing LEG1:', err.message || err);
+      orderInFlight = false;
+      return null;
+    }
+
+    // Register ticket into recentTickets if present
     if (first?.ticket) {
-      recentTickets.add(first.ticket);
-      setTimeout(() => recentTickets.delete(first.ticket), 15000);
+      recentTickets.add(String(first.ticket));
+      setTimeout(() => recentTickets.delete(String(first.ticket)), 15000);
     }
 
-    // Small spacing to allow broker bookkeeping
-    await delay(300);
-
-    // LEG 2 — trailing
-    const clientId2 = `leg2-${Date.now()}-${Math.floor(Math.random()*100000)}`;
-    second = await safePlaceMarketOrder(side, lotEach, null, null, clientId2, 2);
-
-    if (second?.ticket) {
-      recentTickets.add(second.ticket);
-      setTimeout(() => recentTickets.delete(second.ticket), 15000);
-    }
-
-  } catch (err) {
-    console.error('[PAIR] Error placing paired orders:', err.message || err);
-
-    // Deterministic rollback using tickets if available
-    try { if (first?.ticket) await safeClosePosition(first.ticket); } catch (_) {}
-    try { if (second?.ticket) await safeClosePosition(second.ticket); } catch (_) {}
-
-    return null;
-  }
-
-  // Construct internal pair record (store both clientId and ticket where available)
-  const pairId = `pair-${Date.now()}`;
-  const entryPrice =
-    side === 'BUY'
-      ? (first?.raw?.price || first?.raw?.averagePrice || latestPrice?.ask || first?.price || null)
-      : (first?.raw?.price || first?.raw?.averagePrice || latestPrice?.bid || first?.price || null);
-
-  openPairs[pairId] = {
-    pairId,
-    side,
-    riskPercent,
-    totalLot: lotEach * 2,
-    trades: {
-      PARTIAL: {
-        ticket: first?.ticket || null,
-        clientId: first?.clientId || first?.requestId || null,
-        lot: lotEach
+    // Build pair skeleton in openPairs (WAITING_LEG1_CONFIRM)
+    openPairs[pairId] = {
+      pairId,
+      side,
+      lotEach,
+      riskPercent,
+      totalLot: lotEach * 2,
+      trades: {
+        PARTIAL: {
+          ticket: first?.ticket || null,
+          clientId: first?.clientId || first?.requestId || clientId1,
+          lot: lotEach
+        },
+        TRAILING: {
+          ticket: null,
+          clientId: null,
+          lot: lotEach
+        }
       },
-      TRAILING: {
-        ticket: second?.ticket || null,
-        clientId: second?.clientId || second?.requestId || null,
-        lot: lotEach
-      }
-    },
-    entryPrice,
-    sl: slPrice,
-    tp: tpPrice,
-    breakEvenActive: false,
-    internalSL: null,
-    internalTrailingSL: null,
-    partialClosed: false,
-    openedAt: new Date().toISOString()
-  };
+      entryPrice:
+        side === 'BUY'
+          ? (first?.raw?.price || first?.raw?.averagePrice || latestPrice?.ask || first?.price || null)
+          : (first?.raw?.price || first?.raw?.averagePrice || latestPrice?.bid || first?.price || null),
+      sl: slPrice,
+      tp: tpPrice,
+      breakEvenActive: false,
+      internalSL: null,
+      internalTrailingSL: null,
+      partialClosed: false,
+      openedAt: new Date().toISOString(),
+      status: 'WAITING_LEG1_CONFIRM',
+      entryTimestamp,
+      confirmDeadlineForLeg2: entryTimestamp + 3000, // 3 seconds to allow Exness auto-create leg2
+      signalId: null // will be set by caller
+    };
 
-  console.log(`[PAIR OPENED] ${pairId}`, openPairs[pairId]);
-  return openPairs[pairId];
+    // Map clientId -> known ticket placeholder so sync can match
+    if (first?.clientId) clientOrderMap.set(String(first.clientId), String(first.ticket || ''));
+
+    console.log(`[PAIR] LEG1 placed for ${pairId}, awaiting confirmation and possible EXNESS leg2`);
+    return openPairs[pairId];
 
   } finally {
-  // small grace delay so MetaApi has time to add positions to the feed
-  setTimeout(() => { orderInFlight = false; }, 1200);
+    // leave orderInFlight true briefly to avoid race in sync; clear after short grace
+    setTimeout(() => { orderInFlight = false; }, 1200);
+  }
 }
-}
+
 
 
 
@@ -956,113 +950,101 @@ async function handleTick(tick) {
 
 // --------------------- SYNC: reconcile broker positions with tracked pairs ---------------------
 async function syncOpenPairsWithPositions(positions) {
-  
   const MIN_TRADE_AGE = 5000; // 5 seconds grace period
 
+  // If we are in the middle of placing orders, skip external detection
   if (orderInFlight) {
-  // do not treat positions as external while we're creating a pair
-  console.log("[SYNC] Skipping external detection — order in-flight");
-  return;
-}
-
+    console.log("[SYNC] Skipping external detection — order in-flight");
+    return;
+  }
 
   try {
-
-    // Normalize broker tickets
+    // Normalize broker tickets set
     const brokerTickets = new Set(
-      (positions || [])
-        .map(p => p.positionId || p.ticket || p.id)
-        .filter(Boolean)
+      (positions || []).map(p => String(p.positionId || p.ticket || p.id || '')).filter(Boolean)
     );
 
-    // ============================================
-    // Build ourTickets by ticket and by clientId mapping
-    // ============================================
+    // Build ourTickets (by ticket) and ourClientIds sets
     const ourTickets = new Set();
+    const ourClientIds = new Set();
 
-    // 1) add tickets from openPairs
+    // 1) tickets from openPairs
     for (const rec of Object.values(openPairs)) {
       if (rec.trades?.PARTIAL?.ticket) ourTickets.add(String(rec.trades.PARTIAL.ticket));
       if (rec.trades?.TRAILING?.ticket) ourTickets.add(String(rec.trades.TRAILING.ticket));
+      if (rec.trades?.PARTIAL?.clientId) ourClientIds.add(String(rec.trades.PARTIAL.clientId));
+      if (rec.trades?.TRAILING?.clientId) ourClientIds.add(String(rec.trades.TRAILING.clientId));
     }
 
-    // 2) add tickets known from clientOrderMap (clientId -> ticket)
+    // 2) tickets from clientOrderMap
     for (const [cid, savedTicket] of clientOrderMap.entries()) {
       if (savedTicket) ourTickets.add(String(savedTicket));
+      if (cid) ourClientIds.add(String(cid));
     }
 
-    // 3) If a broker position carries a clientId that matches our clientOrderMap key,
-    //    treat it as ours (even if its ticket doesn't yet match anything)
+    // 3) if broker pos carries a clientId that matches our known clientIds, mark it as ours
     for (const pos of (positions || [])) {
       const brokerTicket = String(pos.positionId || pos.ticket || pos.id || '');
-      // gather possible clientId fields from broker pos
       const brokerClientId =
-        pos?.clientId ||
-        pos?.orderClientId ||
-        pos?.meta?.clientId ||
-        pos?.comment ||
-        pos?.label ||
-        null;
+        pos?.clientId || pos?.orderClientId || pos?.meta?.clientId || pos?.comment || pos?.label || null;
 
-      if (brokerClientId && clientOrderMap.has(String(brokerClientId))) {
-        const mappedTicket = clientOrderMap.get(String(brokerClientId));
-        if (mappedTicket) ourTickets.add(String(mappedTicket));
-        // Also include the brokerTicket itself in ourTickets so we don't close it
+      if (brokerClientId && ourClientIds.has(String(brokerClientId))) {
         if (brokerTicket) ourTickets.add(brokerTicket);
       }
     }
 
-    
-    
-    
-    // ============================================
-    // RULE 1: Force-close any external trades
-    // ============================================
-    for (const rec of Object.values(openPairs)) {
-      if (rec.trades?.PARTIAL?.ticket) ourTickets.add(rec.trades.PARTIAL.ticket);
-      if (rec.trades?.TRAILING?.ticket) ourTickets.add(rec.trades.TRAILING.ticket);
-    }
-    
+    // === RULE: External detection - but during WAITING states we are conservative ===
     for (const pos of (positions || [])) {
-      const ticket = pos.positionId || pos.ticket || pos.id;
-      // RULE 1: external trades — but ignore any newly placed trades
-      if (!ourTickets.has(ticket)) {
+      const ticket = String(pos.positionId || pos.ticket || pos.id || '');
+      if (!ticket) continue;
 
-        if (recentTickets.has(ticket)) {
-          console.log(`[SYNC] Recently placed trade → NOT external: ${ticket}`);
-          continue; // skip
-        }
-        // Ignore trades that are younger than 1500ms (MetaApi delay window)
-        const age = Date.now() - (pos.time || pos.updateTime || Date.now());
-        if (age < 5000) {
-          console.log(`[SYNC] Ignoring newborn trade ${ticket} (age ${age}ms)`);
-          continue;
-        }
+      if (ourTickets.has(ticket)) continue;
 
-
-        console.log(`[SYNC] External/Unknown trade detected → closing ${ticket}`);
-        try {
-          await safeClosePosition(ticket);
-        } catch (err) {
-          console.log(`[SYNC] Failed to close external trade ${ticket}:`, err.message);
-        }
+      // if this ticket is in recentTickets, treat as internal/new; skip closing
+      if (recentTickets.has(ticket)) {
+        console.log(`[SYNC] Recently placed trade → NOT external: ${ticket}`);
+        continue;
       }
 
+      // age heuristics: if pos.time/updateTime exists, use it; else assume old
+      const posTime = pos.time || pos.updateTime || pos.openingTime || pos.opening_time_utc || null;
+      const age = posTime ? (Date.now() - new Date(posTime).getTime()) : Infinity;
+
+      // if very new (< 3s), skip external close because it may be a mirrored representation
+      if (age < 3000) {
+        console.log(`[SYNC] Ignoring newborn trade ${ticket} (age ${age}ms) — possible mirror`);
+        continue;
+      }
+
+      // final check: does the broker pos carry a clientId that maps to us?
+      const brokerClientId =
+        pos?.clientId || pos?.orderClientId || pos?.meta?.clientId || pos?.comment || pos?.label || null;
+      if (brokerClientId && clientOrderMap.has(String(brokerClientId))) {
+        console.log(`[SYNC] Broker pos ${ticket} carries known clientId — treat as ours`);
+        // add to ourTickets to prevent closing
+        ourTickets.add(ticket);
+        continue;
+      }
+
+      // At this point: treat as external and close
+      console.log(`[SYNC] External/Unknown trade detected → closing ${ticket}`);
+      try {
+        await safeClosePosition(ticket);
+      } catch (err) {
+        console.log(`[SYNC] Failed to close external trade ${ticket}:`, err.message);
+      }
     }
 
-    // ============================================
-    // RULE 2: Validate each managed pair
-    // ============================================
+    // === RULE: Validate each managed pair and implement WAITING -> adopt-LEG2 logic ===
     for (const [pairId, rec] of Object.entries(openPairs)) {
 
-      // === EXTENDED GRACE PERIOD (15 seconds) ===
-      // Prevent any missing-ticket logic from firing too early
+      // extended grace
       if (rec.openedAt) {
         const ageMs = Date.now() - new Date(rec.openedAt).getTime();
-        const GRACE_MS = 15000; // 15s grace
-
+        const GRACE_MS = 15000;
         if (!rec.firstSyncDone) {
           if (ageMs < GRACE_MS) {
+            // still in initial grace period -> skip heavy checks
             continue;
           } else {
             rec.firstSyncDone = true;
@@ -1070,23 +1052,125 @@ async function syncOpenPairsWithPositions(positions) {
         }
       }
 
+      // If we're WAITING for leg1 confirmation, check for it
+      if (rec.status === 'WAITING_LEG1_CONFIRM') {
+        // look for a position carrying our leg1 clientId or the ticket
+        const leg1ClientId = String(rec.trades?.PARTIAL?.clientId || '');
+        const leg1Ticket = String(rec.trades?.PARTIAL?.ticket || '');
 
+        const found = (positions || []).find(p => {
+          const brokerCid = String(p.clientId || p.orderClientId || p.meta?.clientId || '');
+          const brokerTicket = String(p.positionId || p.ticket || p.id || '');
+          // match by clientId OR by ticket
+          return (brokerCid && brokerCid === leg1ClientId) || (brokerTicket && leg1Ticket && brokerTicket === leg1Ticket);
+        });
+
+        if (found) {
+          console.log(`[PAIR] LEG1 confirmed for ${pairId}`);
+          // Ensure mapping captured
+          if (leg1ClientId) clientOrderMap.set(leg1ClientId, leg1Ticket || '');
+          rec.status = 'WAITING_LEG2';
+          // set a confirmDeadline (if not already set)
+          if (!rec.confirmDeadlineForLeg2) rec.confirmDeadlineForLeg2 = Date.now() + 3000;
+        }
+        // still waiting - continue loop for other pairs
+        continue;
+      }
+
+      // If we're WAITING for leg2, try to adopt Exness-provided trade as leg2
+      if (rec.status === 'WAITING_LEG2') {
+
+        // search for candidate positions that could be leg2
+        const candidate = (positions || []).find(p => {
+          const brokerTicket = String(p.positionId || p.ticket || p.id || '');
+          const brokerClientId = String(p.clientId || p.orderClientId || p.meta?.clientId || '' );
+          if (!brokerTicket) return false;
+
+          // skip if it's the same as leg1 ticket
+          if (rec.trades?.PARTIAL?.ticket && brokerTicket === String(rec.trades.PARTIAL.ticket)) return false;
+
+          // match by clientId if Exness attached one
+          if (brokerClientId && clientOrderMap.has(brokerClientId)) return true;
+
+          // fallback: match by side, lot and time proximity to entryTimestamp
+          const matchSide = (String(p.type || p.side || '').toUpperCase() === String(rec.side).toUpperCase());
+          const volume = Number(p.volume || p.lots || p.original_position_size || 0);
+          const matchLot = volume && Math.abs(volume - rec.lotEach) < 0.0001;
+          // open time detection
+          let openTime = null;
+          if (p.openingTime) openTime = new Date(p.openingTime).getTime();
+          if (!openTime && p.opening_time_utc) openTime = new Date(p.opening_time_utc).getTime();
+          if (!openTime && p.time) openTime = new Date(p.time).getTime();
+          if (!openTime && p.updateTime) openTime = new Date(p.updateTime).getTime();
+          // if openTime missing, accept with caution only if side+lot match; else require time proximity
+          const dt = openTime ? Math.abs(openTime - rec.entryTimestamp) : Infinity;
+          const timeOk = dt <= 3000; // within 3s
+          return matchSide && matchLot && timeOk;
+        });
+
+        if (candidate) {
+          // Adopt candidate as LEG2
+          const leg2Ticket = String(candidate.positionId || candidate.ticket || candidate.id || '');
+          const leg2ClientId = String(candidate.clientId || candidate.orderClientId || candidate.meta?.clientId || '');
+
+          console.log(`[PAIR] EXNESS-PROVIDED LEG2 adopted for ${pairId} -> ${leg2Ticket}`);
+          rec.trades.TRAILING.ticket = leg2Ticket;
+          rec.trades.TRAILING.clientId = leg2ClientId || null;
+          if (leg2ClientId) clientOrderMap.set(leg2ClientId, leg2Ticket);
+          // mark entry complete
+          rec.status = 'ENTRY_COMPLETE';
+          // ensure rec.entryPrice set if missing
+          if (!rec.entryPrice && candidate.price) rec.entryPrice = candidate.price;
+          continue;
+        }
+
+        // LEG2 not found — check deadline
+        if (Date.now() >= (rec.confirmDeadlineForLeg2 || 0)) {
+          // Place LEG2 ourselves to complete the pair
+          console.log(`[PAIR] LEG2 not found within 3s for ${pairId} — placing LEG2 manually`);
+          try {
+            const clientId2 = `leg2-${Date.now()}-${Math.floor(Math.random()*100000)}`;
+            const placed = await safePlaceMarketOrder(rec.side, rec.lotEach, null, null, clientId2, 2);
+
+            if (placed?.ticket) {
+              rec.trades.TRAILING.ticket = String(placed.ticket);
+              rec.trades.TRAILING.clientId = String(placed.clientId || clientId2);
+              clientOrderMap.set(String(placed.clientId || clientId2), String(placed.ticket));
+              recentTickets.add(String(placed.ticket));
+              setTimeout(() => recentTickets.delete(String(placed.ticket)), 15000);
+            } else {
+              // something went wrong with explicit placement
+              console.warn(`[PAIR] LEG2 manual placement returned no ticket for ${pairId}`);
+            }
+            rec.status = 'ENTRY_COMPLETE';
+            continue;
+          } catch (err) {
+            console.error(`[PAIR] Failed to place LEG2 manually for ${pairId}:`, err.message || err);
+            // keep WAITING state or escalate based on policy; here we'll set ENTRY_COMPLETE false-positive to avoid stuck state
+            rec.status = 'ENTRY_COMPLETE';
+            continue;
+          }
+        }
+
+        // else still waiting for leg2 — skip further processing for this pair this sync
+        continue;
+      }
+
+      // If status is ENTRY_COMPLETE or any other, keep backward-compatible validations below
       const partialTicket  = rec.trades?.PARTIAL?.ticket;
       const trailingTicket = rec.trades?.TRAILING?.ticket;
 
-      // PARTIAL missing → only treat as missing after grace period
+      // PARTIAL missing → only treat missing after grace period (existing behaviour)
       if (partialTicket && !brokerTickets.has(partialTicket)) {
-        // Do not treat as missing until FIRST SYNC is completed
         if (!rec.firstSyncDone) {
           console.log(`[SYNC] PARTIAL missing but still in grace → ignoring (${pairId})`);
         } else {
           console.log(`[SYNC] PARTIAL confirmed missing → force closing ${partialTicket}`);
-          try { await safeClosePosition(partialTicket, rec.trades.PARTIAL.lot); } catch {}
+          try { await safeClosePosition(partialTicket, rec.trades.PARTIAL.lot); } catch (e) {}
           rec.trades.PARTIAL.ticket = null;
           rec.partialClosed = true;
         }
       }
-
 
       // TRAILING missing → same rule
       if (trailingTicket && !brokerTickets.has(trailingTicket)) {
@@ -1094,20 +1178,14 @@ async function syncOpenPairsWithPositions(positions) {
           console.log(`[SYNC] TRAILING missing but still in grace → ignoring (${pairId})`);
         } else {
           console.log(`[SYNC] TRAILING confirmed missing → force closing ${trailingTicket}`);
-          try { await safeClosePosition(trailingTicket, rec.trades.TRAILING.lot); } catch {}
+          try { await safeClosePosition(trailingTicket, rec.trades.TRAILING.lot); } catch (e) {}
           rec.trades.TRAILING.ticket = null;
         }
       }
 
-
-
-      // ============================================
-      // RULE 3: If both legs gone → remove the pair
-      // ============================================
+      // If both tickets gone -> remove pair
       const pExists = rec.trades.PARTIAL.ticket;
       const tExists = rec.trades.TRAILING.ticket;
-
-      // Ensure deletion also honors grace period
       if (!pExists && !tExists) {
         if (!rec.firstSyncDone) {
           console.log(`[SYNC] Both tickets missing but still in grace → NOT deleting ${pairId}`);
@@ -1118,11 +1196,7 @@ async function syncOpenPairsWithPositions(positions) {
         continue;
       }
 
-
-
-      // ============================================
-      // RULE 4: REFRESH ENTRY PRICE if broker has it
-      // ============================================
+      // Refresh entry price if broker has it (existing behaviour)
       try {
         const liveTicket =
           rec.trades.TRAILING?.ticket ||
@@ -1130,9 +1204,9 @@ async function syncOpenPairsWithPositions(positions) {
 
         if (liveTicket) {
           const posObj = (positions || []).find(p =>
-            (p.positionId === liveTicket) ||
-            (p.ticket === liveTicket) ||
-            (p.id === liveTicket)
+            String(p.positionId) === String(liveTicket) ||
+            String(p.ticket) === String(liveTicket) ||
+            String(p.id) === String(liveTicket)
           );
 
           if (posObj && posObj.price && posObj.price > 0) {
@@ -1144,7 +1218,6 @@ async function syncOpenPairsWithPositions(positions) {
 
               if (!rec.breakEvenActive && !rec.partialClosed) {
                 const SL_DISTANCE = 8;
-
                 rec.internalSL = rec.side === "BUY"
                   ? newEntry - SL_DISTANCE
                   : newEntry + SL_DISTANCE;
@@ -1165,6 +1238,7 @@ async function syncOpenPairsWithPositions(positions) {
     console.error('[SYNC] Error syncing positions:', err.message || err);
   }
 }
+
 
 
 
