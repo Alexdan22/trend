@@ -1225,6 +1225,9 @@ async function syncOpenPairsWithPositions(positions) {
       // If we're WAITING for leg2, try to adopt Exness-provided trade as leg2
       if (rec.status === 'WAITING_LEG2') {
 
+        // ensure confirm deadline exists (give a slightly larger window)
+        if (!rec.confirmDeadlineForLeg2) rec.confirmDeadlineForLeg2 = (rec.entryTimestamp || Date.now()) + 4000;
+
         // search for candidate positions that could be leg2
         const candidate = (positions || []).find(p => {
           const brokerTicket = String(p.positionId || p.ticket || p.id || '');
@@ -1234,71 +1237,77 @@ async function syncOpenPairsWithPositions(positions) {
           // skip if it's the same as leg1 ticket
           if (rec.trades?.PARTIAL?.ticket && brokerTicket === String(rec.trades.PARTIAL.ticket)) return false;
 
-          // match by clientId if Exness attached one
+          // Strong direct ownership: if ticket map marks this ticket as ours, accept.
+          if (ticketOwnershipMap.has(brokerTicket)) return true;
+
+          // match by clientId if Exness attached one (strong)
           if (brokerClientId && clientOrderMap.has(brokerClientId)) return true;
 
           // fallback: match by side, lot and time proximity to entryTimestamp
           const matchSide = (String(p.type || p.side || '').toUpperCase() === String(rec.side).toUpperCase());
-          const volume = Number(p.volume || p.lots || p.original_position_size || 0);
-          const matchLot = volume && Math.abs(volume - rec.lotEach) < 0.0001;
-          // open time detection
+
+          // parse volume robustly
+          const volume = Number(p.volume ?? p.lots ?? p.original_position_size ?? 0);
+          const matchLot = !isNaN(volume) && Math.abs(volume - Number(rec.lotEach || rec.trades?.PARTIAL?.lot || 0)) < 0.0001;
+
+          // open time detection (robust)
           let openTime = null;
           if (p.openingTime) openTime = new Date(p.openingTime).getTime();
-          if (!openTime && p.opening_time_utc) openTime = new Date(p.opening_time_utc).getTime();
-          if (!openTime && p.time) openTime = new Date(p.time).getTime();
-          if (!openTime && p.updateTime) openTime = new Date(p.updateTime).getTime();
-          // if openTime missing, accept with caution only if side+lot match; else require time proximity
-          const dt = openTime ? Math.abs(openTime - rec.entryTimestamp) : Infinity;
-          const timeOk = dt <= 3000; // within 3s
+          else if (p.opening_time_utc) openTime = new Date(p.opening_time_utc).getTime();
+          else if (p.time) openTime = new Date(p.time).getTime();
+          else if (p.updateTime) openTime = new Date(p.updateTime).getTime();
+
+          // If openTime missing, allow match based on side+lot alone (cautious acceptance).
+          // If openTime present, require it to be within 4 seconds of entryTimestamp.
+          const dt = openTime ? Math.abs(openTime - (rec.entryTimestamp || Date.now())) : null;
+          const timeOk = openTime ? (dt <= 4000) : true;
+
           return matchSide && matchLot && timeOk;
         });
 
         if (candidate) {
+          const brokerTicket = String(candidate.positionId || candidate.ticket || candidate.id || '');
+          const brokerClientId = String(candidate.clientId || candidate.orderClientId || candidate.meta?.clientId || '');
 
-            const brokerTicket = String(candidate.positionId || candidate.ticket || candidate.id || '');
-            const brokerClientId = String(candidate.clientId || candidate.orderClientId || candidate.meta?.clientId || '');
+          console.log(`[PAIR] EXNESS-PROVIDED LEG2 adopted for ${pairId} → ${brokerTicket}`);
 
-            console.log(`[PAIR] EXNESS-PROVIDED LEG2 adopted for ${pairId} → ${brokerTicket}`);
+          rec.trades.TRAILING.ticket = brokerTicket;
+          rec.trades.TRAILING.clientId = brokerClientId || null;
 
-            rec.trades.TRAILING.ticket = brokerTicket;
-            rec.trades.TRAILING.clientId = brokerClientId || null;
+          // Ownership map
+          ticketOwnershipMap.add(brokerTicket);
+          if (brokerClientId) {
+            clientOrderMap.set(brokerClientId, brokerTicket);
+          }
 
-            // Ownership map
-            ticketOwnershipMap.add(brokerTicket);
-            if (brokerClientId) {
-                clientOrderMap.set(brokerClientId, brokerTicket);
-            }
-
-            rec.status = "ENTRY_COMPLETE";
-            continue;  // VALID — now inside the rec-loop
+          rec.status = "ENTRY_COMPLETE";
+          continue;  // valid inside the rec-loop
         }
-
 
         // LEG2 not found — check deadline
         if (Date.now() >= (rec.confirmDeadlineForLeg2 || 0)) {
           // Place LEG2 ourselves to complete the pair
-          console.log(`[PAIR] LEG2 not found within 3s for ${pairId} — placing LEG2 manually`);
+          console.log(`[PAIR] LEG2 not found within 4s for ${pairId} — placing LEG2 manually`);
           try {
             const clientId2 = `leg2-${Date.now()}-${Math.floor(Math.random()*100000)}`;
             const placed = await safePlaceMarketOrder(rec.side, rec.lotEach, null, null, clientId2, 2);
 
             if (placed?.ticket) {
               rec.trades.TRAILING.ticket = String(placed.ticket);
-              ticketOwnershipMap.add(String(placed.ticket));     // ← REQUIRED
+              ticketOwnershipMap.add(String(placed.ticket));
               rec.trades.TRAILING.clientId = String(placed.clientId || clientId2);
               clientOrderMap.set(String(placed.clientId || clientId2), String(placed.ticket));
               recentTickets.add(String(placed.ticket));
               setTimeout(() => recentTickets.delete(String(placed.ticket)), 15000);
             } else {
-              // something went wrong with explicit placement
               console.warn(`[PAIR] LEG2 manual placement returned no ticket for ${pairId}`);
             }
+
             rec.status = 'ENTRY_COMPLETE';
             continue;
           } catch (err) {
             console.error(`[PAIR] Failed to place LEG2 manually for ${pairId}:`, err.message || err);
-            // keep WAITING state or escalate based on policy; here we'll set ENTRY_COMPLETE false-positive to avoid stuck state
-            rec.status = 'ENTRY_COMPLETE';
+            rec.status = 'ENTRY_COMPLETE'; // avoid stuck state
             continue;
           }
         }
@@ -1306,6 +1315,7 @@ async function syncOpenPairsWithPositions(positions) {
         // else still waiting for leg2 — skip further processing for this pair this sync
         continue;
       }
+
 
       // If status is ENTRY_COMPLETE or any other, keep backward-compatible validations below
       const partialTicket  = rec.trades?.PARTIAL?.ticket;
