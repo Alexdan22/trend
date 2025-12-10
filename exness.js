@@ -1114,6 +1114,97 @@ async function syncOpenPairsWithPositions(positions) {
           continue; // do NOT close this trade
       }
 
+          // ------------------ NEW: LEG2 adoption PRE-PASS ------------------
+      // Try to adopt any broker positions as LEG2s for pairs waiting for LEG2,
+      // before we perform global external-detection and closing.
+      const waitingLeg2Pairs = Object.entries(openPairs)
+        .filter(([_, r]) => r.status === 'WAITING_LEG2')
+        .map(([pid, r]) => ({ pid, rec: r }));
+
+      if (waitingLeg2Pairs.length > 0) {
+        // Attempt adoption for each waiting pair from current broker positions
+        for (const { pid, rec } of waitingLeg2Pairs) {
+          const candidate = (positions || []).find(p => {
+            const brokerTicket = String(p.positionId || p.ticket || p.id || '');
+            if (!brokerTicket) return false;
+            // don't match the same leg1 ticket
+            if (rec.trades?.PARTIAL?.ticket && brokerTicket === String(rec.trades.PARTIAL.ticket)) return false;
+
+            // strong ownership checks (ticketOwnershipMap / clientOrderMap)
+            if (ticketOwnershipMap.has(brokerTicket)) return true;
+            const brokerCid = String(p.clientId || p.orderClientId || p.meta?.clientId || '');
+            if (brokerCid && clientOrderMap.has(brokerCid)) return true;
+
+            // fallback: side + lot + time proximity
+            const matchSide = (String(p.type || p.side || '').toUpperCase() === String(rec.side).toUpperCase());
+            const volume = Number(p.volume ?? p.lots ?? p.original_position_size ?? 0);
+            const matchLot = !isNaN(volume) && Math.abs(volume - Number(rec.lotEach || rec.trades?.PARTIAL?.lot || 0)) < 0.0001;
+
+            // open time detection robust
+            let openTime = null;
+            if (p.openingTime) openTime = new Date(p.openingTime).getTime();
+            else if (p.opening_time_utc) openTime = new Date(p.opening_time_utc).getTime();
+            else if (p.time) openTime = new Date(p.time).getTime();
+            else if (p.updateTime) openTime = new Date(p.updateTime).getTime();
+
+            const dt = openTime && rec.entryTimestamp ? Math.abs(openTime - rec.entryTimestamp) : null;
+            const timeOk = openTime ? (dt <= 5000) : true;
+
+            return matchSide && matchLot && timeOk;
+          });
+
+          if (candidate) {
+            const brokerTicket = String(candidate.positionId || candidate.ticket || candidate.id || '');
+            const brokerClientId = String(candidate.clientId || candidate.orderClientId || candidate.meta?.clientId || '');
+
+            console.log(`[PAIR] PRE-PASS: EXNESS LEG2 adopted for ${pid} -> ${brokerTicket}`);
+            rec.trades.TRAILING.ticket = brokerTicket;
+            rec.trades.TRAILING.clientId = brokerClientId || null;
+            ticketOwnershipMap.add(brokerTicket);
+            if (brokerClientId) clientOrderMap.set(brokerClientId, brokerTicket);
+            rec.status = 'ENTRY_COMPLETE';
+          }
+        }
+
+        // After adoption attempt: if any pair still WAITING_LEG2, skip external detection entirely.
+        // Check if any pair is still waiting for LEG2 after adoption pass
+        const waitingList = Object.entries(openPairs)
+          .filter(([pid, r]) => r.status === 'WAITING_LEG2')
+          .map(([pid, r]) => ({
+            pairId: pid,
+            side: r.side,
+            lotEach: r.lotEach,
+            entryTimestamp: r.entryTimestamp,
+            partialTicket: r.trades?.PARTIAL?.ticket,
+            trailingTicket: r.trades?.TRAILING?.ticket
+          }));
+
+        if (waitingList.length > 0) {
+
+          console.log("[SYNC] WAITING_LEG2_PAIRS", JSON.stringify(waitingList));
+
+          // 🔍 Also log the external trade we are examining (diagnostic only)
+          console.log("[SYNC][EXTERNAL_DIAG_LEG2_PENDING]", JSON.stringify({
+            ticket,
+            side: String(pos.side || pos.type || "").toUpperCase(),
+            volume: pos.volume || pos.lots || pos.original_position_size || null,
+            inOurTickets: ourTickets.has(ticket),
+            inOurClientIds: ourClientOrderIds.has(brokerClientId),
+            age_ms: (() => {
+              const posTime = pos.time || pos.updateTime || pos.openingTime || pos.opening_time_utc || null;
+              return posTime ? (Date.now() - new Date(posTime).getTime()) : null;
+            })(),
+            brokerClientId
+          }));
+
+          console.log('[SYNC] Skipping external detection this sync (LEG2 pending)');
+          return; // ← DO NOT run external closing
+        }
+
+      }
+      // ------------------ END NEW PRE-PASS ------------------
+
+
       // --- NEW GUARD: If ANY pair is WAITING_LEG2, skip closing ANY external trade ---
       let hasWaitingLeg2 = false;
       for (const rec of Object.values(openPairs)) {
@@ -1169,6 +1260,30 @@ async function syncOpenPairsWithPositions(positions) {
 
         // After checking all WAITING_LEG2 pairs, skip external closing
         console.log(`[SYNC] Pair awaiting LEG2 → skipping external close for ${ticket}`);
+        console.log("[SYNC][EXTERNAL_DIAG]", JSON.stringify({
+            ticket,
+            side: String(pos.side || pos.type || "").toUpperCase(),
+            volume: pos.volume || pos.lots || pos.original_position_size || null,
+            reason: "LEG2_PENDING_SKIP",
+            inOurTickets: ourTickets.has(ticket),
+            inOurClientIds: ourClientOrderIds.has(brokerClientId),
+            isPairOwned: (() => {
+              for (const [pid, p] of Object.entries(openPairs)) {
+                if (
+                  p?.trades?.PARTIAL?.ticket === ticket ||
+                  p?.trades?.TRAILING?.ticket === ticket
+                ) return pid;
+              }
+              return null;
+            })(),
+            age_ms: (() => {
+              const posTime = pos.time || pos.updateTime || pos.openingTime || pos.opening_time_utc || null;
+              return posTime ? (Date.now() - new Date(posTime).getTime()) : null;
+            })(),
+            brokerClientId
+        }));
+
+
         continue;
     }
 
