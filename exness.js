@@ -502,10 +502,16 @@ async function processTickForOpenPairs(price) {
           rec.partialClosed = true;
         }
 
-        if (trailingRec?.ticket && !openTickets.has(trailingRec.ticket)) {
-          console.log(`[PAIR] Trailing ticket ${trailingRec.ticket} missing for ${pairId} — marking trailing null.`);
-          rec.trades.TRAILING.ticket = null;
+        if (trailingTicket && !brokerTickets.has(trailingTicket)) {
+          // If trailing was just placed/placed recently, skip marking it null immediately.
+          if (recentTickets.has(trailingTicket)) {
+            console.log(`[PAIR] Trailing ticket ${trailingTicket} is recent — deferring missing-mark for ${pairId}`);
+          } else {
+            console.log(`[PAIR] Trailing ticket ${trailingTicket} missing for ${pairId} — marking trailing null.`);
+            rec.trades.TRAILING.ticket = null;
+          }
         }
+
       }
 
 
@@ -1071,47 +1077,61 @@ async function syncOpenPairsWithPositions(positions) {
       }
     }
 
-    // === RULE: External detection - but during WAITING states we are conservative ===
     for (const pos of (positions || [])) {
       const ticket = String(pos.positionId || pos.ticket || pos.id || '');
       if (!ticket) continue;
-
       if (ourTickets.has(ticket)) continue;
 
-      // if this ticket is in recentTickets, treat as internal/new; skip closing
+      // recentTickets: any very recently placed ticket (ours or manual) — skip
       if (recentTickets.has(ticket)) {
         console.log(`[SYNC] Recently placed trade → NOT external: ${ticket}`);
         continue;
       }
 
-      // age heuristics: if pos.time/updateTime exists, use it; else assume old
+      // If any pair is still waiting for LEG2 and this pos *looks like* their LEG2, skip closing.
+      // Match by clientId first, else by side+lot+time proximity (4s window).
+      let isCandidateForWaitingPair = false;
+      for (const rec of Object.values(openPairs)) {
+        if (rec.status !== 'WAITING_LEG2') continue;
+
+        const recSide = String(rec.side).toUpperCase();
+        const recLot = Number(rec.lotEach || rec.trades?.PARTIAL?.lot || 0);
+
+        const brokerClientId = String(pos.clientId || pos.orderClientId || pos.meta?.clientId || '');
+        if (brokerClientId && rec.trades && (String(rec.trades.PARTIAL.clientId) === brokerClientId || String(rec.trades.TRAILING?.clientId) === brokerClientId)) {
+          isCandidateForWaitingPair = true;
+          break;
+        }
+
+        const brokerSide = String((pos.type || pos.side || '').toUpperCase());
+        const brokerLot = Number(pos.volume || pos.lots || pos.original_position_size || 0);
+        // openTime detection
+        const openTime = new Date(pos.openingTime || pos.opening_time_utc || pos.time || pos.updateTime || 0).getTime();
+        const dt = rec.entryTimestamp ? Math.abs(openTime - rec.entryTimestamp) : Infinity;
+
+        if (brokerSide === recSide && !isNaN(brokerLot) && Math.abs(brokerLot - recLot) < 0.0001 && dt <= 4000) {
+          isCandidateForWaitingPair = true;
+          break;
+        }
+      }
+
+      if (isCandidateForWaitingPair) {
+        console.log(`[SYNC] Potential LEG2 candidate detected — skipping close for ${ticket}`);
+        continue;
+      }
+
+      // existing age heuristics: if still considered external then close
       const posTime = pos.time || pos.updateTime || pos.openingTime || pos.opening_time_utc || null;
       const age = posTime ? (Date.now() - new Date(posTime).getTime()) : Infinity;
-
-      // if very new (< 3s), skip external close because it may be a mirrored representation
       if (age < 3000) {
         console.log(`[SYNC] Ignoring newborn trade ${ticket} (age ${age}ms) — possible mirror`);
         continue;
       }
 
-      // final check: does the broker pos carry a clientId that maps to us?
-      const brokerClientId =
-        pos?.clientId || pos?.orderClientId || pos?.meta?.clientId || pos?.comment || pos?.label || null;
-      if (brokerClientId && clientOrderMap.has(String(brokerClientId))) {
-        console.log(`[SYNC] Broker pos ${ticket} carries known clientId — treat as ours`);
-        // add to ourTickets to prevent closing
-        ourTickets.add(ticket);
-        continue;
-      }
-
-      // At this point: treat as external and close
       console.log(`[SYNC] External/Unknown trade detected → closing ${ticket}`);
-      try {
-        await safeClosePosition(ticket);
-      } catch (err) {
-        console.log(`[SYNC] Failed to close external trade ${ticket}:`, err.message);
-      }
+      try { await safeClosePosition(ticket); } catch (err) { console.log(`[SYNC] Failed to close ${ticket}:`, err.message); }
     }
+
 
     // === RULE: Validate each managed pair and implement WAITING -> adopt-LEG2 logic ===
     for (const [pairId, rec] of Object.entries(openPairs)) {
