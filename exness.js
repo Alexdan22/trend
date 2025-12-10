@@ -508,7 +508,7 @@ async function processTickForOpenPairs(price) {
         const trailingTicket = rec.trades?.TRAILING?.ticket;
 
 
-        if (trailingTicket && !brokerTickets.has(trailingTicket)) {
+        if (trailingTicket && !openTickets.has(trailingTicket)) {
           // If trailing was just placed/placed recently, skip marking it null immediately.
           if (recentTickets.has(trailingTicket)) {
             console.log(`[PAIR] Trailing ticket ${trailingTicket} is recent — deferring missing-mark for ${pairId}`);
@@ -1124,9 +1124,54 @@ async function syncOpenPairsWithPositions(positions) {
       }
 
       if (hasWaitingLeg2) {
-          console.log(`[SYNC] Pair awaiting LEG2 → skipping external close for ${ticket}`);
-          continue;
-      }
+
+        // Try early-adoption of external position as LEG2 before skipping
+        for (const [pid, prec] of Object.entries(openPairs)) {
+            if (prec.status !== "WAITING_LEG2") continue;
+
+            const expectedSide = String(prec.side).toUpperCase();
+            const brokerSide = String(pos.type || pos.side || "").toUpperCase();
+
+            const expectedLot = Number(prec.lotEach);
+            const brokerLot = Number(pos.volume || pos.lots || pos.original_position_size || 0);
+
+            // Basic matching: same direction + same lot size
+            const sideMatch = (expectedSide === brokerSide);
+            const lotMatch = (!isNaN(expectedLot) && Math.abs(brokerLot - expectedLot) < 0.0001);
+
+            // Time-based safety check (optional but recommended)
+            let timeOk = true;
+            const openTime = pos.openingTime || pos.opening_time_utc || pos.time || pos.updateTime;
+            if (openTime && prec.entryTimestamp) {
+                const dt = Math.abs(new Date(openTime).getTime() - prec.entryTimestamp);
+                timeOk = (dt <= 5000); // 5s matching window
+            }
+
+            if (sideMatch && lotMatch && timeOk) {
+                const brokerTicket = String(pos.positionId || pos.ticket || pos.id || "");
+                const brokerClient = String(pos.clientId || pos.orderClientId || pos.meta?.clientId || "");
+
+                console.log(`[PAIR] EARLY LEG2 adopted for ${pid} → ${brokerTicket}`);
+
+                prec.trades.TRAILING.ticket = brokerTicket;
+                prec.trades.TRAILING.clientId = brokerClient || null;
+
+                // Ownership mapping
+                if (brokerTicket) ticketOwnershipMap.add(brokerTicket);
+                if (brokerClient) clientOrderMap.set(brokerClient, brokerTicket);
+
+                prec.status = "ENTRY_COMPLETE";
+
+                // Do NOT skip external detection for this iteration — we want to skip closing just this ticket
+                continue;  
+            }
+        }
+
+        // After checking all WAITING_LEG2 pairs, skip external closing
+        console.log(`[SYNC] Pair awaiting LEG2 → skipping external close for ${ticket}`);
+        continue;
+    }
+
 
       // recentTickets: any very recently placed ticket (ours or manual) — skip
       if (recentTickets.has(ticket)) {
