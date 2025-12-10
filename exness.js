@@ -965,8 +965,72 @@ async function syncOpenPairsWithPositions(positions) {
 
   // If we are in the middle of placing orders, skip external detection
   if (orderInFlight) {
-    console.log("[SYNC] Skipping external detection — order in-flight");
-    return;
+
+    // failsafe: if orderInFlight has lasted more than 5 seconds, drop it
+    if (orderInFlight && Date.now() - rec.entryTimestamp > 5000) {
+        console.warn("[PAIR] Failsafe: orderInFlight expired without confirmation");
+        orderInFlight = false;
+    }
+
+    try {
+      // confirmation pass: try to confirm any waiting LEG1 before blocking everything
+      for (const [pairId, rec] of Object.entries(openPairs)) {
+        if (rec.status !== 'WAITING_LEG1_CONFIRM') continue;
+
+        const leg1Ticket = String(rec.trades?.PARTIAL?.ticket || '');
+        const leg1ClientId = String(rec.trades?.PARTIAL?.clientId || '');
+        const entryTs = rec.entryTimestamp || Date.now();
+
+        const found = (positions || []).find(p => {
+          const brokerTicket = String(p.positionId || p.ticket || p.id || '');
+          const brokerClientId = String(p.clientId || p.orderClientId || p.meta?.clientId || '');
+          const brokerSide = String((p.type || p.side || '').toUpperCase());
+          const brokerLot = Number(p.volume || p.lots || p.original_position_size || 0);
+          const openTime = new Date(p.openingTime || p.opening_time_utc || p.time || p.updateTime || 0).getTime();
+          const dt = Math.abs(openTime - entryTs);
+
+          // match by ticket OR clientId OR side+lot+time proximity (4s)
+          if (brokerTicket && leg1Ticket && brokerTicket === leg1Ticket) return true;
+          if (brokerClientId && leg1ClientId && brokerClientId === leg1ClientId) return true;
+          if (brokerSide && brokerSide === String(rec.side).toUpperCase()
+              && !isNaN(brokerLot) && Math.abs(brokerLot - rec.lotEach) < 0.0001
+              && dt <= 4000) return true;
+
+          return false;
+        });
+
+        if (found) {
+          console.log(`[PAIR] LEG1 confirmed for ${pairId} (orderInFlight confirmation pass)`);
+          // mark orderInFlight cleared (we have confirmation)
+          orderInFlight = false;
+
+          // record mapping and change status as in normal flow
+          if (rec.trades?.PARTIAL?.clientId) clientOrderMap.set(String(rec.trades.PARTIAL.clientId), String(rec.trades.PARTIAL.ticket || ''));
+          rec.status = 'WAITING_LEG2';
+          // ensure we set confirmDeadlineForLeg2 (3s window) if not set
+          if (!rec.confirmDeadlineForLeg2) rec.confirmDeadlineForLeg2 = Date.now() + 3000;
+          // we can break early or continue confirming others; continue to allow multiple concurrent pairs
+        }
+      }
+    } catch (err) {
+      console.error(`[PAIR] Error placing LEG1 for ${pairId}:`, err.message || err);
+
+      // IMPORTANT: Do NOT stay in orderInFlight state.
+      orderInFlight = false;
+
+      // Clean up if needed
+      delete openPairs[pairId];
+
+      return null;
+    }
+
+    // If after confirmation pass orderInFlight is still true, do NOT run full external-detection.
+    // Just return; external-close logic would otherwise kill newborn trades.
+    if (orderInFlight) {
+      // still waiting for confirmation — skip external detection until confirmed
+      console.log('[SYNC] Skipping external detection — order in-flight (after confirmation pass)');
+      return;
+    }
   }
 
   try {
@@ -1749,24 +1813,7 @@ async function handleTradingViewSignal(req, res) {
         return res.status(429).json({ ok: false, error: `Max trades reached for ${category}` });
       }
 
-      // ---- SAME-SIDE COOLDOWN CHECK ----
-      const elapsed = now - lastEntryTime[side];
-      console.log(`[ENTRY] Cooldown check: side=${side}, elapsed=${elapsed}ms, cooldown=${SIDE_COOLDOWN_MS}ms`);
-
-      if (elapsed < SIDE_COOLDOWN_MS) {
-        const remaining = SIDE_COOLDOWN_MS - elapsed;
-        const mins = Math.ceil(remaining / 60000);
-        console.log(`[ENTRY] ⛔ Same-side cooldown active → ${mins}m remaining`);
-        return res.status(429).json({
-          ok: false,
-          error: `Cooldown active for ${side}. Try again in ${mins} min`
-        });
-      }
-      
-      // 💥 Immediately lock cooldown BEFORE doing anything async
-      lastEntryTime[side] = Date.now();
       entryInProgress = true;
-      console.log(`[ENTRY] Cooldown STARTED (pre-entry) for side=${side}`);
 
 
       // Mark idempotency ID early
