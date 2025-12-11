@@ -1189,7 +1189,7 @@ async function syncOpenPairsWithPositions(positions) {
             side: String(pos.side || pos.type || "").toUpperCase(),
             volume: pos.volume || pos.lots || pos.original_position_size || null,
             inOurTickets: ourTickets.has(ticket),
-            inOurClientIds: ourClientOrderIds.has(brokerClientId),
+            inOurClientIds: ourClientIds.has(brokerClientId),
             age_ms: (() => {
               const posTime = pos.time || pos.updateTime || pos.openingTime || pos.opening_time_utc || null;
               return posTime ? (Date.now() - new Date(posTime).getTime()) : null;
@@ -1266,7 +1266,7 @@ async function syncOpenPairsWithPositions(positions) {
             volume: pos.volume || pos.lots || pos.original_position_size || null,
             reason: "LEG2_PENDING_SKIP",
             inOurTickets: ourTickets.has(ticket),
-            inOurClientIds: ourClientOrderIds.has(brokerClientId),
+            inOurClientIds: ourClientIds.has(brokerClientId),
             isPairOwned: (() => {
               for (const [pid, p] of Object.entries(openPairs)) {
                 if (
