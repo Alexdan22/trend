@@ -1136,9 +1136,20 @@ async function syncOpenPairsWithPositions(positions) {
             if (brokerCid && clientOrderMap.has(brokerCid)) return true;
 
             // fallback: side + lot + time proximity
-            const matchSide = (String(p.type || p.side || '').toUpperCase() === String(rec.side).toUpperCase());
+            const rawSide = String(p.type || p.side || "").toUpperCase();
+
+            // NORMALIZE: Exness uses "POSITION_TYPE_SELL" / "POSITION_TYPE_BUY"
+            const brokerSide =
+              rawSide.includes("SELL") ? "SELL" :
+              rawSide.includes("BUY")  ? "BUY"  :
+              rawSide;
+
+            const recSide = String(rec.side).toUpperCase();
+            const matchSide = (brokerSide === recSide);
+
             const volume = Number(p.volume ?? p.lots ?? p.original_position_size ?? 0);
-            const matchLot = !isNaN(volume) && Math.abs(volume - Number(rec.lotEach || rec.trades?.PARTIAL?.lot || 0)) < 0.0001;
+            const matchLot = !isNaN(volume) &&
+              Math.abs(volume - Number(rec.lotEach || rec.trades?.PARTIAL?.lot || 0)) < 0.0001;
 
             // open time detection robust
             let openTime = null;
@@ -1147,10 +1158,14 @@ async function syncOpenPairsWithPositions(positions) {
             else if (p.time) openTime = new Date(p.time).getTime();
             else if (p.updateTime) openTime = new Date(p.updateTime).getTime();
 
-            const dt = openTime && rec.entryTimestamp ? Math.abs(openTime - rec.entryTimestamp) : null;
+            const dt = openTime && rec.entryTimestamp
+              ? Math.abs(openTime - rec.entryTimestamp)
+              : null;
+
             const timeOk = openTime ? (dt <= 5000) : true;
 
             return matchSide && matchLot && timeOk;
+
           });
 
           if (candidate) {
@@ -1221,7 +1236,12 @@ async function syncOpenPairsWithPositions(positions) {
             if (prec.status !== "WAITING_LEG2") continue;
 
             const expectedSide = String(prec.side).toUpperCase();
-            const brokerSide = String(pos.type || pos.side || "").toUpperCase();
+
+            const rawSide = String(pos.type || pos.side || "").toUpperCase();
+            const brokerSide = rawSide.includes("SELL") ? "SELL"
+                            : rawSide.includes("BUY") ? "BUY"
+                            : rawSide;
+
 
             const expectedLot = Number(prec.lotEach);
             const brokerLot = Number(pos.volume || pos.lots || pos.original_position_size || 0);
@@ -1309,11 +1329,16 @@ async function syncOpenPairsWithPositions(positions) {
           break;
         }
 
-        const brokerSide = String((pos.type || pos.side || '').toUpperCase());
-        const brokerLot = Number(pos.volume || pos.lots || pos.original_position_size || 0);
-        // openTime detection
-        const openTime = new Date(pos.openingTime || pos.opening_time_utc || pos.time || pos.updateTime || 0).getTime();
-        const dt = rec.entryTimestamp ? Math.abs(openTime - rec.entryTimestamp) : Infinity;
+        const rawSide2 = String(pos.type || pos.side || "").toUpperCase();
+        const brokerSide =
+          rawSide2.includes("SELL") ? "SELL" :
+          rawSide2.includes("BUY")  ? "BUY"  :
+          rawSide2;
+          
+          const brokerLot = Number(pos.volume || pos.lots || pos.original_position_size || 0);
+          // openTime detection
+          const openTime = new Date(pos.openingTime || pos.opening_time_utc || pos.time || pos.updateTime || 0).getTime();
+          const dt = rec.entryTimestamp ? Math.abs(openTime - rec.entryTimestamp) : Infinity;
 
         if (brokerSide === recSide && !isNaN(brokerLot) && Math.abs(brokerLot - recLot) < 0.0001 && dt <= 4000) {
           isCandidateForWaitingPair = true;
@@ -1404,7 +1429,15 @@ async function syncOpenPairsWithPositions(positions) {
           if (brokerClientId && clientOrderMap.has(brokerClientId)) return true;
 
           // fallback: match by side, lot and time proximity to entryTimestamp
-          const matchSide = (String(p.type || p.side || '').toUpperCase() === String(rec.side).toUpperCase());
+          // Normalize Exness broker side like POSITION_TYPE_SELL → SELL
+          const rawSide = String(p.type || p.side || "").toUpperCase();
+          const brokerSide = rawSide.includes("SELL") ? "SELL"
+                          : rawSide.includes("BUY") ? "BUY"
+                          : rawSide;
+
+          const recSide = String(rec.side).toUpperCase();
+          const matchSide = (brokerSide === recSide);
+
 
           // parse volume robustly
           const volume = Number(p.volume ?? p.lots ?? p.original_position_size ?? 0);
