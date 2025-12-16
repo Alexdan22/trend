@@ -113,6 +113,8 @@ const ENTRY_LOCK = {
 
 const ENTRY_LOCK_TIMEOUT_MS = 30 * 1000; // 30 seconds hard safety
 const USE_BROKER_SLTP = true; // 🔒 default OFF
+const MAX_TP_DISTANCE = 30; // XAUUSD dollars
+
 
 
 
@@ -416,17 +418,21 @@ function calculateDynamicSLTP(side, entryPrice) {
   );
 
   // --- 4️⃣ TP multiplier (same logic as main.js) ---
-  const tpRR = 1.5; // start fixed, we can re-add adaptive later
-
+  const tpRR = 1.5;
+  
   let sl, tp;
+
+  const rawTPDistance = slDistance * tpRR;
+  const cappedTPDistance = Math.min(rawTPDistance, MAX_TP_DISTANCE);
 
   if (side === 'BUY') {
     sl = entryPrice - slDistance;
-    tp = entryPrice + slDistance * tpRR;
+    tp = entryPrice + cappedTPDistance;
   } else {
     sl = entryPrice + slDistance;
-    tp = entryPrice - slDistance * tpRR;
+    tp = entryPrice - cappedTPDistance;
   }
+
 
   return { sl, tp, slDistance };
 }
