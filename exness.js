@@ -19,15 +19,13 @@ const processedSignalIds = new Set();
 const MAX_PER_CATEGORY = 1;
 // 15-minute cooldown between trades of the same side (BUY or SELL)
 const SIDE_COOLDOWN_MS = 15 * 60 * 1000;
+const ENTRY_TIMEOUT_MS = 20_000; // 20 seconds (safe for Exness)
 const lastEntryTime = { BUY: 0, SELL: 0 };
-let lastOrderHash = null;
-let lastOrderTime = 0;
 
 
 
 
 // --------------------- CONFIG ---------------------
-const ACCOUNT_ID = process.env.METAAPI_ACCOUNT_ID;
 const SYMBOL = process.env.SYMBOL || "XAUUSDm"; // change to XAUUSDm/GOLD/etc. per broker
 const MIN_LOT = 0.01; // minimum lot size per broker
 // ---------------- LOT SIZING ----------------
@@ -36,8 +34,8 @@ let FIXED_LOT = 0.02;   // default lot size for ALL trades
 
 
 // global map to track idempotency
-const clientOrderMap = new Map();   // clientId -> ticket
-const ticketOwnershipMap = new Set();   // ticket -> true
+const ticketOwnershipMap = new Map(); // ticket -> pairId
+
 
 
 
@@ -99,8 +97,23 @@ const ATR_TRIGGER_MULTIPLIER = 1.5;   // used to compute dynamic trigger = ATR *
 
 let latestPrice = null;   // { bid, ask, timestamp }
 let lastTradeMonitorRun = 0;
-let entryInProgress = false;
-let orderInFlight = false;
+const PAIR_STATE = Object.freeze({
+  CREATED: "CREATED",                 // object exists, no broker interaction yet
+  ENTRY_IN_PROGRESS: "ENTRY_IN_PROGRESS", // LEG1 placed, LEG2 pending
+  ACTIVE: "ACTIVE",                   // both legs confirmed
+  CLOSING: "CLOSING",                 // close requested (SL / CLOSE / SYNC)
+  CLOSED: "CLOSED"                    // terminal, immutable
+});
+
+const ENTRY_LOCK = {
+  locked: false,
+  lockedAt: null,
+  reason: null,
+};
+
+const ENTRY_LOCK_TIMEOUT_MS = 30 * 1000; // 30 seconds hard safety
+const USE_BROKER_SLTP = true; // 🔒 default OFF
+
 
 
 
@@ -110,7 +123,6 @@ let stagnantTickCount = 0;
 let stagnantSince = null;
 let marketFrozen = false;
 let openPairs = {}; // ticket -> metadata
-let entryProcessingLock = false;
 
 // Prevent newly placed trades from being marked as external
 const recentTickets = new Set();
@@ -201,7 +213,7 @@ function countCategory(category) {
 }
 
 function parseOrderResponse(res) {
-  if (!res) return { ticket: null, clientId: null };
+  if (!res) return { ticket: null};
 
   // Try all known possible fields MetaApi returns
   const ticket =
@@ -215,18 +227,125 @@ function parseOrderResponse(res) {
     res?.result?.id ||
     null;
 
-  const clientId =
-    res.clientId ||
-    res.orderClientId ||
-    res?.response?.clientId ||
-    res?.result?.clientId ||
-    res?.order?.clientId ||
-    res?.position?.clientId ||
-    (res?.response && res.response.clientId) ||
-    null;
 
-  return { ticket, clientId };
+  return { ticket};
 }
+
+function transitionPairState(rec, nextState, reason = null) {
+  if (!rec || !rec.state) return false;
+
+  // terminal guard
+  if (rec.state === PAIR_STATE.CLOSED) {
+    return false;
+  }
+
+  const allowedTransitions = {
+    [PAIR_STATE.CREATED]: [PAIR_STATE.ENTRY_IN_PROGRESS],
+    [PAIR_STATE.ENTRY_IN_PROGRESS]: [PAIR_STATE.ACTIVE, PAIR_STATE.CLOSING],
+    [PAIR_STATE.ACTIVE]: [PAIR_STATE.CLOSING],
+    [PAIR_STATE.CLOSING]: [PAIR_STATE.CLOSED]
+  };
+
+  const allowed = allowedTransitions[rec.state] || [];
+  if (!allowed.includes(nextState)) {
+    console.warn(
+      `[STATE] Illegal transition ${rec.state} → ${nextState} (${rec.pairId})`
+    );
+    return false;
+  }
+
+  rec.state = nextState;
+  if (nextState === PAIR_STATE.CLOSING && reason) {
+    rec.closingReason = reason;
+  }
+  if (nextState === PAIR_STATE.CLOSED) {
+    rec.closedAt = Date.now();
+  }
+
+  return true;
+}
+
+function finalizePair(pairId, reason) {
+  const rec = openPairs[pairId];
+  if (!rec) return;
+
+  // Idempotency guard
+  if (rec.state === PAIR_STATE.CLOSED) return;
+
+  // Force correct lifecycle
+  transitionPairState(rec, PAIR_STATE.CLOSED, reason);
+
+  const partialTicket = rec.trades?.PARTIAL?.ticket;
+  const trailingTicket = rec.trades?.TRAILING?.ticket;
+
+  if (partialTicket) {
+    ticketOwnershipMap.delete(String(partialTicket));
+  }
+  if (trailingTicket) {
+    ticketOwnershipMap.delete(String(trailingTicket));
+  }
+
+  delete openPairs[pairId];
+
+  console.log(
+    `[PAIR] Finalized ${pairId} | reason=${reason}`
+  );
+}
+
+function isEntryLocked() {
+  if (!ENTRY_LOCK.locked) return false;
+
+  // Safety auto-release
+  if (Date.now() - ENTRY_LOCK.lockedAt > ENTRY_LOCK_TIMEOUT_MS) {
+    console.warn('[ENTRY-LOCK] ⛔ Timeout exceeded → force unlock');
+    releaseEntryLock('timeout-force');
+    return false;
+  }
+
+  return true;
+}
+
+function acquireEntryLock(reason) {
+  ENTRY_LOCK.locked = true;
+  ENTRY_LOCK.lockedAt = Date.now();
+  ENTRY_LOCK.reason = reason;
+
+  console.log(`[ENTRY-LOCK] 🔒 Acquired → ${reason}`);
+}
+
+function releaseEntryLock(reason) {
+  if (!ENTRY_LOCK.locked) return;
+
+  console.log(`[ENTRY-LOCK] 🔓 Released → ${reason}`);
+
+  ENTRY_LOCK.locked = false;
+  ENTRY_LOCK.lockedAt = null;
+  ENTRY_LOCK.reason = null;
+}
+
+function checkEntryTimeouts() {
+  const now = Date.now();
+
+  for (const [pairId, rec] of Object.entries(openPairs)) {
+    if (rec.state !== PAIR_STATE.ENTRY_IN_PROGRESS) continue;
+
+
+    const age = now - new Date(rec.openedAt).getTime();
+    if (age < ENTRY_TIMEOUT_MS) continue;
+
+    console.warn(`[ENTRY] ⛔ Timeout → abandoning ${pairId}`);
+
+    // 1️⃣ cleanup / force close
+    forceCloseAnyExistingLeg(rec);
+
+    // 2️⃣ remove local state
+    delete openPairs[pairId];
+
+    // 3️⃣ 🔑 RELEASE ENTRY LOCK HERE
+    releaseEntryLock('entry-timeout-abandon');
+  }
+}
+
 
 
 
@@ -249,23 +368,6 @@ function parseSignalString(signalStr) {
 async function internalLotSizing() {
   // For now: simply return fixed lot size.
   return FIXED_LOT;
-}
-
-async function internalSLTPLogic(side, entryPrice) {
-  const SL_DISTANCE = 8; // points or dollars
-
-  let sl = null;
-
-  if (side === "BUY") {
-    sl = entryPrice - SL_DISTANCE;
-  } else {
-    sl = entryPrice + SL_DISTANCE;
-  }
-
-  return {
-    sl, 
-    tp: null   // ALWAYS null, TradingView sends CLOSE signal instead
-  };
 }
 
 // --- ATR computed on 5m candles (true range average) ---
@@ -294,6 +396,42 @@ function computeATR_M5(period = ATR_PERIOD) {
   return atr;
 }
 
+function calculateDynamicSLTP(side, entryPrice) {
+  // --- 1️⃣ ATR (M5) ---
+  const atr = computeATR_M5(ATR_PERIOD);
+  if (!atr || atr <= 0) return null;
+
+  // --- 2️⃣ Retracement depth (last 3 M5 candles) ---
+  const recent = candles_5m.slice(-3);
+  if (recent.length < 3) return null;
+
+  const high = Math.max(...recent.map(c => c.high));
+  const low  = Math.min(...recent.map(c => c.low));
+  const retracement = Math.abs(high - low);
+
+  // --- 3️⃣ SL distance ---
+  const slDistance = Math.max(
+    retracement * 0.5,
+    atr * ATR_TRIGGER_MULTIPLIER
+  );
+
+  // --- 4️⃣ TP multiplier (same logic as main.js) ---
+  const tpRR = 1.5; // start fixed, we can re-add adaptive later
+
+  let sl, tp;
+
+  if (side === 'BUY') {
+    sl = entryPrice - slDistance;
+    tp = entryPrice + slDistance * tpRR;
+  } else {
+    sl = entryPrice + slDistance;
+    tp = entryPrice - slDistance * tpRR;
+  }
+
+  return { sl, tp, slDistance };
+}
+
+
 
 
 // safeGetAccountBalance - tolerant retrieval
@@ -312,13 +450,18 @@ async function safeGetAccountBalance() {
 
 
 
-// safePlaceMarketOrder - uses parseOrderResponse and returns { ticket, clientId, raw }
-async function safePlaceMarketOrder(action, lot, sl, tp, clientIdOverride = null, legIndex = 0) {
+// safePlaceMarketOrder - uses parseOrderResponse and returns { ticket, raw }
+async function safePlaceMarketOrder(action, lot, sl, tp, legIndex = 0) {
   if (!connection) throw new Error("No connection");
 
-  let requestId = clientIdOverride || `req-${Date.now()}-${Math.floor(Math.random() * 100000)}-L${legIndex}`;
-
   console.log("[ORDER] Using streaming API order method");
+
+  const options = {};
+
+  if (USE_BROKER_SLTP) {
+    if (typeof sl === 'number') options.stopLoss = sl;
+    if (typeof tp === 'number') options.takeProfit = tp;
+  }
 
   try {
     let res;
@@ -327,32 +470,28 @@ async function safePlaceMarketOrder(action, lot, sl, tp, clientIdOverride = null
       res = await connection.createMarketBuyOrder(
         SYMBOL,
         lot,
-        { stopLoss: sl, takeProfit: tp, clientId: requestId }
+        Object.keys(options).length ? options : undefined
       );
     } else {
       res = await connection.createMarketSellOrder(
         SYMBOL,
         lot,
-        { stopLoss: sl, takeProfit: tp, clientId: requestId }
+        Object.keys(options).length ? options : undefined
       );
     }
 
     const parsed = parseOrderResponse(res);
     const ticket = parsed.ticket || null;
-    const clientId = parsed.clientId || requestId;
 
     if (ticket) {
       recentTickets.add(ticket);
       setTimeout(() => recentTickets.delete(ticket), 15000);
     }
 
-    return { ticket, clientId, raw: res, requestId };
+    return { ticket, raw: res };
 
   } catch (err) {
     console.error("[ORDER ERROR] Streaming order failed:", err.message);
-
-    // OPTIONAL: fallback only if required
-    // But safest approach: NO FALLBACK to avoid double entries
     throw err;
   }
 }
@@ -362,10 +501,10 @@ async function safePlaceMarketOrder(action, lot, sl, tp, clientIdOverride = null
 
 
 
+
 // --------------------- EXECUTION: Paired Order Placement ---------------------
 async function placePairedOrder(side, totalLot, slPrice, tpPrice, riskPercent) {
   try {
-    orderInFlight = true;
 
     const lotEach = Number((totalLot / 2).toFixed(2));
     if (lotEach < MIN_LOT) {
@@ -373,33 +512,37 @@ async function placePairedOrder(side, totalLot, slPrice, tpPrice, riskPercent) {
       return null;
     }
 
-    // Create pair state with WAITING_LEG1_CONFIRM
+    // Create pair state
     const pairId = `pair-${Date.now()}`;
     const entryTimestamp = Date.now();
 
-    // Prepare leg1 clientId
-    const clientId1 = `leg1-${Date.now()}-${Math.floor(Math.random()*100000)}`;
-
-    console.log(`[PAIR] Creating pair ${pairId}, placing LEG1 only (clientId=${clientId1})`);
 
     // Place LEG1 only
     let first = null;
     try {
-      first = await safePlaceMarketOrder(side, lotEach, null, null, clientId1, 1);
+      first = await safePlaceMarketOrder(
+        side,
+        lotEach,
+        slPrice,
+        tpPrice,
+        1
+      );
+
     } catch (err) {
       console.error('[PAIR] Error placing LEG1:', err.message || err);
-      orderInFlight = false;
       return null;
     }
 
     // Register ticket into recentTickets if present
     if (first?.ticket) {
-      recentTickets.add(String(first.ticket));
-      ticketOwnershipMap.add(String(first.ticket));
-      setTimeout(() => recentTickets.delete(String(first.ticket)), 15000);
+      const t = String(first.ticket);
+      recentTickets.add(t);
+      ticketOwnershipMap.set(t, pairId);   // ✅ OWNERSHIP SET HERE
+      setTimeout(() => recentTickets.delete(t), 15000);
     }
 
-    // Build pair skeleton in openPairs (WAITING_LEG1_CONFIRM)
+
+    // Build pair skeleton in openPairs
     openPairs[pairId] = {
       pairId,
       side,
@@ -409,12 +552,10 @@ async function placePairedOrder(side, totalLot, slPrice, tpPrice, riskPercent) {
       trades: {
         PARTIAL: {
           ticket: first?.ticket || null,
-          clientId: first?.clientId || first?.requestId || clientId1,
           lot: lotEach
         },
         TRAILING: {
           ticket: null,
-          clientId: null,
           lot: lotEach
         }
       },
@@ -429,20 +570,21 @@ async function placePairedOrder(side, totalLot, slPrice, tpPrice, riskPercent) {
       internalTrailingSL: null,
       partialClosed: false,
       openedAt: new Date().toISOString(),
-      status: 'WAITING_LEG1_CONFIRM',
+      state: PAIR_STATE.ENTRY_IN_PROGRESS,
+      entryStartedAt: Date.now(),
+      closingReason: null,
+      closedAt: null,
       entryTimestamp,
       confirmDeadlineForLeg2: entryTimestamp + 3000, // 3 seconds to allow Exness auto-create leg2
       signalId: null // will be set by caller
     };
 
-    // Map clientId -> known ticket placeholder so sync can match
-    if (first?.clientId) clientOrderMap.set(String(first.clientId), String(first.ticket || ''));
 
     console.log(`[PAIR] LEG1 placed for ${pairId}, awaiting confirmation and possible EXNESS leg2`);
     return openPairs[pairId];
 
   } finally {
-    // orderInFlight stays true until LEG1 is confirmed inside sync()
+    // Does nothing
   }
 }
 
@@ -459,20 +601,13 @@ async function processTickForOpenPairs(price) {
 
     const openTickets = new Set((posList || []).map(p => p.positionId || p.ticket || p.id).filter(Boolean));
 
-    // NOTE: SL_DISTANCE and HALF_DISTANCE kept as before (fallback / checkpoint)
-    const SL_DISTANCE = 8;      // initial SL distance from entry (points/dollars)
-    const HALF_DISTANCE = 5; // first checkpoint
 
     for (const [pairId, rec] of Object.entries(openPairs)) {
 
-      // ---------------------------------------------------------------
-      // NEW BLOCK — prevent ALL internal trade logic during entry building
-      // ---------------------------------------------------------------
-      if (rec.status === "WAITING_LEG1_CONFIRM" || rec.status === "WAITING_LEG2") {
+      if (rec.state === PAIR_STATE.CLOSED) continue;
 
-          // While waiting for Exness to create leg2 (duplicate),
-          // skip ALL partial/missing/trailing logic completely.
-          continue;
+      if (rec.state !== PAIR_STATE.ACTIVE) {
+        continue;
       }
 
       // ---------------------------------------------------------------
@@ -520,260 +655,114 @@ async function processTickForOpenPairs(price) {
 
       }
 
+      // ---------- PARTIAL + BREAK-EVEN ----------
+      if (!rec.partialClosed && rec.tp && rec.entryPrice && partialRec?.ticket) {
 
-      // --- Ensure there is a baseline SL (rec.sl may be set at entry) ---
-      // If rec.sl is not set (should be set at entry step), initialize it to entry ± SL_DISTANCE as fallback
-      if (rec.sl == null) {
-        rec.sl = side === 'BUY' ? entry - SL_DISTANCE : entry + SL_DISTANCE;
-      }
+        const totalDist = Math.abs(rec.tp - rec.entryPrice);
+        let movedDist;
 
-      // We'll use internal moving SL (rec.internalSL) if present, otherwise use rec.sl
-      // If both absent we already set rec.sl above.
-      if (rec.internalSL == null) rec.internalSL = rec.sl;
-
-      // --- PRE-PARTIAL: checkpoint logic (before partial close triggered) ---
-      if (!rec.partialClosed) {
-
-        if (rec.tightSLMode) {
-
-          // ------------------------------
-          // TIGHT-SL MODE: BUY SIDE
-          // ------------------------------
-          if (side === 'BUY') {
-
-            // CHECKPOINT 1 → +5 → partial close ONLY
-            if (current >= entry + HALF_DISTANCE) {
-              if (partialRec?.ticket) {
-                await safeClosePosition(partialRec.ticket, partialRec.lot);
-                rec.partialClosed = true;
-                rec.trades.PARTIAL.ticket = null;
-
-                console.log(`[PAIR][${pairId}] (TIGHT MODE BUY) Partial closed at +5 (SL unchanged).`);
-                const safeId = md2(pairId);
-                await sendTelegram(
-                  `🟠 *PARTIAL CLOSED (TIGHT MODE)*\n${safeId}\nSide: BUY\nSL unchanged`,
-                  { parse_mode: 'MarkdownV2' }
-                );
-              }
-            }
-
-            // CHECKPOINT 2 → +8 → break-even
-            if (current >= entry + SL_DISTANCE) {
-              if (!rec.breakEvenActive) {
-                rec.breakEvenActive = true;
-                rec.internalSL = entry;
-
-                console.log(`[PAIR][${pairId}] (TIGHT MODE BUY) Break-even at +8.`);
-                const safeId = md2(pairId);
-                await sendTelegram(
-                  `🟢 *BREAK-EVEN (TIGHT MODE)*\n${safeId}\nSide: BUY\nSL → ${entry}`,
-                  { parse_mode: 'MarkdownV2' }
-                );
-              }
-            }
-          }
-
-
-
-          // ------------------------------
-          // TIGHT-SL MODE: SELL SIDE
-          // ------------------------------
-          if (side === 'SELL') {
-
-            // CHECKPOINT 1 → -5 → partial close ONLY
-            if (current <= entry - HALF_DISTANCE) {
-              if (partialRec?.ticket) {
-                await safeClosePosition(partialRec.ticket, partialRec.lot);
-                rec.partialClosed = true;
-                rec.trades.PARTIAL.ticket = null;
-
-                console.log(`[PAIR][${pairId}] (TIGHT MODE SELL) Partial closed at -5 (SL unchanged).`);
-                const safeId = md2(pairId);
-                await sendTelegram(
-                  `🟠 *PARTIAL CLOSED (TIGHT MODE)*\n${safeId}\nSide: SELL\nSL unchanged`,
-                  { parse_mode: 'MarkdownV2' }
-                );
-              }
-            }
-
-            // CHECKPOINT 2 → -8 → break-even
-            if (current <= entry - SL_DISTANCE) {
-              if (!rec.breakEvenActive) {
-                rec.breakEvenActive = true;
-                rec.internalSL = entry;
-
-                console.log(`[PAIR][${pairId}] (TIGHT MODE SELL) Break-even at -8.`);
-                const safeId = md2(pairId);
-                await sendTelegram(
-                  `🟢 *BREAK-EVEN (TIGHT MODE)*\n${safeId}\nSide: SELL\nSL → ${entry}`,
-                  { parse_mode: 'MarkdownV2' }
-                );
-              }
-            }
-          }
-
-        }else{
-          // --- PRE-PARTIAL: ALWAYS close partial at 5 points, SL unchanged ---
-          
-              // BUY partial at +5
-              if (side === 'BUY' && current >= entry + HALF_DISTANCE) {
-
-                  await safeClosePosition(partialRec.ticket, partialRec.lot);
-                  rec.partialClosed = true;
-                  rec.trades.PARTIAL.ticket = null;
-
-                  console.log(`[PAIR][${pairId}] PARTIAL closed at +5 (SL unchanged).`);
-                  const safePairId = md2(pairId);
-
-                  await sendTelegram(
-                    `🟠 *PARTIAL CLOSED*\n${safePairId}\nSide: BUY\nSL unchanged`,
-                    { parse_mode: 'MarkdownV2' }
-                  );
-              }
-
-              // SELL partial at –5
-              if (side === 'SELL' && current <= entry - HALF_DISTANCE) {
-
-                  await safeClosePosition(partialRec.ticket, partialRec.lot);
-                  rec.partialClosed = true;
-                  rec.trades.PARTIAL.ticket = null;
-
-                  console.log(`[PAIR][${pairId}] PARTIAL closed at -5 (SL unchanged).`);
-                  const safePairId = md2(pairId);
-
-                  await sendTelegram(
-                    `🟠 *PARTIAL CLOSED*\n${safePairId}\nSide: SELL\nSL unchanged`,
-                    { parse_mode: 'MarkdownV2' }
-                  );
-              }
-          }
-
-
-        
-      } // end pre-partial
-
-      // --- POST-PARTIAL / TRAILING logic (only after BE or partialClosed) ---
-      // If we have activated BE or partialClosed, enable ATR-driven 5/10 step trailing
-      if (rec.partialClosed || rec.breakEvenActive) {
-        // compute ATR from 5m candles
-        const atr = (typeof computeATR_M5 === 'function') ? computeATR_M5(ATR_PERIOD) : 0;
-
-        // // classify volatility
-        // const isLowVol = (atr > 0 && atr < ATR_LOW_THRESHOLD) || (atr === 0); // treat missing ATR as "low" conservatively
-
-        // // select fixed step based on volatility class
-        // const TRAIL_STEP = isLowVol ? TRAIL_STEP_LOW : TRAIL_STEP_HIGH;
-        const TRAIL_STEP = 8;
-
-
-        // Trail Trigger: minimum distance from SL to current price before moving SL
-        const TRAIL_TRIGGER = 10
-
-        // debug logging (optional)
-        
         if (side === 'BUY') {
-          // distance from current internalSL to current price
-          const distanceFromSL = current - rec.internalSL;
-
-          // Only advance if price moved beyond TRAIL_TRIGGER
-          if (distanceFromSL > TRAIL_TRIGGER) {
-            const newSL = current - TRAIL_STEP;
-
-            // only move SL forward (never backward)
-            if (newSL > rec.internalSL) {
-              // Respect BE: do not move SL below BE when BE is active
-              const beLimit = rec.breakEvenActive ? rec.entryPrice : -Infinity;
-              const adjustedNewSL = Math.max(newSL, beLimit); // never set SL below BE entryPrice for BUY
-
-              const oldSL = rec.internalSL;
-              rec.internalSL = adjustedNewSL;
-              const safePairId = md2(pairId);
-              console.log(`[PAIR][${pairId}] TRAIL advanced (M5-ATR) from ${oldSL.toFixed(2)} -> ${rec.internalSL.toFixed(2)} (price=${current.toFixed(2)}, step=${TRAIL_STEP})`);
-              await sendTelegram(
-                `➡️ *TRAIL ADVANCED*\nPair: ${safePairId}\nSide: BUY\nOld SL: ${oldSL.toFixed(2)}\nNew SL: ${rec.internalSL.toFixed(2)}\nPrice: ${current.toFixed(2)}\nM5 ATR: ${atr.toFixed(4)}`,
-                { parse_mode: 'MarkdownV2' }
-              );
-            }
-          }
+          movedDist = current - rec.entryPrice;
         } else {
-          // SELL side
-          const distanceFromSL = rec.internalSL - current;
+          movedDist = rec.entryPrice - current;
+        }
 
-          if (distanceFromSL > TRAIL_TRIGGER) {
-            const newSL = current + TRAIL_STEP;
+        if (movedDist > 0) {
+          const progress = movedDist / totalDist;
 
-            if (newSL < rec.internalSL) {
-              // Respect BE: do not move SL above BE when BE is active (for SELL)
-              const beLimit = rec.breakEvenActive ? rec.entryPrice : Infinity;
-              const adjustedNewSL = Math.min(newSL, beLimit);
+          // 🔸 PARTIAL at 50% of TP distance
+          if (progress >= 0.5) {
 
-              const oldSL = rec.internalSL;
-              rec.internalSL = adjustedNewSL;
-              const safePairId = md2(pairId);
-              console.log(`[PAIR][${pairId}] TRAIL advanced (M5-ATR) from ${oldSL.toFixed(2)} -> ${rec.internalSL.toFixed(2)} (price=${current.toFixed(2)}, step=${TRAIL_STEP})`);
-              await sendTelegram(
-                `➡️ *TRAIL ADVANCED (M5-ATR)*\nPair: ${safePairId}\nSide: SELL\nOld SL: ${oldSL.toFixed(2)}\nNew SL: ${rec.internalSL.toFixed(2)}\nPrice: ${current.toFixed(2)}\nM5 ATR: ${atr.toFixed(4)}`,
-                { parse_mode: 'MarkdownV2' }
-              );
-            }
+            await safeClosePosition(partialRec.ticket, partialRec.lot);
+            rec.partialClosed = true;
+            rec.trades.PARTIAL.ticket = null;
+
+            // 🔸 ACTIVATE BREAK-EVEN
+            rec.breakEvenActive = true;
+            rec.internalSL = rec.entryPrice;
+
+            console.log(`[PAIR][${pairId}] PARTIAL closed + BE activated`);
+
+            const safePairId = md2(pairId);
+            await sendTelegram(
+              `🟠 *PARTIAL CLOSED + BREAK-EVEN*\n` +
+              `${safePairId}\n` +
+              `Side: ${side}\n` +
+              `BE: ${rec.entryPrice.toFixed(2)}`,
+              { parse_mode: 'MarkdownV2' }
+            );
           }
         }
-      } // end trailing
+      }  // end pre-partial
 
-      // --- HARD STOP-LOSS / TRAILING-SL HIT CHECK ---
-      // No buffer — clean raw SL comparison
-      const effectiveSL = rec.internalSL ?? rec.sl;
+      // ---------- TP HIT ----------
+      if (rec.tp) {
+        const tpHit =
+          (side === 'BUY'  && current >= rec.tp) ||
+          (side === 'SELL' && current <= rec.tp);
 
-      // Detect hit (BUY/SELL opposite as usual)
-      const slHit =
-        (side === 'BUY'  && current <= effectiveSL) ||
-        (side === 'SELL' && current >= effectiveSL);
+        if (tpHit) {
 
-      if (slHit) {
+          transitionPairState(rec, PAIR_STATE.CLOSING, 'TP_HIT');
 
-        // Determine if the SL was hit in profit or loss
-        const profitClosure =
-          (side === 'BUY'  && effectiveSL > rec.entryPrice) ||
-          (side === 'SELL' && effectiveSL < rec.entryPrice);
-
-        const alertType = profitClosure
-          ? "🟢 *PROFIT — TRAILING SL CLOSED*"
-          : "⛔ *STOP-LOSS HIT — LOSS CLOSED*";
-
-        console.log(`[PAIR] ${alertType} for ${pairId}`);
-
-        // Close both legs
-        for (const key of ['PARTIAL', 'TRAILING']) {
-          const t = rec.trades[key];
-          if (t?.ticket) {
-            try {
+          for (const key of ['PARTIAL', 'TRAILING']) {
+            const t = rec.trades[key];
+            if (t?.ticket) {
               await safeClosePosition(t.ticket, t.lot);
               rec.trades[key].ticket = null;
-            } catch (err) {
-              console.warn(`[PAIR] Failed to close ${key} leg for ${pairId}:`, err.message);
             }
           }
+
+          // 📣 TELEGRAM FIRST (state still exists here)
+          const safePairId = md2(pairId);
+          await sendTelegram(
+            `🎯 *TP HIT — PROFIT CLOSED*\n` +
+            `${safePairId}\n` +
+            `Side: ${side}\n` +
+            `TP: ${rec.tp.toFixed(2)}\n` +
+            `Entry: ${rec.entryPrice.toFixed(2)}`,
+            { parse_mode: 'MarkdownV2' }
+          );
+
+          // 🧹 FINALIZE AFTER NOTIFICATION
+          finalizePair(pairId, 'TP_HIT');
+
+          continue;
         }
-
-        rec.awaitingFinalClose = true;
-        const safePairId = md2(pairId);
-
-        await sendTelegram(
-          `${alertType}\n━━━━━━━━━━━━━━━\n🎫 *Pair:* ${safePairId}\n📈 *Side:* ${side}\nSL: ${effectiveSL.toFixed(2)}\nEntry: ${rec.entryPrice.toFixed(2)}\n🕒 ${new Date().toLocaleTimeString()}`,
-          { parse_mode: "MarkdownV2" }
-        );
-
-        const newBal = await safeGetAccountBalance();
-        if (newBal && newBal !== accountBalance) accountBalance = newBal;
-
-        continue;
       }
+
+
+      // ---------- BREAK-EVEN HIT ----------
+      if (rec.breakEvenActive && rec.internalSL && trailingRec?.ticket) {
+
+        const beHit =
+          (side === 'BUY'  && current <= rec.internalSL) ||
+          (side === 'SELL' && current >= rec.internalSL);
+
+        if (beHit) {
+
+          console.log(`[PAIR] 🔵 BREAK-EVEN HIT → closing trailing leg (${pairId})`);
+
+          await safeClosePosition(trailingRec.ticket, trailingRec.lot);
+          rec.trades.TRAILING.ticket = null;
+
+          finalizePair(pairId, 'BREAK_EVEN');
+
+          const safePairId = md2(pairId);
+          await sendTelegram(
+            `🔵 *BREAK-EVEN HIT*\n${safePairId}\nSide: ${side}`,
+            { parse_mode: 'MarkdownV2' }
+          );
+
+          continue;
+        }
+      }
+
 
 
       // --- If both trade tickets are gone, cleanup pair ---
       if (!rec.trades.PARTIAL.ticket && !rec.trades.TRAILING.ticket) {
-        rec.awaitingFinalClose = true;
-
+        finalizePair(pairId, 'PAIR_CLOSED');
       }
     }
   } catch (err) {
@@ -975,337 +964,33 @@ async function handleTick(tick) {
 async function syncOpenPairsWithPositions(positions) {
   const MIN_TRADE_AGE = 5000; // 5 seconds grace period
 
-  // If we are in the middle of placing orders, skip external detection
-  if (orderInFlight) {
-
-
-    try {
-      // confirmation pass: try to confirm any waiting LEG1 before blocking everything
-      for (const [pairId, rec] of Object.entries(openPairs)) {
-        if (rec.status !== 'WAITING_LEG1_CONFIRM') continue;
-
-        // Failsafe: orderInFlight should not stay true forever
-        if (orderInFlight && rec.status === "WAITING_LEG1_CONFIRM") {
-            const age = Date.now() - rec.entryTimestamp;
-            if (age > 5000) {
-                console.warn(`[PAIR] Failsafe: There was no LEG1 confirmation for ${pairId} after 5s — clearing orderInFlight`);
-                orderInFlight = false;
-            }
-        }
-        const leg1Ticket = String(rec.trades?.PARTIAL?.ticket || '');
-        const leg1ClientId = String(rec.trades?.PARTIAL?.clientId || '');
-        const entryTs = rec.entryTimestamp || Date.now();
-
-        const found = (positions || []).find(p => {
-          const brokerTicket = String(p.positionId || p.ticket || p.id || '');
-          const brokerClientId = String(p.clientId || p.orderClientId || p.meta?.clientId || '');
-          const brokerSide = String((p.type || p.side || '').toUpperCase());
-          const brokerLot = Number(p.volume || p.lots || p.original_position_size || 0);
-          const openTime = new Date(p.openingTime || p.opening_time_utc || p.time || p.updateTime || 0).getTime();
-          const dt = Math.abs(openTime - entryTs);
-
-          // match by ticket OR clientId OR side+lot+time proximity (4s)
-          if (brokerTicket && leg1Ticket && brokerTicket === leg1Ticket) return true;
-          if (brokerClientId && leg1ClientId && brokerClientId === leg1ClientId) return true;
-          if (brokerSide && brokerSide === String(rec.side).toUpperCase()
-              && !isNaN(brokerLot) && Math.abs(brokerLot - rec.lotEach) < 0.0001
-              && dt <= 4000) return true;
-
-          return false;
-        });
-
-        if (found) {
-          console.log(`[PAIR] LEG1 confirmed for ${pairId} (orderInFlight confirmation pass)`);
-          const leg1Ticket = String(rec.trades.PARTIAL.ticket || '');
-          if (leg1Ticket) ticketOwnershipMap.add(leg1Ticket);
-
-          // mark orderInFlight cleared (we have confirmation)
-          orderInFlight = false;
-
-          // record mapping and change status as in normal flow
-          // --- Record mapping using BOTH clientId and ticketId ---
-          const leg1Cid = rec.trades?.PARTIAL?.clientId;
-          const leg1Tid = rec.trades?.PARTIAL?.ticket;
-
-          // If clientId exists, map it to ticket
-          if (leg1Cid) {
-              clientOrderMap.set(String(leg1Cid), String(leg1Tid));
-          }
-
-          // Always map ticket → true (ownership mark)
-          if (leg1Tid) {
-              ticketOwnershipMap.add(String(leg1Tid));
-          }
-
-          // Continue flow
-          rec.status = 'WAITING_LEG2';
-
-          // ensure we set confirmDeadlineForLeg2 (3s window) if not set
-          if (!rec.confirmDeadlineForLeg2) rec.confirmDeadlineForLeg2 = Date.now() + 3000;
-          // we can break early or continue confirming others; continue to allow multiple concurrent pairs
-        }
-      }
-    } catch (err) {
-      console.error(`[PAIR] Error placing LEG1 for ${pairId}:`, err.message || err);
-
-      // IMPORTANT: Do NOT stay in orderInFlight state.
-      orderInFlight = false;
-
-      // Clean up if needed
-      delete openPairs[pairId];
-
-      return null;
-    }
-
-    // If after confirmation pass orderInFlight is still true, do NOT run full external-detection.
-    // Just return; external-close logic would otherwise kill newborn trades.
-    if (orderInFlight) {
-      // still waiting for confirmation — skip external detection until confirmed
-      console.log('[SYNC] Skipping external detection — order in-flight (after confirmation pass)');
-      return;
-    }
-  }
-
   try {
     // Normalize broker tickets set
     const brokerTickets = new Set(
       (positions || []).map(p => String(p.positionId || p.ticket || p.id || '')).filter(Boolean)
     );
 
-    // Build ourTickets (by ticket) and ourClientIds sets
+    // Build ourTickets (by ticket)
     const ourTickets = new Set();
-    const ourClientIds = new Set();
 
     // 1) tickets from openPairs
     for (const rec of Object.values(openPairs)) {
       if (rec.trades?.PARTIAL?.ticket) ourTickets.add(String(rec.trades.PARTIAL.ticket));
       if (rec.trades?.TRAILING?.ticket) ourTickets.add(String(rec.trades.TRAILING.ticket));
-      if (rec.trades?.PARTIAL?.clientId) ourClientIds.add(String(rec.trades.PARTIAL.clientId));
-      if (rec.trades?.TRAILING?.clientId) ourClientIds.add(String(rec.trades.TRAILING.clientId));
     }
 
-    // 2) tickets from clientOrderMap
-    for (const [cid, savedTicket] of clientOrderMap.entries()) {
-      if (savedTicket) ourTickets.add(String(savedTicket));
-      if (cid) ourClientIds.add(String(cid));
-    }
 
-    // 3) if broker pos carries a clientId that matches our known clientIds, mark it as ours
-    for (const pos of (positions || [])) {
-      const brokerTicket = String(pos.positionId || pos.ticket || pos.id || '');
-      const brokerClientId =
-        pos?.clientId || pos?.orderClientId || pos?.meta?.clientId || pos?.comment || pos?.label || null;
-
-      if (brokerClientId && ourClientIds.has(String(brokerClientId))) {
-        if (brokerTicket) ourTickets.add(brokerTicket);
-      }
-    }
 
     for (const pos of (positions || [])) {
       const ticket = String(pos.positionId || pos.ticket || pos.id || '');
       if (!ticket) continue;
-      const brokerClientId = String(pos.clientId || pos.orderClientId || pos.meta?.clientId || '');
       const isOurs =
           ourTickets.has(ticket) ||
-          ticketOwnershipMap.has(ticket) ||          // NEW
-          clientOrderMap.has(brokerClientId);        // existing
+          ticketOwnershipMap.has(ticket)
 
       if (isOurs) {
           continue; // do NOT close this trade
       }
-
-          // ------------------ NEW: LEG2 adoption PRE-PASS ------------------
-      // Try to adopt any broker positions as LEG2s for pairs waiting for LEG2,
-      // before we perform global external-detection and closing.
-      const waitingLeg2Pairs = Object.entries(openPairs)
-        .filter(([_, r]) => r.status === 'WAITING_LEG2')
-        .map(([pid, r]) => ({ pid, rec: r }));
-
-      if (waitingLeg2Pairs.length > 0) {
-        // Attempt adoption for each waiting pair from current broker positions
-        for (const { pid, rec } of waitingLeg2Pairs) {
-          const candidate = (positions || []).find(p => {
-            const brokerTicket = String(p.positionId || p.ticket || p.id || '');
-            if (!brokerTicket) return false;
-            // don't match the same leg1 ticket
-            if (rec.trades?.PARTIAL?.ticket && brokerTicket === String(rec.trades.PARTIAL.ticket)) return false;
-
-            // strong ownership checks (ticketOwnershipMap / clientOrderMap)
-            if (ticketOwnershipMap.has(brokerTicket)) return true;
-            const brokerCid = String(p.clientId || p.orderClientId || p.meta?.clientId || '');
-            if (brokerCid && clientOrderMap.has(brokerCid)) return true;
-
-            // fallback: side + lot + time proximity
-            const rawSide = String(p.type || p.side || "").toUpperCase();
-
-            // NORMALIZE: Exness uses "POSITION_TYPE_SELL" / "POSITION_TYPE_BUY"
-            const brokerSide =
-              rawSide.includes("SELL") ? "SELL" :
-              rawSide.includes("BUY")  ? "BUY"  :
-              rawSide;
-
-            const recSide = String(rec.side).toUpperCase();
-            const matchSide = (brokerSide === recSide);
-
-            const volume = Number(p.volume ?? p.lots ?? p.original_position_size ?? 0);
-            const matchLot = !isNaN(volume) &&
-              Math.abs(volume - Number(rec.lotEach || rec.trades?.PARTIAL?.lot || 0)) < 0.0001;
-
-            // open time detection robust
-            let openTime = null;
-            if (p.openingTime) openTime = new Date(p.openingTime).getTime();
-            else if (p.opening_time_utc) openTime = new Date(p.opening_time_utc).getTime();
-            else if (p.time) openTime = new Date(p.time).getTime();
-            else if (p.updateTime) openTime = new Date(p.updateTime).getTime();
-
-            const dt = openTime && rec.entryTimestamp
-              ? Math.abs(openTime - rec.entryTimestamp)
-              : null;
-
-            const timeOk = openTime ? (dt <= 5000) : true;
-
-            return matchSide && matchLot && timeOk;
-
-          });
-
-          if (candidate) {
-            const brokerTicket = String(candidate.positionId || candidate.ticket || candidate.id || '');
-            const brokerClientId = String(candidate.clientId || candidate.orderClientId || candidate.meta?.clientId || '');
-
-            console.log(`[PAIR] PRE-PASS: EXNESS LEG2 adopted for ${pid} -> ${brokerTicket}`);
-            rec.trades.TRAILING.ticket = brokerTicket;
-            rec.trades.TRAILING.clientId = brokerClientId || null;
-            ticketOwnershipMap.add(brokerTicket);
-            if (brokerClientId) clientOrderMap.set(brokerClientId, brokerTicket);
-            rec.status = 'ENTRY_COMPLETE';
-          }
-        }
-
-        // After adoption attempt: if any pair still WAITING_LEG2, skip external detection entirely.
-        // Check if any pair is still waiting for LEG2 after adoption pass
-        const waitingList = Object.entries(openPairs)
-          .filter(([pid, r]) => r.status === 'WAITING_LEG2')
-          .map(([pid, r]) => ({
-            pairId: pid,
-            side: r.side,
-            lotEach: r.lotEach,
-            entryTimestamp: r.entryTimestamp,
-            partialTicket: r.trades?.PARTIAL?.ticket,
-            trailingTicket: r.trades?.TRAILING?.ticket
-          }));
-
-        if (waitingList.length > 0) {
-
-          console.log("[SYNC] WAITING_LEG2_PAIRS", JSON.stringify(waitingList));
-
-          // 🔍 Also log the external trade we are examining (diagnostic only)
-          console.log("[SYNC][EXTERNAL_DIAG_LEG2_PENDING]", JSON.stringify({
-            ticket,
-            side: String(pos.side || pos.type || "").toUpperCase(),
-            volume: pos.volume || pos.lots || pos.original_position_size || null,
-            inOurTickets: ourTickets.has(ticket),
-            inOurClientIds: ourClientIds.has(brokerClientId),
-            age_ms: (() => {
-              const posTime = pos.time || pos.updateTime || pos.openingTime || pos.opening_time_utc || null;
-              return posTime ? (Date.now() - new Date(posTime).getTime()) : null;
-            })(),
-            brokerClientId
-          }));
-
-          console.log('[SYNC] Skipping external detection this sync (LEG2 pending)');
-          return; // ← DO NOT run external closing
-        }
-
-      }
-      // ------------------ END NEW PRE-PASS ------------------
-
-
-      // --- NEW GUARD: If ANY pair is WAITING_LEG2, skip closing ANY external trade ---
-      let hasWaitingLeg2 = false;
-      for (const rec of Object.values(openPairs)) {
-          if (rec.status === "WAITING_LEG2") {
-              hasWaitingLeg2 = true;
-              break;
-          }
-      }
-
-      if (hasWaitingLeg2) {
-
-        // Try early-adoption of external position as LEG2 before skipping
-        for (const [pid, prec] of Object.entries(openPairs)) {
-            if (prec.status !== "WAITING_LEG2") continue;
-
-            const expectedSide = String(prec.side).toUpperCase();
-
-            const rawSide = String(pos.type || pos.side || "").toUpperCase();
-            const brokerSide = rawSide.includes("SELL") ? "SELL"
-                            : rawSide.includes("BUY") ? "BUY"
-                            : rawSide;
-
-
-            const expectedLot = Number(prec.lotEach);
-            const brokerLot = Number(pos.volume || pos.lots || pos.original_position_size || 0);
-
-            // Basic matching: same direction + same lot size
-            const sideMatch = (expectedSide === brokerSide);
-            const lotMatch = (!isNaN(expectedLot) && Math.abs(brokerLot - expectedLot) < 0.0001);
-
-            // Time-based safety check (optional but recommended)
-            let timeOk = true;
-            const openTime = pos.openingTime || pos.opening_time_utc || pos.time || pos.updateTime;
-            if (openTime && prec.entryTimestamp) {
-                const dt = Math.abs(new Date(openTime).getTime() - prec.entryTimestamp);
-                timeOk = (dt <= 5000); // 5s matching window
-            }
-
-            if (sideMatch && lotMatch && timeOk) {
-                const brokerTicket = String(pos.positionId || pos.ticket || pos.id || "");
-                const brokerClient = String(pos.clientId || pos.orderClientId || pos.meta?.clientId || "");
-
-                console.log(`[PAIR] EARLY LEG2 adopted for ${pid} → ${brokerTicket}`);
-
-                prec.trades.TRAILING.ticket = brokerTicket;
-                prec.trades.TRAILING.clientId = brokerClient || null;
-
-                // Ownership mapping
-                if (brokerTicket) ticketOwnershipMap.add(brokerTicket);
-                if (brokerClient) clientOrderMap.set(brokerClient, brokerTicket);
-
-                prec.status = "ENTRY_COMPLETE";
-
-                // Do NOT skip external detection for this iteration — we want to skip closing just this ticket
-                continue;  
-            }
-        }
-
-        // After checking all WAITING_LEG2 pairs, skip external closing
-        console.log(`[SYNC] Pair awaiting LEG2 → skipping external close for ${ticket}`);
-        console.log("[SYNC][EXTERNAL_DIAG]", JSON.stringify({
-            ticket,
-            side: String(pos.side || pos.type || "").toUpperCase(),
-            volume: pos.volume || pos.lots || pos.original_position_size || null,
-            reason: "LEG2_PENDING_SKIP",
-            inOurTickets: ourTickets.has(ticket),
-            inOurClientIds: ourClientIds.has(brokerClientId),
-            isPairOwned: (() => {
-              for (const [pid, p] of Object.entries(openPairs)) {
-                if (
-                  p?.trades?.PARTIAL?.ticket === ticket ||
-                  p?.trades?.TRAILING?.ticket === ticket
-                ) return pid;
-              }
-              return null;
-            })(),
-            age_ms: (() => {
-              const posTime = pos.time || pos.updateTime || pos.openingTime || pos.opening_time_utc || null;
-              return posTime ? (Date.now() - new Date(posTime).getTime()) : null;
-            })(),
-            brokerClientId
-        }));
-
-
-        continue;
-    }
 
 
       // recentTickets: any very recently placed ticket (ours or manual) — skip
@@ -1314,42 +999,6 @@ async function syncOpenPairsWithPositions(positions) {
         continue;
       }
 
-      // If any pair is still waiting for LEG2 and this pos *looks like* their LEG2, skip closing.
-      // Match by clientId first, else by side+lot+time proximity (4s window).
-      let isCandidateForWaitingPair = false;
-      for (const rec of Object.values(openPairs)) {
-        if (rec.status !== 'WAITING_LEG2') continue;
-
-        const recSide = String(rec.side).toUpperCase();
-        const recLot = Number(rec.lotEach || rec.trades?.PARTIAL?.lot || 0);
-
-        const brokerClientId = String(pos.clientId || pos.orderClientId || pos.meta?.clientId || '');
-        if (brokerClientId && rec.trades && (String(rec.trades.PARTIAL.clientId) === brokerClientId || String(rec.trades.TRAILING?.clientId) === brokerClientId)) {
-          isCandidateForWaitingPair = true;
-          break;
-        }
-
-        const rawSide2 = String(pos.type || pos.side || "").toUpperCase();
-        const brokerSide =
-          rawSide2.includes("SELL") ? "SELL" :
-          rawSide2.includes("BUY")  ? "BUY"  :
-          rawSide2;
-          
-          const brokerLot = Number(pos.volume || pos.lots || pos.original_position_size || 0);
-          // openTime detection
-          const openTime = new Date(pos.openingTime || pos.opening_time_utc || pos.time || pos.updateTime || 0).getTime();
-          const dt = rec.entryTimestamp ? Math.abs(openTime - rec.entryTimestamp) : Infinity;
-
-        if (brokerSide === recSide && !isNaN(brokerLot) && Math.abs(brokerLot - recLot) < 0.0001 && dt <= 4000) {
-          isCandidateForWaitingPair = true;
-          break;
-        }
-      }
-
-      if (isCandidateForWaitingPair) {
-        console.log(`[SYNC] Potential LEG2 candidate detected — skipping close for ${ticket}`);
-        continue;
-      }
 
       // existing age heuristics: if still considered external then close
       const posTime = pos.time || pos.updateTime || pos.openingTime || pos.opening_time_utc || null;
@@ -1381,34 +1030,18 @@ async function syncOpenPairsWithPositions(positions) {
         }
       }
 
-      // If we're WAITING for leg1 confirmation, check for it
-      if (rec.status === 'WAITING_LEG1_CONFIRM') {
-        // look for a position carrying our leg1 clientId or the ticket
-        const leg1ClientId = String(rec.trades?.PARTIAL?.clientId || '');
-        const leg1Ticket = String(rec.trades?.PARTIAL?.ticket || '');
+ 
 
-        const found = (positions || []).find(p => {
-          const brokerCid = String(p.clientId || p.orderClientId || p.meta?.clientId || '');
-          const brokerTicket = String(p.positionId || p.ticket || p.id || '');
-          // match by clientId OR by ticket
-          return (brokerCid && brokerCid === leg1ClientId) || (brokerTicket && leg1Ticket && brokerTicket === leg1Ticket);
-        });
 
-        if (found) {
-          console.log(`[PAIR] LEG1 confirmed for ${pairId}`);
-          // Ensure mapping captured
-          orderInFlight = false;
-          if (leg1ClientId) clientOrderMap.set(leg1ClientId, leg1Ticket || '');
-          rec.status = 'WAITING_LEG2';
-          // set a confirmDeadline (if not already set)
-          if (!rec.confirmDeadlineForLeg2) rec.confirmDeadlineForLeg2 = Date.now() + 3000;
-        }
-        // still waiting - continue loop for other pairs
-        continue;
-      }
 
       // If we're WAITING for leg2, try to adopt Exness-provided trade as leg2
-      if (rec.status === 'WAITING_LEG2') {
+      if (rec.state === PAIR_STATE.ENTRY_IN_PROGRESS) {
+
+        if (!rec.trades?.PARTIAL?.ticket) {
+          // LEG1 not confirmed yet — cannot proceed to LEG2
+          continue;
+        }
+
 
         // ensure confirm deadline exists (give a slightly larger window)
         if (!rec.confirmDeadlineForLeg2) rec.confirmDeadlineForLeg2 = (rec.entryTimestamp || Date.now()) + 4000;
@@ -1416,7 +1049,6 @@ async function syncOpenPairsWithPositions(positions) {
         // search for candidate positions that could be leg2
         const candidate = (positions || []).find(p => {
           const brokerTicket = String(p.positionId || p.ticket || p.id || '');
-          const brokerClientId = String(p.clientId || p.orderClientId || p.meta?.clientId || '' );
           if (!brokerTicket) return false;
 
           // skip if it's the same as leg1 ticket
@@ -1425,8 +1057,6 @@ async function syncOpenPairsWithPositions(positions) {
           // Strong direct ownership: if ticket map marks this ticket as ours, accept.
           if (ticketOwnershipMap.has(brokerTicket)) return true;
 
-          // match by clientId if Exness attached one (strong)
-          if (brokerClientId && clientOrderMap.has(brokerClientId)) return true;
 
           // fallback: match by side, lot and time proximity to entryTimestamp
           // Normalize Exness broker side like POSITION_TYPE_SELL → SELL
@@ -1460,20 +1090,15 @@ async function syncOpenPairsWithPositions(positions) {
 
         if (candidate) {
           const brokerTicket = String(candidate.positionId || candidate.ticket || candidate.id || '');
-          const brokerClientId = String(candidate.clientId || candidate.orderClientId || candidate.meta?.clientId || '');
 
           console.log(`[PAIR] EXNESS-PROVIDED LEG2 adopted for ${pairId} → ${brokerTicket}`);
 
           rec.trades.TRAILING.ticket = brokerTicket;
-          rec.trades.TRAILING.clientId = brokerClientId || null;
+          ticketOwnershipMap.set(String(brokerTicket), pairId); // ✅ OWNERSHIP
+          transitionPairState(rec, PAIR_STATE.ACTIVE);
+          releaseEntryLock('entry-success');
 
-          // Ownership map
-          ticketOwnershipMap.add(brokerTicket);
-          if (brokerClientId) {
-            clientOrderMap.set(brokerClientId, brokerTicket);
-          }
 
-          rec.status = "ENTRY_COMPLETE";
           continue;  // valid inside the rec-loop
         }
 
@@ -1482,25 +1107,40 @@ async function syncOpenPairsWithPositions(positions) {
           // Place LEG2 ourselves to complete the pair
           console.log(`[PAIR] LEG2 not found within 4s for ${pairId} — placing LEG2 manually`);
           try {
-            const clientId2 = `leg2-${Date.now()}-${Math.floor(Math.random()*100000)}`;
-            const placed = await safePlaceMarketOrder(rec.side, rec.lotEach, null, null, clientId2, 2);
+            const placed = await safePlaceMarketOrder(
+              rec.side,
+              rec.lotEach,
+              rec.sl,
+              rec.tp,
+              2
+            );
+
 
             if (placed?.ticket) {
-              rec.trades.TRAILING.ticket = String(placed.ticket);
-              ticketOwnershipMap.add(String(placed.ticket));
-              rec.trades.TRAILING.clientId = String(placed.clientId || clientId2);
-              clientOrderMap.set(String(placed.clientId || clientId2), String(placed.ticket));
-              recentTickets.add(String(placed.ticket));
-              setTimeout(() => recentTickets.delete(String(placed.ticket)), 15000);
-            } else {
-              console.warn(`[PAIR] LEG2 manual placement returned no ticket for ${pairId}`);
+              const t = String(placed.ticket);
+              rec.trades.TRAILING.ticket = t;
+              ticketOwnershipMap.set(t, pairId);
+              recentTickets.add(t);
+              setTimeout(() => recentTickets.delete(t), 15000);
             }
 
-            rec.status = 'ENTRY_COMPLETE';
+            if (rec.trades?.TRAILING?.ticket) {
+              transitionPairState(rec, PAIR_STATE.ACTIVE);
+              releaseEntryLock('entry-success');
+
+            } else {
+              console.warn(
+                `[LEG2] Failed to place LEG2 for ${pairId} — staying in ENTRY_IN_PROGRESS`
+              );
+              releaseEntryLock('entry-failed');
+
+            }
+
+            
             continue;
           } catch (err) {
             console.error(`[PAIR] Failed to place LEG2 manually for ${pairId}:`, err.message || err);
-            rec.status = 'ENTRY_COMPLETE'; // avoid stuck state
+            releaseEntryLock('entry-failed');
             continue;
           }
         }
@@ -1510,7 +1150,7 @@ async function syncOpenPairsWithPositions(positions) {
       }
 
 
-      // If status is ENTRY_COMPLETE or any other, keep backward-compatible validations below
+      // If state is ENTRY_COMPLETE or any other, keep backward-compatible validations below
       const partialTicket  = rec.trades?.PARTIAL?.ticket;
       const trailingTicket = rec.trades?.TRAILING?.ticket;
 
@@ -1549,181 +1189,17 @@ async function syncOpenPairsWithPositions(positions) {
           ticketOwnershipMap.delete(String(trailingTicket));
           ticketOwnershipMap.delete(String(partialTicket));
 
-          delete openPairs[pairId];
+          finalizePair(pairId, "SYNC_CLOSED");
         }
         continue;
       }
 
-      // Refresh entry price if broker has it (existing behaviour)
-      try {
-        const liveTicket =
-          rec.trades.TRAILING?.ticket ||
-          rec.trades.PARTIAL?.ticket;
-
-        if (liveTicket) {
-          const posObj = (positions || []).find(p =>
-            String(p.positionId) === String(liveTicket) ||
-            String(p.ticket) === String(liveTicket) ||
-            String(p.id) === String(liveTicket)
-          );
-
-          if (posObj && posObj.price && posObj.price > 0) {
-            const oldEntry = rec.entryPrice;
-            const newEntry = posObj.price;
-
-            if (oldEntry !== newEntry) {
-              rec.entryPrice = newEntry;
-
-              if (!rec.breakEvenActive && !rec.partialClosed) {
-                const SL_DISTANCE = 8;
-                rec.internalSL = rec.side === "BUY"
-                  ? newEntry - SL_DISTANCE
-                  : newEntry + SL_DISTANCE;
-              }
-
-              console.log(
-                `[ENTRY REFRESH] ${pairId} entry updated: ${oldEntry} → ${newEntry}, internalSL=${rec.internalSL}`
-              );
-            }
-          }
-        }
-      } catch (err) {
-        console.log(`[ENTRY REFRESH ERROR] ${pairId}`, err.message);
-      }
     }
 
   } catch (err) {
     console.error('[SYNC] Error syncing positions:', err.message || err);
   }
 }
-
-
-
-
-
-// --------------------- MONITOR: light backup & sync layer ---------------------
-async function monitorOpenTrades() {
-  try {
-    // 1️⃣ Refresh current broker positions and sync local state
-    const positions = await safeGetPositions();
-    await syncOpenPairsWithPositions(positions);
-
-    // 2️⃣ Light safety pass for each pair
-    for (const [pairId, rec] of Object.entries(openPairs)) {
-      const side = rec.side;
-      const partial = rec.trades?.PARTIAL;
-      const trailing = rec.trades?.TRAILING;
-
-      // If both legs are gone, cleanup
-      if (!partial?.ticket && !trailing?.ticket) {
-        delete openPairs[pairId];
-        continue;
-      }
-
-      // 3️⃣ Refresh ENTRY PRICE & adjust internal SL baseline
-      try {
-        // Choose any existing leg to reference (prefer trailing leg)
-        const legTicket =
-          rec.trades?.TRAILING?.ticket ||
-          rec.trades?.PARTIAL?.ticket;
-
-        if (legTicket) {
-          const posObj = (positions || []).find(p =>
-            p.positionId === legTicket ||
-            p.ticket === legTicket ||
-            p.id === legTicket
-          );
-
-          if (posObj && posObj.price && posObj.price > 0) {
-            const oldEntry = rec.entryPrice;
-            const newEntry = posObj.price;
-
-            if (oldEntry !== newEntry) {
-              rec.entryPrice = newEntry;
-
-              // Only adjust internal SL baseline if BE is not yet active
-              // and partial is not yet closed
-              if (!rec.breakEvenActive && !rec.partialClosed) {
-                const SL_DISTANCE = 8; // must match your default
-
-                if (rec.side === "BUY") {
-                  rec.internalSL = newEntry - SL_DISTANCE;
-                } else {
-                  rec.internalSL = newEntry + SL_DISTANCE;
-                }
-              }
-
-              console.log(
-                `[ENTRY REFRESH] ${pairId} entry updated: ${oldEntry} → ${newEntry}, internalSL=${rec.internalSL}`
-              );
-            }
-          }
-        }
-      } catch (err) {
-        console.log(`[ENTRY REFRESH ERROR] ${pairId}`, err.message);
-      }
-
-      // 4️⃣ Fetch latest price
-      const price = await safeGetPrice(SYMBOL);
-      if (!price || price.bid == null || price.ask == null) continue;
-
-      const current = side === 'BUY' ? price.bid : price.ask;
-
-      //----------------------------------------------------------
-      // TIGHT SL OVERRIDE WHEN OPPOSITE MATURED TRADE EXISTS
-      //----------------------------------------------------------
-      try {
-          // Check if there exists ANY opposite matured trade
-          const oppositeMaturedExists = Object.values(openPairs).some(other => {
-              return other.pairId !== rec.pairId &&
-                    other.side !== rec.side &&
-                    other.partialClosed === true &&
-                    other.trades?.TRAILING?.ticket;
-          });
-
-          if (oppositeMaturedExists && !rec.partialClosed && !rec.breakEvenActive) {
-
-              rec.tightSLMode = true;   // <-- NEW FLAG
-              // Apply tight override SL only before BE activates
-              const TIGHT_SL = 5;
-
-              const desiredSL = rec.side === "BUY"
-                  ? rec.entryPrice - TIGHT_SL
-                  : rec.entryPrice + TIGHT_SL;
-
-              // Only tighten if it's STRICTLY tighter than current SL
-              if (!rec.internalSL || 
-                  (rec.side === "BUY"  && desiredSL > rec.internalSL) ||
-                  (rec.side === "SELL" && desiredSL < rec.internalSL)) {
-
-                  rec.internalSL = desiredSL;
-
-                  console.log(`[MONITOR] Tight SL override applied to ${pairId}: ${desiredSL}`);
-                  const safePairId = md2(pairId);
-                  await sendTelegram(
-                      `⚠️ *TIGHT SL APPLIED*\nPair: ${safePairId}\nReason: Opposite matured trade exists\nSL: ${desiredSL}`,
-                      { parse_mode: 'MarkdownV2' }
-                  );
-              }
-          }
-      } catch (err) {
-          console.log(`[MONITOR] Tight SL override error for ${pairId}:`, err.message);
-      }
-
-
-
-      // --- NOTE ---
-      // This monitor layer remains intentionally light.
-      // All the heavy lifting (partial/BE/trailing/SL hit)
-      // is already handled inside processTickForOpenPairs().
-    }
-
-  } catch (err) {
-    console.error('[MONITOR] error:', err.message || err);
-  }
-}
-
-
 
 
 
@@ -1874,6 +1350,20 @@ async function startBot() {
         console.warn('[POLL] error while polling tick:', e.message || e);
       }
     }, pollIntervalMs);
+
+    setInterval(async () => {
+      try {
+        const positions = await safeGetPositions();
+
+        await syncOpenPairsWithPositions(positions);
+
+        checkEntryTimeouts(); // ✅ CALL IT HERE
+
+      } catch (e) {
+        console.error('[WATCHDOG] Error:', e.message);
+      }
+    }, 3000); // every 3 seconds
+
 
     // --- unified watchdog (non-overlapping)
     setInterval(async () => {
@@ -2039,24 +1529,13 @@ async function handleTradingViewSignal(req, res) {
     if (parsed.kind === "ENTRY") {
 
 
-      // --------------------------------------
-      // RAPID-FIRE ENTRY LOCK (2 seconds)
-      // --------------------------------------
-      if (entryProcessingLock) {
-        console.log("[ENTRY] ⛔ Blocked: Rapid-fire entry detected");
-        return res.status(429).json({
-          ok: false,
-          error: "Another entry is being processed. Try again."
-        });
+      if (isEntryLocked()) {
+        console.log('[ENTRY] ⛔ Blocked — entry lock active');
+        return;
       }
 
-      // Activate lock
-      entryProcessingLock = true;
+      acquireEntryLock('entry-processing');
 
-      // Auto-clear after 2 seconds
-      setTimeout(() => {
-        entryProcessingLock = false;
-      }, 2000);
 
 
       const category = normalizeCategory(parsed.type, parsed.side);
@@ -2075,6 +1554,7 @@ async function handleTradingViewSignal(req, res) {
 
       if (!zone3 || !zone5) {
         console.log(`[ENTRY] ⛔ Blocked: Approval zones not satisfied for ${category}`);
+        releaseEntryLock('entry-rejected');
         return res.status(403).json({
             ok: false,
             error: `Approval zones not satisfied: 3M=${zone3}, 5M=${zone5}`
@@ -2084,6 +1564,7 @@ async function handleTradingViewSignal(req, res) {
 
       if (!category) {
         console.log("[ENTRY] ❌ Invalid category");
+        releaseEntryLock('entry-rejected');
         return res.status(400).json({ ok: false, error: "Invalid category" });
       }
 
@@ -2092,10 +1573,10 @@ async function handleTradingViewSignal(req, res) {
 
       if (countCategory(category) >= MAX_PER_CATEGORY) {
         console.log(`[ENTRY] ❌ Blocked: Category limit reached for ${category}`);
+        releaseEntryLock('entry-rejected');
         return res.status(429).json({ ok: false, error: `Max trades reached for ${category}` });
       }
 
-      entryInProgress = true;
 
 
       // Mark idempotency ID early
@@ -2106,24 +1587,45 @@ async function handleTradingViewSignal(req, res) {
       const totalLot = await internalLotSizing();
       console.log("[ENTRY] Lot decided:", totalLot);
 
-      // ---- PLACE PAIRED ORDER ----
-      console.log("[ENTRY] Placing paired order...");
-      const prePair = await placePairedOrder(side, totalLot, null, null);
-
-      if (!prePair) {
-        console.log("[ENTRY] ❌ Order failed → removing signalId & exiting");
-        if (signalId) processedSignalIds.delete(signalId);
-        entryInProgress = false;
-        return res.status(500).json({ ok: false, error: "Entry failed" });
+      // 1️⃣ Get a price reference FIRST
+      const priceRef = await safeGetPrice(SYMBOL);
+      if (!priceRef) {
+        releaseEntryLock('price-unavailable');
+        return res.status(500).json({ ok: false, error: 'No price available' });
       }
 
+      const entryRef =
+        side === 'BUY' ? priceRef.ask : priceRef.bid;
 
-      // ---- SL CALCULATION ----
-      const { sl } = await internalSLTPLogic(side, prePair.entryPrice);
-      console.log(`[ENTRY] SL calculated: ${sl}`);
+      // 2️⃣ Calculate SL / TP
+      const sltp = calculateDynamicSLTP(side, entryRef);
+      if (!sltp) {
+        releaseEntryLock('sl-tp-failed');
+        return res.status(500).json({ ok: false });
+      }
 
+      const { sl, tp, slDistance } = sltp;
+
+      // 3️⃣ Place paired order WITH SL/TP
+      const prePair = await placePairedOrder(
+        side,
+        totalLot,
+        sl,
+        tp
+      );
+
+      
+            
+      if (!prePair) {
+        console.log("[ENTRY] ❌ Order failed → removing signalId & exiting");
+        releaseEntryLock('entry-rejected');
+        if (signalId) processedSignalIds.delete(signalId);
+        return res.status(500).json({ ok: false, error: "Entry failed" });
+      }
+      
       openPairs[prePair.pairId].sl = sl;
-      openPairs[prePair.pairId].tp = null;
+      openPairs[prePair.pairId].tp = tp;
+      openPairs[prePair.pairId].slDistance = slDistance;
       openPairs[prePair.pairId].category = category;
       openPairs[prePair.pairId].signalId = signalId || null;
 
@@ -2144,9 +1646,6 @@ async function handleTradingViewSignal(req, res) {
 
 
 
-
-      entryInProgress = false;
-
       console.log("[ENTRY] ✔ ENTRY completed\n");
 
       return res.status(200).json({ ok: true, pair: openPairs[prePair.pairId] });
@@ -2166,6 +1665,13 @@ async function handleTradingViewSignal(req, res) {
       if (signalId) processedSignalIds.add(signalId);
 
       for (const [pairId, rec] of toClose) {
+
+        if (rec.state === PAIR_STATE.CLOSED || rec.state === PAIR_STATE.CLOSING) {
+          continue;
+        }
+
+        transitionPairState(rec, PAIR_STATE.CLOSING, "MANUAL_CLOSE");
+
         console.log(`[CLOSE] Closing pairId=${pairId}`);
 
         for (const key of ["PARTIAL", "TRAILING"]) {
@@ -2179,7 +1685,7 @@ async function handleTradingViewSignal(req, res) {
           }
         }
 
-        rec.awaitingFinalClose = true;
+        finalizePair(pairId, "MANUAL_CLOSE");
 
         const safePairId = md2(pairId);
 
