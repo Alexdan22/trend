@@ -114,6 +114,7 @@ const ENTRY_LOCK = {
 const ENTRY_LOCK_TIMEOUT_MS = 30 * 1000; // 30 seconds hard safety
 const USE_BROKER_SLTP = true; // 🔒 default OFF
 const MAX_TP_DISTANCE = 30; // XAUUSD dollars
+const MAX_SL_DISTANCE = 10; // XAUUSD dollars
 
 
 
@@ -412,12 +413,22 @@ function calculateDynamicSLTP(side, entryPrice) {
   const retracement = Math.abs(high - low);
 
   // --- 3️⃣ SL distance ---
-  const slDistance = Math.max(
+  const rawSlDistance = Math.max(
     retracement * 0.5,
     atr * ATR_TRIGGER_MULTIPLIER
   );
 
-  // --- 4️⃣ TP multiplier (same logic as main.js) ---
+  // --- SL CAP OVERRIDE ---
+  const SL_CAP = MAX_SL_DISTANCE; // e.g. 30 (same unit you already use)
+
+  let slDistance = rawSlDistance;
+
+  if (slDistance > SL_CAP) {
+    slDistance = SL_CAP;
+  }
+
+
+  // --- 4️⃣ TP multiplier ---
   const tpRR = 1.5;
   
   let sl, tp;
@@ -581,6 +592,7 @@ async function placePairedOrder(side, totalLot, slPrice, tpPrice, riskPercent) {
       closingReason: null,
       closedAt: null,
       entryTimestamp,
+      leg2Attempted: false,
       confirmDeadlineForLeg2: entryTimestamp + 3000, // 3 seconds to allow Exness auto-create leg2
       signalId: null // will be set by caller
     };
@@ -1047,45 +1059,69 @@ async function syncOpenPairsWithPositions(positions) {
           const brokerTicket = String(p.positionId || p.ticket || p.id || '');
           if (!brokerTicket) return false;
 
-          // skip if it's the same as leg1 ticket
-          if (rec.trades?.PARTIAL?.ticket && brokerTicket === String(rec.trades.PARTIAL.ticket)) return false;
+          // ❌ Never reuse LEG1 ticket
+          if (
+            rec.trades?.PARTIAL?.ticket &&
+            brokerTicket === String(rec.trades.PARTIAL.ticket)
+          ) {
+            return false;
+          }
 
-          // Strong direct ownership: if ticket map marks this ticket as ours, accept.
-          if (ticketOwnershipMap.has(brokerTicket)) return true;
+          // ---------- HARD FILTERS (MANDATORY) ----------
 
-
-          // fallback: match by side, lot and time proximity to entryTimestamp
-          // Normalize Exness broker side like POSITION_TYPE_SELL → SELL
-          const rawSide = String(p.type || p.side || "").toUpperCase();
-          const brokerSide = rawSide.includes("SELL") ? "SELL"
-                          : rawSide.includes("BUY") ? "BUY"
-                          : rawSide;
+          // Normalize broker side
+          const rawSide = String(p.type || p.side || '').toUpperCase();
+          const brokerSide = rawSide.includes('SELL')
+            ? 'SELL'
+            : rawSide.includes('BUY')
+            ? 'BUY'
+            : rawSide;
 
           const recSide = String(rec.side).toUpperCase();
-          const matchSide = (brokerSide === recSide);
+          if (brokerSide !== recSide) return false; // 🚫 SIDE MUST MATCH
 
+          // Parse volume robustly
+          const volume = Number(
+            p.volume ?? p.lots ?? p.original_position_size ?? 0
+          );
+          const expectedLot = Number(
+            rec.lotEach || rec.trades?.PARTIAL?.lot || 0
+          );
 
-          // parse volume robustly
-          const volume = Number(p.volume ?? p.lots ?? p.original_position_size ?? 0);
-          const matchLot = !isNaN(volume) && Math.abs(volume - Number(rec.lotEach || rec.trades?.PARTIAL?.lot || 0)) < 0.0001;
+          if (isNaN(volume) || Math.abs(volume - expectedLot) >= 0.0001) {
+            return false; // 🚫 LOT MUST MATCH
+          }
 
-          // open time detection (robust)
+          // ---------- SOFT FILTERS (PREFERENCE) ----------
+
+          // Strong ownership preference (only AFTER side+lot match)
+          if (ticketOwnershipMap.has(brokerTicket)) {
+            return true;
+          }
+
+          // Time proximity check
           let openTime = null;
           if (p.openingTime) openTime = new Date(p.openingTime).getTime();
           else if (p.opening_time_utc) openTime = new Date(p.opening_time_utc).getTime();
           else if (p.time) openTime = new Date(p.time).getTime();
           else if (p.updateTime) openTime = new Date(p.updateTime).getTime();
 
-          // If openTime missing, allow match based on side+lot alone (cautious acceptance).
-          // If openTime present, require it to be within 4 seconds of entryTimestamp.
-          const dt = openTime ? Math.abs(openTime - (rec.entryTimestamp || Date.now())) : null;
-          const timeOk = openTime ? (dt <= 4000) : true;
+          // If openTime missing, allow cautiously
+          if (!openTime) return true;
 
-          return matchSide && matchLot && timeOk;
+          const dt = Math.abs(openTime - (rec.entryTimestamp || Date.now()));
+          return dt <= 4000;
         });
+
 
         if (candidate) {
           const brokerTicket = String(candidate.positionId || candidate.ticket || candidate.id || '');
+
+          if (brokerTicket === String(rec.trades?.PARTIAL?.ticket)) {
+            console.log(`[PAIR] Ignoring broker ticket ${brokerTicket} — same as LEG1`);
+            continue;
+          }
+
 
           console.log(`[PAIR] EXNESS-PROVIDED LEG2 adopted for ${pairId} → ${brokerTicket}`);
 
@@ -1101,7 +1137,20 @@ async function syncOpenPairsWithPositions(positions) {
         // LEG2 not found — check deadline
         if (Date.now() >= (rec.confirmDeadlineForLeg2 || 0)) {
           // Place LEG2 ourselves to complete the pair
-          console.log(`[PAIR] LEG2 not found within 4s for ${pairId} — placing LEG2 manually`);
+
+          if (rec.leg2Attempted) {
+            console.log(
+              `[PAIR] LEG2 fallback already attempted — skipping for ${pairId}`
+            );
+            continue;
+          }
+
+          rec.leg2Attempted = true;
+
+          console.log(
+            `[PAIR] LEG2 not found within timeout — placing LEG2 manually for ${pairId}`
+          );
+
           try {
             const placed = await safePlaceMarketOrder(
               rec.side,
