@@ -1676,18 +1676,23 @@ async function handleTradingViewSignal(req, res) {
 
       
       const safeCategory = category.replace(/[^a-zA-Z0-9 ]/g, '');
-      const safePairId = md2(prePair.pairId);
+      const entryPrice = Number(prePair.entryPrice);
+      const slPrice = Number(sl);
+      const tpPrice = Number(tp);
+      const lot = prePair.totalLot;
 
-
-      // ---- TELEGRAM ----
       await sendTelegram(
-        `🟢 *ENTRY* ${safeCategory}\n` +
-        `🎫 ${safePairId}\n` +
-        `📈 ${side}\n` +
-        `Entry: ${prePair.entryPrice}\n` +
-        `SL: ${sl}`,
-        { parse_mode: "MarkdownV2" }
+        `${side === 'BUY' ? '🟢 BUY Trade Placed' : '🔴 SELL Trade Placed'}\n` +
+        `━━━━━━━━━━━━━━━\n` +
+        `📈 Category: ${safeCategory}\n` +
+        `💰 Lot: ${lot}\n` +
+        `🎯 Entry: ${entryPrice.toFixed(2)}\n` +
+        `📊 SL: ${slPrice.toFixed(2)}\n` +
+        `🎯 TP: ${tpPrice.toFixed(2)}\n` +
+        `📅 Time: ${new Date().toLocaleTimeString()} UTC`,
+        { parse_mode: 'MarkdownV2' }
       );
+
 
 
 
