@@ -946,16 +946,6 @@ async function handleTick(tick) {
     }
 
 
-    // --- Backup monitor every 15 seconds ---
-    if (Date.now() - lastTradeMonitorRun > 15000) {
-      lastTradeMonitorRun = Date.now();
-      try {
-        await monitorOpenTrades();
-      } catch (err) {
-        console.error('[MONITOR ERROR]', err.message || err);
-      }
-    }
-
   } catch (err) {
     console.warn('[TICK] Error in handleTick:', err.message || err);
   }
