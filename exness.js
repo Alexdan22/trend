@@ -361,9 +361,18 @@ function parseSignalString(signalStr) {
     return { kind: 'ENTRY', type: parts[0], side: parts[1] };
   }
 
-  if (parts.length === 2 && (parts[0] === 'BUY' || parts[0] === 'SELL') && parts[1] === 'CLOSE') {
-    return { kind: 'CLOSE', side: parts[0] };
+  if (
+    parts.length === 3 &&
+    (parts[0] === 'T' || parts[0] === 'R') &&
+    (parts[1] === 'BUY' || parts[1] === 'SELL') &&
+    parts[2] === 'CLOSE'
+  ) {
+    return {
+      kind: 'CLOSE',
+      category: `${parts[0]}_${parts[1]}` // T_BUY, R_SELL, etc
+    };
   }
+
 
   return null;
 }
@@ -749,6 +758,46 @@ async function processTickForOpenPairs(price) {
         }
       }
 
+      // ---------- STOP-LOSS HIT ----------
+      const effectiveSL = rec.internalSL ?? rec.sl;
+
+      if (effectiveSL) {
+
+        const slHit =
+          (side === 'BUY'  && current <= effectiveSL) ||
+          (side === 'SELL' && current >= effectiveSL);
+
+        if (slHit) {
+
+          console.log(`[PAIR] ⛔ STOP-LOSS HIT → closing pair (${pairId})`);
+
+          transitionPairState(rec, PAIR_STATE.CLOSING, 'STOP_LOSS');
+
+          // Close both legs defensively
+          for (const key of ['PARTIAL', 'TRAILING']) {
+            const t = rec.trades[key];
+            if (t?.ticket) {
+              await safeClosePosition(t.ticket, t.lot);
+              rec.trades[key].ticket = null;
+            }
+          }
+
+          const safePairId = md2(pairId);
+          await sendTelegram(
+            `⛔ *STOP-LOSS HIT — LOSS CLOSED*\n` +
+            `${safePairId}\n` +
+            `Side: ${side}\n` +
+            `SL: ${effectiveSL.toFixed(2)}\n` +
+            `Entry: ${rec.entryPrice.toFixed(2)}`,
+            { parse_mode: 'MarkdownV2' }
+          );
+
+          finalizePair(pairId, 'STOP_LOSS');
+          continue;
+        }
+      }
+
+
 
       // ---------- BREAK-EVEN HIT ----------
       if (rec.breakEvenActive && rec.internalSL && trailingRec?.ticket) {
@@ -1064,6 +1113,15 @@ async function syncOpenPairsWithPositions(positions) {
             rec.trades?.PARTIAL?.ticket &&
             brokerTicket === String(rec.trades.PARTIAL.ticket)
           ) {
+            return false;
+          }
+
+          // 🚫 HARD BLOCK: ticket already owned by another pair
+          const ownedBy = ticketOwnershipMap.get(brokerTicket);
+          if (ownedBy && ownedBy !== rec.pairId) {
+            console.log(
+              `[ADOPT] Skipping ticket ${brokerTicket} — owned by ${ownedBy}`
+            );
             return false;
           }
 
@@ -1702,15 +1760,17 @@ async function handleTradingViewSignal(req, res) {
     }
 
     // ================================
-    //           CLOSE LOGIC
+    //           CLOSE LOGIC (CATEGORY)
     // ================================
     if (parsed.kind === "CLOSE") {
-      const side = parsed.side;
-      console.log(`[CLOSE] Received CLOSE signal for side=${side}`);
 
-      const toClose = Object.entries(openPairs).filter(([_, rec]) => rec.side === side);
+      const category = parsed.category;
+      console.log(`[CLOSE] Received CLOSE signal for category=${category}`);
 
-      console.log(`[CLOSE] Found ${toClose.length} pairs to close`);
+      const toClose = Object.entries(openPairs)
+        .filter(([_, rec]) => rec.category === category);
+
+      console.log(`[CLOSE] Found ${toClose.length} pairs to close for ${category}`);
 
       if (signalId) processedSignalIds.add(signalId);
 
@@ -1722,7 +1782,7 @@ async function handleTradingViewSignal(req, res) {
 
         transitionPairState(rec, PAIR_STATE.CLOSING, "MANUAL_CLOSE");
 
-        console.log(`[CLOSE] Closing pairId=${pairId}`);
+        console.log(`[CLOSE] Closing pairId=${pairId} (category=${category})`);
 
         for (const key of ["PARTIAL", "TRAILING"]) {
           const t = rec.trades[key];
@@ -1740,17 +1800,22 @@ async function handleTradingViewSignal(req, res) {
         const safePairId = md2(pairId);
 
         await sendTelegram(
-          `🔴 *CLOSE SIGNAL*\nClosed: ${safePairId} (${side})`,
+          `🔴 *CATEGORY CLOSE*\n` +
+          `Category: ${category}\n` +
+          `Pair: ${safePairId}`,
           { parse_mode: "MarkdownV2" }
         );
-
-
 
         console.log(`[CLOSE] ✔ Pair closed: ${pairId}`);
       }
 
-      return res.status(200).json({ ok: true, closed: toClose.length });
+      return res.status(200).json({
+        ok: true,
+        category,
+        closed: toClose.length
+      });
     }
+
 
     console.log("[WEBHOOK] ❌ Unknown signal type");
     return res.status(400).json({ ok: false, error: "Unknown signal" });
