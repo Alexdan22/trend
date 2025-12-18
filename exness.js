@@ -1734,14 +1734,17 @@ async function handleTradingViewSignal(req, res) {
 
       
       const safeCategory = category.replace(/[^a-zA-Z0-9 ]/g, '');
+      const safePairId = md2(prePair.pairId);
       const entryPrice = Number(prePair.entryPrice);
       const slPrice = Number(sl);
       const tpPrice = Number(tp);
       const lot = prePair.totalLot;
 
+
       await sendTelegram(
         `${side === 'BUY' ? '🟢 BUY Trade Placed' : '🔴 SELL Trade Placed'}\n` +
         `━━━━━━━━━━━━━━━\n` +
+        `🆔 Pair: ${safePairId}\n` +
         `📈 Category: ${safeCategory}\n` +
         `💰 Lot: ${lot}\n` +
         `🎯 Entry: ${entryPrice.toFixed(2)}\n` +
@@ -1750,6 +1753,7 @@ async function handleTradingViewSignal(req, res) {
         `📅 Time: ${new Date().toLocaleTimeString()} UTC`,
         { parse_mode: 'MarkdownV2' }
       );
+
 
 
 
