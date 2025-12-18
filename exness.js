@@ -114,7 +114,7 @@ const ENTRY_LOCK = {
 const ENTRY_LOCK_TIMEOUT_MS = 30 * 1000; // 30 seconds hard safety
 const USE_BROKER_SLTP = true; // 🔒 default OFF
 const MAX_TP_DISTANCE = 30; // XAUUSD dollars
-const MAX_SL_DISTANCE = 10; // XAUUSD dollars
+const MAX_SL_DISTANCE = 8; // XAUUSD dollars
 
 
 
@@ -438,7 +438,7 @@ function calculateDynamicSLTP(side, entryPrice) {
 
 
   // --- 4️⃣ TP multiplier ---
-  const tpRR = 1.5;
+  const tpRR = 2;
   
   let sl, tp;
 
