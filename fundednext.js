@@ -12,7 +12,7 @@ const bodyParser = require('body-parser');
 const fs = require('fs');
 const RAW_ORDERS_LOG = '/tmp/raw_order_responses.log';
 
-const EXNESS_PORT = process.env.EXNESS_PORT || 5002;
+const FUNDEDNEXT_PORT = process.env.FUNDEDNEXT_PORT || 5001;
 
 // Idempotency
 const processedSignalIds = new Set();
@@ -1840,8 +1840,8 @@ function startWebhookServer() {
   app.post("/webhook", handleTradingViewSignal);
   app.get("/_health", (_, res) => res.send("OK"));
 
-  app.listen(EXNESS_PORT, () =>
-    console.log(`[WEBHOOK] Ready on port ${EXNESS_PORT}`)
+  app.listen(FUNDEDNEXT_PORT, () =>
+    console.log(`[WEBHOOK] Ready on port ${FUNDEDNEXT_PORT}`)
   );
 }
 
