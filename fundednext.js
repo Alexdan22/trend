@@ -21,6 +21,9 @@ const MAX_PER_CATEGORY = 1;
 const SIDE_COOLDOWN_MS = 15 * 60 * 1000;
 const ENTRY_TIMEOUT_MS = 20_000; // 20 seconds (safe for Exness)
 const lastEntryTime = { BUY: 0, SELL: 0 };
+const FALLBACK_SL_DISTANCE = 4;   // XAUUSD dollars
+const FALLBACK_TP_DISTANCE = 8;   // XAUUSD dollars
+
 
 
 
@@ -383,6 +386,7 @@ async function internalLotSizing() {
 }
 
 // --- ATR computed on 5m candles (true range average) ---
+
 function computeATR_M5(period = ATR_PERIOD) {
   // need at least (period + 1) candles to compute TRs using prev.close
   if (candles_5m.length < period + 1) return 0;
@@ -1076,7 +1080,7 @@ async function syncOpenPairsWithPositions(positions) {
       // extended grace
       if (rec.openedAt) {
         const ageMs = Date.now() - new Date(rec.openedAt).getTime();
-        const GRACE_MS = 15000;
+        const GRACE_MS = 5000;
         if (!rec.firstSyncDone) {
           if (ageMs < GRACE_MS) {
             // still in initial grace period -> skip heavy checks
@@ -1224,6 +1228,7 @@ async function syncOpenPairsWithPositions(positions) {
               rec.trades.TRAILING.ticket = t;
               ticketOwnershipMap.set(t, pairId);
               recentTickets.add(t);
+              rec.leg2PlacedAt = Date.now();
               setTimeout(() => recentTickets.delete(t), 15000);
             }
 
@@ -1269,8 +1274,21 @@ async function syncOpenPairsWithPositions(positions) {
         }
       }
 
+      const LEG2_GRACE_MS = 5000;
+
+      if (
+        rec.trades?.TRAILING?.ticket &&
+        rec.leg2PlacedAt &&
+        Date.now() - rec.leg2PlacedAt < LEG2_GRACE_MS
+      ) {
+        // Still waiting for broker to reflect LEG2
+        continue;
+      }
+
+
       // TRAILING missing → same rule
       if (trailingTicket && !brokerTickets.has(trailingTicket)) {
+        
         if (!rec.firstSyncDone) {
           console.log(`[SYNC] TRAILING missing but still in grace → ignoring (${pairId})`);
         } else {
@@ -1701,11 +1719,30 @@ async function handleTradingViewSignal(req, res) {
         side === 'BUY' ? priceRef.ask : priceRef.bid;
 
       // 2️⃣ Calculate SL / TP
-      const sltp = calculateDynamicSLTP(side, entryRef);
+      let sltp = calculateDynamicSLTP(side, entryRef);
+      let usingFallback = false;
+
       if (!sltp) {
-        releaseEntryLock('sl-tp-failed');
-        return res.status(500).json({ ok: false });
+        // 🚧 INDICATOR WARM-UP FALLBACK
+        usingFallback = true;
+
+        if (side === 'BUY') {
+          sltp = {
+            sl: entryRef - FALLBACK_SL_DISTANCE,
+            tp: entryRef + FALLBACK_TP_DISTANCE,
+            slDistance: FALLBACK_SL_DISTANCE
+          };
+        } else {
+          sltp = {
+            sl: entryRef + FALLBACK_SL_DISTANCE,
+            tp: entryRef - FALLBACK_TP_DISTANCE,
+            slDistance: FALLBACK_SL_DISTANCE
+          };
+        }
+
+        console.warn('[WARMUP] Using fallback SL/TP — indicators not ready');
       }
+
 
       const { sl, tp, slDistance } = sltp;
 
@@ -1800,12 +1837,12 @@ async function handleTradingViewSignal(req, res) {
         }
 
         finalizePair(pairId, "MANUAL_CLOSE");
-
+        const safeCategory = category.replace(/[^a-zA-Z0-9 ]/g, '');
         const safePairId = md2(pairId);
 
         await sendTelegram(
           `🔴 *CATEGORY CLOSE*\n` +
-          `Category: ${category}\n` +
+          `Category: ${safeCategory}\n` +
           `Pair: ${safePairId}`,
           { parse_mode: "MarkdownV2" }
         );
