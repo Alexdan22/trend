@@ -1883,6 +1883,15 @@ function startWebhookServer() {
 
 startWebhookServer();
 
+process.on("uncaughtException", err => {
+  console.error("[FATAL] Uncaught Exception:", err.stack || err);
+  process.exit(1);
+});
+
+process.on("unhandledRejection", err => {
+  console.error("[FATAL] Unhandled Rejection:", err);
+  process.exit(1);
+});
 
  
 
