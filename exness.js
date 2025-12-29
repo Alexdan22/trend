@@ -5,12 +5,24 @@
 // NOTE: Test on demo before running live
 
 require('dotenv').config()
+
+const _setTimeout = global.setTimeout;
+
+global.setTimeout = function (fn, delay, ...args) {
+  if (typeof delay !== 'number' || !Number.isFinite(delay) || delay < 0) {
+    console.error('[TIMER-TRACE] Invalid delay passed to setTimeout:', delay);
+    console.error('[TIMER-TRACE] Call stack:\n', new Error().stack);
+  }
+  return _setTimeout(fn, delay, ...args);
+};
+
 const MetaApi = require('metaapi.cloud-sdk').default;
-const { setTimeout: delay } = require('timers/promises');
 const express = require('express');
 const bodyParser = require('body-parser');
 const fs = require('fs');
 const RAW_ORDERS_LOG = '/tmp/raw_order_responses.log';
+const { connectDB } = require("./db");
+const { loadOpenPairs, saveTrade } = require("./models");
 
 const EXNESS_PORT = process.env.EXNESS_PORT || 5002;
 
@@ -79,12 +91,18 @@ function md2(text) {
     .replace(/-/g, '\\-');
 }
 
+function delay(ms) {
+  return new Promise(resolve => setTimeout(resolve, ms));
+}
+
 
 
 
 // --------------------- STATE ---------------------
 let api, account, connection;
 let accountBalance = 0;
+let streamingInitializing = false;
+
 
 // --- INTERNAL CANDLES (for ATR & other features) ---
 let candles_1m = [];   // array of {time, open, high, low, close}
@@ -237,7 +255,7 @@ function parseOrderResponse(res) {
   return { ticket};
 }
 
-function transitionPairState(rec, nextState, reason = null) {
+async function transitionPairState(rec, nextState, reason = null) {
   if (!rec || !rec.state) return false;
 
   // terminal guard
@@ -267,11 +285,39 @@ function transitionPairState(rec, nextState, reason = null) {
   if (nextState === PAIR_STATE.CLOSED) {
     rec.closedAt = Date.now();
   }
+  const { updatePair } = require("./models");
+  await updatePair(rec.pairId, {
+    state: rec.state,
+    closingReason: rec.closingReason ?? null
+  });
+
 
   return true;
 }
 
-function finalizePair(pairId, reason) {
+function buildTradeSnapshot(rec) {
+  const pnl = rec.realizedPnL; // or your existing calculation
+
+  return {
+    tradeId: rec.pairId,
+    accountId: rec.accountId,
+    userId: rec.userId,
+    side: rec.side,
+    category: rec.category,
+    symbol: rec.symbol,
+    entryPrice: rec.entryPrice,
+    exitPrice: rec.exitPrice,
+    lot: rec.totalLot,
+    grossPnL: pnl,
+    netPnL: pnl,
+    openedAt: rec.openedAt,
+    closedAt: new Date(),
+    durationSec: Math.floor((Date.now() - rec.openedAt.getTime()) / 1000),
+    result: pnl > 0 ? "WIN" : pnl < 0 ? "LOSS" : "BE"
+  };
+}
+
+async function finalizePair(pairId, reason) {
   const rec = openPairs[pairId];
   if (!rec) return;
 
@@ -290,6 +336,11 @@ function finalizePair(pairId, reason) {
   if (trailingTicket) {
     ticketOwnershipMap.delete(String(trailingTicket));
   }
+
+  const { finalizePairDB } = require("./models");
+  await finalizePairDB(pairId, reason);
+  saveTrade(buildTradeSnapshot(rec))
+
 
   delete openPairs[pairId];
 
@@ -351,6 +402,23 @@ function checkEntryTimeouts() {
     releaseEntryLock('entry-timeout-abandon');
   }
 }
+
+async function canPlaceTrade(accountId) {
+  const { getAccountById, getUserByUserId } = require("./models");
+
+  const account = await getAccountById(accountId);
+  if (!account) return false;
+
+  const user = await getUserByUserId(account.userId);
+  if (!user) return false;
+
+  return (
+    user.enabled === true &&
+    account.enabled === true &&
+    account.userPaused === false
+  );
+}
+
 
 
 
@@ -1580,6 +1648,7 @@ async function startBot() {
 }
 
 
+
 startBot().catch(err => console.error('BOT start failed:', err));
 
 
@@ -1681,6 +1750,20 @@ async function handleTradingViewSignal(req, res) {
         });
       }
 
+      const accountId = process.env.METAAPI_ACCOUNT_ID; // or mapped account
+
+      const allowed = await canPlaceTrade(accountId);
+
+      if (!allowed) {
+        console.log("[ENTRY] ⛔ Blocked by account/user state");
+        releaseEntryLock('entry-rejected');
+        return res.status(403).json({
+          ok: false,
+          error: "Trading is paused for this account"
+        });
+      }
+
+
 
       if (!category) {
         console.log("[ENTRY] ❌ Invalid category");
@@ -1767,6 +1850,10 @@ async function handleTradingViewSignal(req, res) {
       openPairs[prePair.pairId].slDistance = slDistance;
       openPairs[prePair.pairId].category = category;
       openPairs[prePair.pairId].signalId = signalId || null;
+
+      const { savePair } = require("./models");
+      await savePair(openPairs[prePair.pairId]);
+
 
       
       const safeCategory = category.replace(/[^a-zA-Z0-9 ]/g, '');
