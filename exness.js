@@ -6,17 +6,28 @@
 
 require('dotenv').config()
 
-const _setTimeout = global.setTimeout;
+const MetaApi = require('metaapi.cloud-sdk').default;
+// ---- METAAPI HOTFIX: count & skip corrupted broker history records ----
+const MemoryHistoryStorage =
+  require('metaapi.cloud-sdk/dist/metaApi/memoryHistoryStorage').default;
 
-global.setTimeout = function (fn, delay, ...args) {
-  if (typeof delay !== 'number' || !Number.isFinite(delay) || delay < 0) {
-    console.error('[TIMER-TRACE] Invalid delay passed to setTimeout:', delay);
-    console.error('[TIMER-TRACE] Call stack:\n', new Error().stack);
+const _origGetDealKey = MemoryHistoryStorage.prototype._getDealKey;
+
+// global counter (lives for process lifetime)
+let corruptedDealCount = 0;
+
+MemoryHistoryStorage.prototype._getDealKey = function (deal) {
+  try {
+    return _origGetDealKey.call(this, deal);
+  } catch (e) {
+    corruptedDealCount++;
+    return null; // silently skip
   }
-  return _setTimeout(fn, delay, ...args);
 };
 
-const MetaApi = require('metaapi.cloud-sdk').default;
+// optional: expose a safe getter if you want to report it later
+global.getCorruptedDealCount = () => corruptedDealCount;
+
 const express = require('express');
 const bodyParser = require('body-parser');
 const fs = require('fs');
@@ -1461,18 +1472,28 @@ async function startBot() {
     // ------------- create streaming connection and wait for synchronization
     connection = account.getStreamingConnection();
 
-    console.log('[METAAPI] Connecting streaming connection...');
-    await connection.connect();
 
-    // waitSynchronized may throw — wrap to surface the error
-    try {
-      console.log('[METAAPI] Waiting for streaming synchronization (waitSynchronized)...');
-      await connection.waitSynchronized({ timeoutInSeconds: 120 });
-    } catch (err) {
-      console.error('[METAAPI] waitSynchronized() failed:', err.message || err);
-      throw err;
+    // ---- SYNC GUARD (ADD HERE) ----
+    if (connection.synchronizing || connection.synchronized) {
+
+      console.warn('[METAAPI] Streaming connection already synchronizing/synchronized — skipping connect()');
+
+    } else {
+
+      console.log('[METAAPI] Connecting streaming connection...');
+      await connection.connect();
+      
+      // waitSynchronized may throw — wrap to surface the error
+      try {
+        console.log('[METAAPI] Waiting for streaming synchronization (waitSynchronized)...');
+        await connection.waitSynchronized({ timeoutInSeconds: 120 });
+      } catch (err) {
+        console.error('[METAAPI] waitSynchronized() failed:', err.message || err);
+        throw err;
+      }
+      console.log('[METAAPI] ✅ Streaming connection synchronized.');
     }
-    console.log('[METAAPI] ✅ Streaming connection synchronized.');
+
 
     // ------------- subscribe AFTER synchronized
     if (typeof connection.subscribeToMarketData === 'function') {
@@ -1599,6 +1620,12 @@ async function startBot() {
 
         // safe recreate connection object and wait sync
         connection = account.getStreamingConnection();
+        // ---- SYNC GUARD (ADD HERE TOO) ----
+        if (connection.synchronizing || connection.synchronized) {
+          console.warn('[METAAPI] Reconnect skipped — already synchronizing/synchronized');
+          return;
+        }
+
         console.log('[METAAPI] reconnecting streaming connection...');
         await connection.connect();
         await connection.waitSynchronized({ timeoutInSeconds: 60 });
