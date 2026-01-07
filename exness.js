@@ -289,7 +289,17 @@ async function transitionPairState(rec, nextState, reason = null) {
 }
 
 function buildTradeSnapshot(rec) {
-  const pnl = rec.realizedPnL; // or your existing calculation
+  // --- normalize openedAt safely ---
+  const openedAt =
+    rec.openedAt instanceof Date
+      ? rec.openedAt
+      : new Date(rec.openedAt);
+
+  if (isNaN(openedAt.getTime())) {
+    throw new Error(`[DATA] Invalid openedAt for pair ${rec.pairId}: ${rec.openedAt}`);
+  }
+
+  const pnl = rec.realizedPnL ?? 0;
 
   return {
     tradeId: rec.pairId,
@@ -303,12 +313,13 @@ function buildTradeSnapshot(rec) {
     lot: rec.totalLot,
     grossPnL: pnl,
     netPnL: pnl,
-    openedAt: rec.openedAt,
+    openedAt,
     closedAt: new Date(),
-    durationSec: Math.floor((Date.now() - rec.openedAt.getTime()) / 1000),
+    durationSec: Math.floor((Date.now() - openedAt.getTime()) / 1000),
     result: pnl > 0 ? "WIN" : pnl < 0 ? "LOSS" : "BE"
   };
 }
+
 
 async function finalizePair(pairId, reason) {
   const rec = openPairs[pairId];
@@ -332,10 +343,19 @@ async function finalizePair(pairId, reason) {
 
   const { finalizePairDB } = require("./models");
   await finalizePairDB(pairId, reason);
-  saveTrade(buildTradeSnapshot(rec))
+  try {
+    const snapshot = buildTradeSnapshot(rec);
+    await saveTrade(snapshot);
+  } catch (err) {
+    console.error(
+      `[FINALIZE] Snapshot/save failed for ${pairId}:`,
+      err.message || err
+    );
+  }
 
-
+  // always cleanup local state
   delete openPairs[pairId];
+
 
   console.log(
     `[PAIR] Finalized ${pairId} | reason=${reason}`
@@ -659,7 +679,7 @@ async function placePairedOrder(side, totalLot, slPrice, tpPrice, riskPercent) {
       internalSL: null,
       internalTrailingSL: null,
       partialClosed: false,
-      openedAt: new Date().toISOString(),
+      openedAt: new Date(),
       state: PAIR_STATE.ENTRY_IN_PROGRESS,
       entryStartedAt: Date.now(),
       closingReason: null,
