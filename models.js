@@ -181,18 +181,15 @@ async function assignAccountToUser({ telegramId, accountId, symbol, broker }) {
   return getDB().collection("accounts").updateOne(
     { accountId },
     {
-      $setOnInsert: {
-        accountId,
+      $set: {
         userId,
-        broker: broker || "EXNESS",
-        symbol: symbol || "XAUUSDm",
-        enabled: false,        // 🚨 disabled by default
-        userPaused: true,      // 🚨 paused by default
-        fixedLot: 0.01,
-        createdAt: new Date()
+        telegramId,
+        enabled: false,
+        userPaused: true,
+        status: "ASSIGNED",
+        assignedAt: new Date()
       }
-    },
-    { upsert: true }
+    }
   );
 }
 
@@ -222,9 +219,22 @@ async function upsertDeployedAccount({
 }
 
 
-async function unassignAccount(accountId) {
-  return getDB().collection("accounts").deleteOne({ accountId });
+
+/* ---------------- NON-ASSIGNED USERS ---------------- */
+
+async function listUsersWithoutAccounts() {
+  const users = await getDB().collection("users").find({}).toArray();
+  const accounts = await getDB().collection("accounts").find({}).toArray();
+
+  const assignedUserIds = new Set(
+    accounts
+      .filter(a => a.userId)
+      .map(a => a.userId)
+  );
+
+  return users.filter(u => !assignedUserIds.has(u.userId));
 }
+
 
 /* ---------------- USER ACCOUNT VISIBILITY ---------------- */
 
@@ -253,6 +263,16 @@ async function getAccountsGroupedByUser() {
   return map;
 }
 
+async function listAvailableAccounts() {
+  return getDB()
+    .collection("accounts")
+    .find({
+      telegramId: null,
+      enabled: false
+    })
+    .toArray();
+}
+
 async function getTelegramUsersMap() {
   const tgs = await getDB().collection("telegram_users").find({}).toArray();
   const map = new Map();
@@ -261,6 +281,22 @@ async function getTelegramUsersMap() {
   }
   return map;
 }
+
+async function unassignAccount(accountId) {
+  return getDB().collection("accounts").updateOne(
+    { accountId },
+    {
+      $set: {
+        telegramId: null,
+        enabled: false,
+        userPaused: true,
+        status: "DEPLOYED",
+        unassignedAt: new Date()
+      }
+    }
+  );
+}
+
 
 
 
@@ -280,6 +316,7 @@ module.exports = {
   assignAccountToUser,
   upsertDeployedAccount,
   unassignAccount,
+  listUsersWithoutAccounts,
   saveTrade,
   getTradesByUser,
   getTelegramUser,
@@ -290,6 +327,7 @@ module.exports = {
   finalizePairDB,
   loadOpenPairs,
   listAccounts,
+  listAvailableAccounts,
   setAccountEnabled,
   setLotSize,
   pauseAccountsByUser

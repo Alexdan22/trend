@@ -2,6 +2,7 @@ const TelegramBot = require("node-telegram-bot-api");
 const { 
   // accounts
   listAccounts,
+  listAvailableAccounts,
   setAccountEnabled,
   setLotSize,
   pauseAccountsByUser,
@@ -38,26 +39,29 @@ let bot = null;
 const COMMANDS = {
   USER: [
     { cmd: "/register", desc: "Request access to the bot" },
-    { cmd: "/my_account", desc: "View your trading account status" },
-    { cmd: "/status", desc: "View your account status" },
+    { cmd: "/my_account", desc: "View your assigned trading account" },
+    { cmd: "/status", desc: "View trading status for this bot" },
     { cmd: "/pause", desc: "Pause new trade entries" },
     { cmd: "/resume", desc: "Resume new trade entries" }
   ],
+
   ADMIN: [
-    { cmd: "/status", desc: "View account status" },
-    { cmd: "/pause", desc: "Pause trading (user or global)" },
-    { cmd: "/resume", desc: "Resume trading" },
-    { cmd: "/accounts", desc: "List all accounts" },
+    { cmd: "/status", desc: "View trading account status" },
+    { cmd: "/pause", desc: "Pause trading for the account" },
+    { cmd: "/resume", desc: "Resume trading for the account" },
+
     { cmd: "/pending_users", desc: "List users awaiting approval" },
-    { cmd: "/approve <telegramId>", desc: "Approve a pending user" },
-    { cmd: "/reject <telegramId>", desc: "Reject a pending user" },
+    { cmd: "/approve_user <telegramId>", desc: "Approve a pending user" },
+    { cmd: "/reject_user <telegramId>", desc: "Reject a pending user" },
+
+    { cmd: "/unassigned_users", desc: "List approved users without trading accounts" },
+    { cmd: "/available_accounts", desc: "List deployed but unassigned trading accounts" },
+
     { cmd: "/assign_account <telegramId> <accountId>", desc: "Assign trading account to user" },
-    { cmd: "/unassign_account <accountId>", desc: "Remove trading account from user" },
-    { cmd: "/lot <accountId> <value>", desc: "Change lot size for an account" },
-    { cmd: "/enable", desc: "Enable trading for an account" },
-    { cmd: "/disable", desc: "Disable trading for an account" }
+    { cmd: "/unassign_account <accountId>", desc: "Unassign account and disable trading safely" }
   ]
 };
+
 
 
 /* ---------- RBAC GUARD ---------- */
@@ -111,35 +115,51 @@ bot.on("message", async (msg) => {
 
   const telegramId = msg.from.id;
   const chatId = msg.chat.id;
-  const command = msg.text.split(" ")[0].toLowerCase();
+  
+  const parts = msg.text.trim().split(/\s+/);
+  const command = parts[0].toLowerCase();
+  const args = parts.slice(1);
 
   // 🔓 Allow onboarding commands without RBAC
     if (command === "/start") {
-    const exists = await getTelegramUser(telegramId);
+        const exists = await getTelegramUser(telegramId);
 
-    if (exists) {
-        return bot.sendMessage(chatId, "You are already registered.");
+        if (exists) {
+            return bot.sendMessage(
+                chatId,
+                "ℹ️ Already Registered\n\nYou already have access to the bot."
+            );
+        }
+
+        return bot.sendMessage(
+            chatId,
+            "👋 WELCOME\n\n" +
+            "You are not registered yet.\n\n" +
+            "📩 To request access, send:\n" +
+            "/register"
+        );
     }
 
-    return bot.sendMessage(
-        chatId,
-        "Welcome.\nYou are not registered yet.\nSend /register to request access."
-    );
-    }
 
     if (command === "/register") {
-    const exists = await getTelegramUser(telegramId);
-    if (exists) {
-        return bot.sendMessage(chatId, "You are already registered.");
+        const exists = await getTelegramUser(telegramId);
+        if (exists) {
+            return bot.sendMessage(
+                chatId,
+                "ℹ️ Already Registered\n\nYou already have access to the bot."
+            );
+        }
+
+        await addPendingUser(telegramId, msg.from.username);
+
+        return bot.sendMessage(
+            chatId,
+            "🕒 REGISTRATION REQUESTED\n\n" +
+            "Your access request has been submitted successfully.\n\n" +
+            "⏳ Please wait for an admin to approve your request."
+        );
     }
 
-    await addPendingUser(telegramId, msg.from.username);
-
-    return bot.sendMessage(
-        chatId,
-        "Registration request submitted.\nAwait admin approval."
-    );
-    }
 
 
   try {
@@ -153,104 +173,138 @@ bot.on("message", async (msg) => {
     switch (command) {
 
         case "/pause": {
-        requireRole(tgUser, ["USER", "ADMIN"]);
+            requireRole(tgUser, ["USER", "ADMIN"]);
 
-        await pauseAccountsByUser(user.userId, true);   // pause
+            await pauseAccountsByUser(user.userId, true);   // pause
 
-
-        return bot.sendMessage(chatId, "Trading paused for your account(s).");
+            return bot.sendMessage(
+                chatId,
+                "⏸️ TRADING PAUSED\n\n" +
+                "New trade entries have been paused for your account(s)."
+            );
         }
 
         case "/resume": {
-        requireRole(tgUser, ["USER", "ADMIN"]);
+            requireRole(tgUser, ["USER", "ADMIN"]);
 
-        
-        await pauseAccountsByUser(user.userId, false);  // resume
+            await pauseAccountsByUser(user.userId, false);  // resume
 
-        return bot.sendMessage(chatId, "Trading resumed.");
+            return bot.sendMessage(
+                chatId,
+                "▶️ TRADING RESUMED\n\n" +
+                "New trade entries are now enabled."
+            );
         }
 
         case "/accounts": {
-        requireRole(tgUser, ["ADMIN"]);
+            requireRole(tgUser, ["ADMIN"]);
 
-        const accounts = await listAccounts();
-        if (!accounts.length) {
-            return bot.sendMessage(chatId, "No accounts found.");
+            const accounts = await listAccounts();
+            if (!accounts.length) {
+                return bot.sendMessage(
+                    chatId,
+                    "ℹ️ NO ACCOUNTS FOUND\n\nThere are currently no trading accounts."
+                );
+            }
+
+            let text = "📂 ALL ACCOUNTS\n\n";
+            for (const acc of accounts) {
+                text +=
+                    `📊 Account ID:\n${acc.accountId}\n` +
+                    `• Enabled: ${acc.enabled ? "✅ Yes" : "❌ No"}\n` +
+                    `• Paused: ${acc.userPaused ? "⏸️ Yes" : "▶️ No"}\n` +
+                    `• Lot Size: ${acc.fixedLot}\n\n`;
+            }
+
+            return bot.sendMessage(chatId, text);
         }
 
-        let text = "Accounts:\n\n";
-        for (const acc of accounts) {
-            text +=
-            `• ${acc.accountId}\n` +
-            `  Enabled: ${acc.enabled}\n` +
-            `  UserPaused: ${acc.userPaused}\n` +
-            `  Lot: ${acc.fixedLot}\n\n`;
-        }
-
-        return bot.sendMessage(chatId, text);
-        }
 
         case "/lot": {
-        requireRole(tgUser, ["ADMIN"]);
+            requireRole(tgUser, ["ADMIN"]);
 
-        const [, accountId, lotStr] = msg.text.split(" ");
-        const lot = Number(lotStr);
+            const [, accountId, lotStr] = msg.text.split(" ");
+            const lot = Number(lotStr);
 
-        if (!accountId || !lot || lot <= 0) {
-            return bot.sendMessage(chatId, "Usage: /lot <accountId> <value>");
-        }
+            if (!accountId || !lot || lot <= 0) {
+                return bot.sendMessage(
+                    chatId,
+                    "⚠️ INVALID USAGE\n\n" +
+                    "Correct format:\n" +
+                    "/lot <accountId> <value>"
+                );
+            }
 
-        await setLotSize(accountId, lot);
+            await setLotSize(accountId, lot);
 
-        return bot.sendMessage(
-            chatId,
-            `Lot size updated.\nAccount: ${accountId}\nNew Lot: ${lot}`
-        );
+            return bot.sendMessage(
+                chatId,
+                "⚙️ LOT SIZE UPDATED\n\n" +
+                `📊 Account ID:\n${accountId}\n\n` +
+                `New Lot Size:\n${lot}`
+            );
         }
 
         case "/enable": {
-        requireRole(tgUser, ["ADMIN"]);
+            requireRole(tgUser, ["ADMIN"]);
 
-        const [, accountId] = msg.text.split(" ");
-        if (!accountId) {
-            return bot.sendMessage(chatId, "Usage: /enable <accountId>");
-        }
+            const [, accountId] = msg.text.split(" ");
+            if (!accountId) {
+                return bot.sendMessage(
+                    chatId,
+                    "⚠️ INVALID USAGE\n\n" +
+                    "Correct format:\n" +
+                    "/enable <accountId>"
+                );
+            }
 
-        await setAccountEnabled(accountId, true);
+            await setAccountEnabled(accountId, true);
 
-        return bot.sendMessage(chatId, `Trading ENABLED for ${accountId}`);
+            return bot.sendMessage(
+                chatId,
+                "▶️ TRADING ENABLED\n\n" +
+                `Trading has been enabled for:\n${accountId}`
+            );
         }
 
         case "/disable": {
-        requireRole(tgUser, ["ADMIN"]);
+            requireRole(tgUser, ["ADMIN"]);
 
-        const [, accountId] = msg.text.split(" ");
-        if (!accountId) {
-            return bot.sendMessage(chatId, "Usage: /disable <accountId>");
+            const [, accountId] = msg.text.split(" ");
+            if (!accountId) {
+                return bot.sendMessage(
+                    chatId,
+                    "⚠️ INVALID USAGE\n\n" +
+                    "Correct format:\n" +
+                    "/disable <accountId>"
+                );
+            }
+
+            await setAccountEnabled(accountId, false);
+
+            return bot.sendMessage(
+                chatId,
+                "⏸️ TRADING DISABLED\n\n" +
+                `Trading has been disabled for:\n${accountId}`
+            );
         }
 
-        await setAccountEnabled(accountId, false);
-
-        return bot.sendMessage(chatId, `Trading DISABLED for ${accountId}`);
-        }
 
         case "/status": {
-        requireRole(tgUser, ["USER", "ADMIN"]);
+            requireRole(tgUser, ["USER", "ADMIN"]);
 
-        const account = await getAccountById(process.env.METAAPI_ACCOUNT_ID);
+            const accountId = process.env.METAAPI_ACCOUNT_ID;
+            const account = await getAccountById(accountId);
 
-        if (!account) {
-            return bot.sendMessage(chatId, "Account not found.");
-        }
-
-        const status = `
-    Account: ${account.accountId}
-    Enabled: ${account.enabled}
-    Paused: ${account.userPaused}
-    Lot: ${tgUser.role === "ADMIN" ? account.fixedLot : "Restricted"}
-        `;
-
-        return bot.sendMessage(chatId, status);
+            return bot.sendMessage(
+                chatId,
+                "📊 ACCOUNT STATUS\n\n" +
+                `Account ID:\n${accountId}\n\n` +
+                "Trading:\n" +
+                `• Enabled: ${account.enabled ? "✅ Yes" : "❌ No"}\n` +
+                `• Paused: ${account.userPaused ? "⏸️ Yes" : "▶️ No"}\n\n` +
+                `State:\n${account.status}`
+            );
         }
 
         case "/pending_users": {
@@ -258,12 +312,17 @@ bot.on("message", async (msg) => {
 
             const pending = await listPendingUsers();
             if (!pending.length) {
-                return bot.sendMessage(chatId, "No pending users.");
+                return bot.sendMessage(
+                    chatId,
+                    "ℹ️ NO PENDING USERS\n\nThere are no users awaiting approval."
+                );
             }
 
-            let text = "Pending users:\n\n";
+            let text = "🕒 PENDING USERS\n\n";
             for (const u of pending) {
-                text += `• ${u.telegramId} (${u.username || "no username"})\n`;
+                text +=
+                    `• Telegram ID: ${u.telegramId}\n` +
+                    `  Username: ${u.username || "N/A"}\n\n`;
             }
 
             return bot.sendMessage(chatId, text);
@@ -274,15 +333,20 @@ bot.on("message", async (msg) => {
 
             const [, tgId] = msg.text.split(" ");
             if (!tgId) {
-                return bot.sendMessage(chatId, "Usage: /approve <telegramId>");
+                return bot.sendMessage(
+                    chatId,
+                    "⚠️ INVALID USAGE\n\nUsage:\n/approve <telegramId>"
+                );
             }
 
             const pendingUsers = await listPendingUsers();
             const pending = pendingUsers.find(u => u.telegramId === Number(tgId));
 
-
             if (!pending) {
-                return bot.sendMessage(chatId, "Pending user not found.");
+                return bot.sendMessage(
+                    chatId,
+                    "❌ USER NOT FOUND\n\nNo pending user found with that Telegram ID."
+                );
             }
 
             const userId = await createUserFromPending(pending);
@@ -290,7 +354,9 @@ bot.on("message", async (msg) => {
 
             return bot.sendMessage(
                 chatId,
-                `User approved.\nTelegram ID: ${tgId}\nUser ID: ${userId}`
+                "✅ USER APPROVED\n\n" +
+                `Telegram ID:\n${tgId}\n\n` +
+                `User ID:\n${userId}`
             );
         }
 
@@ -299,12 +365,19 @@ bot.on("message", async (msg) => {
 
             const [, tgId] = msg.text.split(" ");
             if (!tgId) {
-                return bot.sendMessage(chatId, "Usage: /reject <telegramId>");
+                return bot.sendMessage(
+                    chatId,
+                    "⚠️ INVALID USAGE\n\nUsage:\n/reject <telegramId>"
+                );
             }
 
             await removePendingUser(Number(tgId));
 
-            return bot.sendMessage(chatId, `User ${tgId} rejected.`);
+            return bot.sendMessage(
+                chatId,
+                "❌ USER REJECTED\n\n" +
+                `Telegram ID:\n${tgId}`
+            );
         }
 
         case "/assign_account": {
@@ -313,8 +386,8 @@ bot.on("message", async (msg) => {
             const [, tgId, accountId] = msg.text.split(" ");
             if (!tgId || !accountId) {
                 return bot.sendMessage(
-                chatId,
-                "Usage: /assign_account <telegramId> <accountId>"
+                    chatId,
+                    "⚠️ INVALID USAGE\n\nUsage:\n/assign_account <telegramId> <accountId>"
                 );
             }
 
@@ -325,24 +398,70 @@ bot.on("message", async (msg) => {
 
             return bot.sendMessage(
                 chatId,
-                `Account assigned.\nTelegram ID: ${tgId}\nAccount: ${accountId}\n\nTrading is DISABLED by default.`
+                "📌 ACCOUNT ASSIGNED\n\n" +
+                `Telegram ID:\n${tgId}\n\n` +
+                `Account ID:\n${accountId}\n\n` +
+                "⚠️ Trading is DISABLED by default."
             );
         }
 
-        case "/unassign_account": {
-            requireRole(tgUser, ["ADMIN"]);
+        case "/available_accounts": {
+            const accounts = await listAvailableAccounts();
 
-            const [, accountId] = msg.text.split(" ");
-            if (!accountId) {
-                return bot.sendMessage(chatId, "Usage: /unassign_account <accountId>");
+            if (!accounts.length) {
+                return bot.sendMessage(
+                    chatId,
+                    "ℹ️ NO AVAILABLE ACCOUNTS\n\nAll accounts are currently assigned."
+                );
             }
 
+            let text = "📂 AVAILABLE ACCOUNTS\n\n";
+            for (const a of accounts) {
+                text +=
+                    `📊 Account ID:\n${a.accountId}\n` +
+                    `• Broker: ${a.broker}\n` +
+                    `• Symbol: ${a.symbol}\n` +
+                    `• Status: ${a.status || "DEPLOYED"}\n\n`;
+            }
+
+            return bot.sendMessage(chatId, text);
+        }
+
+        case "/unassign_account": {
+            if (args.length < 1) {
+                return bot.sendMessage(
+                    chatId,
+                    "⚠️ INVALID USAGE\n\nUsage:\n/unassign_account <accountId>"
+                );
+            }
+
+            const accountId = args[0];
             await unassignAccount(accountId);
 
             return bot.sendMessage(
                 chatId,
-                `Account ${accountId} unassigned and removed.`
+                "♻️ ACCOUNT UNASSIGNED\n\n" +
+                `Account ID:\n${accountId}\n\n` +
+                "Trading has been disabled and the account is reset."
             );
+        }
+
+        case "/unassigned_users": {
+            const users = await listUsersWithoutAccounts();
+
+            if (!users.length) {
+                return bot.sendMessage(
+                    chatId,
+                    "✅ ALL USERS ASSIGNED\n\nEvery approved user has a trading account."
+                );
+            }
+
+            let text = "👤 USERS WITHOUT ACCOUNTS\n\n";
+            for (const u of users) {
+                text += `• ${u.name} (User ID: ${u.userId})\n`;
+            }
+
+            return bot.sendMessage(chatId, text);
         }
 
         case "/my_account": {
@@ -352,20 +471,21 @@ bot.on("message", async (msg) => {
 
             if (!accounts.length) {
                 return bot.sendMessage(
-                chatId,
-                "No trading account is assigned to you yet.\nPlease contact the admin."
+                    chatId,
+                    "ℹ️ NO ACCOUNT ASSIGNED\n\n" +
+                    "You do not have a trading account yet.\nPlease contact the admin."
                 );
             }
 
-            let text = "Your account details:\n\n";
+            let text = "📊 YOUR ACCOUNT DETAILS\n\n";
 
             for (const acc of accounts) {
                 text +=
-                `Account ID: ${acc.accountId}\n` +
-                `Broker: ${acc.broker}\n` +
-                `Symbol: ${acc.symbol}\n` +
-                `Trading Enabled: ${acc.enabled ? "YES" : "NO"}\n` +
-                `Paused: ${acc.userPaused ? "YES" : "NO"}\n\n`;
+                    `Account ID:\n${acc.accountId}\n` +
+                    `• Broker: ${acc.broker}\n` +
+                    `• Symbol: ${acc.symbol}\n` +
+                    `• Enabled: ${acc.enabled ? "✅ Yes" : "❌ No"}\n` +
+                    `• Paused: ${acc.userPaused ? "⏸️ Yes" : "▶️ No"}\n\n`;
             }
 
             return bot.sendMessage(chatId, text);
@@ -376,40 +496,45 @@ bot.on("message", async (msg) => {
 
             const users = await listUsers();
             if (!users.length) {
-                return bot.sendMessage(chatId, "No users found.");
+                return bot.sendMessage(
+                    chatId,
+                    "ℹ️ NO USERS FOUND\n\nThere are no registered users."
+                );
             }
 
             const accountsByUser = await getAccountsGroupedByUser();
             const telegramMap = await getTelegramUsersMap();
 
-            let text = "Registered users:\n\n";
+            let text = "👥 REGISTERED USERS\n\n";
 
             for (const u of users) {
                 const accounts = accountsByUser.get(u.userId) || [];
                 const tgId = telegramMap.get(u.userId) || "N/A";
 
-                text += `User ID: ${u.userId}\n`;
-                text += `Telegram ID: ${tgId}\n`;
-                text += `Enabled: ${u.enabled ? "YES" : "NO"}\n`;
+                text +=
+                    `User ID: ${u.userId}\n` +
+                    `Telegram ID: ${tgId}\n` +
+                    `Enabled: ${u.enabled ? "✅ Yes" : "❌ No"}\n`;
 
                 if (!accounts.length) {
-                text += `Accounts: none\n\n`;
-                continue;
+                    text += "Accounts: none\n\n";
+                    continue;
                 }
 
-                text += `Accounts:\n`;
+                text += "Accounts:\n";
                 for (const acc of accounts) {
-                text +=
-                    ` • ${acc.accountId} | ` +
-                    `Enabled: ${acc.enabled ? "YES" : "NO"} | ` +
-                    `Paused: ${acc.userPaused ? "YES" : "NO"}\n`;
+                    text +=
+                        ` • ${acc.accountId} | ` +
+                        `Enabled: ${acc.enabled ? "Yes" : "No"} | ` +
+                        `Paused: ${acc.userPaused ? "Yes" : "No"}\n`;
                 }
 
-                text += `\n`;
+                text += "\n";
             }
 
             return bot.sendMessage(chatId, text);
         }
+
 
 
 
