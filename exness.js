@@ -1,7 +1,3 @@
-// bot_merged.js
-// Merged: main strategy bot + robust order execution helpers from test_order_execution.js
-// - Base strategy and candle aggregation from your main bot
-// - Robust order/position helpers, tolerant close behavior, and safe getters from your debug test
 // NOTE: Test on demo before running live
 
 require('dotenv').config()
@@ -34,6 +30,8 @@ const fs = require('fs');
 const RAW_ORDERS_LOG = '/tmp/raw_order_responses.log';
 const { connectDB } = require("./db");
 const { loadOpenPairs, saveTrade } = require("./models");
+const { initTelegramBot, getBot } = require("./telegram");
+
 
 const EXNESS_PORT = process.env.EXNESS_PORT || 5002;
 
@@ -63,35 +61,19 @@ let FIXED_LOT = 0.02;   // default lot size for ALL trades
 const ticketOwnershipMap = new Map(); // ticket -> pairId
 
 
-
-
-// --------------------- TELEGRAM SETUP ---------------------
-const TelegramBot = require('node-telegram-bot-api');
-const TELEGRAM_TOKEN = process.env.TELEGRAM_BOT_TOKEN;
-const TELEGRAM_CHAT_ID = process.env.TELEGRAM_CHAT_ID;
-let tgBot = null;
-
-
-if (TELEGRAM_TOKEN && TELEGRAM_CHAT_ID) {
-  tgBot = new TelegramBot(TELEGRAM_TOKEN, { polling: false });
-  console.log('📲 Telegram bot connected.');
-} else {
-  console.warn('⚠️ Telegram credentials missing in .env (TELEGRAM_BOT_TOKEN, TELEGRAM_CHAT_ID)');
-}
-
 async function sendTelegram(message, options = {}) {
-  if (!tgBot || !TELEGRAM_CHAT_ID) return;
-
   try {
-    // escape only unsafe characters WITHOUT breaking markdown syntax
+    const bot = getBot();
+    const chatId = process.env.TELEGRAM_CHAT_ID;
+    if (!chatId) return;
+
     const safeMessage = message.replace(/([\[\]\(\)~`>#+\-=|{}\.!])/g, '\\$1');
-
-    await tgBot.sendMessage(TELEGRAM_CHAT_ID, safeMessage, options);
-
+    await bot.sendMessage(chatId, safeMessage, options);
   } catch (e) {
-    console.warn('❌ Telegram send failed:', e.message);
+    console.warn("❌ Telegram send failed:", e.message);
   }
 }
+
 
 
 function md2(text) {
@@ -1409,6 +1391,8 @@ async function syncOpenPairsWithPositions(positions) {
 // --------------------- SAFE MAIN LOOP (replace your existing startBot) ---------------------
 async function startBot() {
   const { setTimeout: delay } = require('timers/promises');
+  await initTelegramBot();
+
 
   // basic validation
   if (!process.env.METAAPI_TOKEN || !process.env.METAAPI_ACCOUNT_ID) {
@@ -1468,6 +1452,18 @@ async function startBot() {
       }
     }
     console.log('[METAAPI] Account appears CONNECTED to broker.');
+
+    const { upsertDeployedAccount } = require("./models");
+
+    await upsertDeployedAccount({
+      accountId: account.id,   // ← THIS IS THE FIX
+      broker: "EXNESS",
+      symbol: "XAUUSDm"
+    });
+
+
+    console.log(`[DB] Account registered as DEPLOYED → ${account.id}`);
+
 
     // ------------- create streaming connection and wait for synchronization
     connection = account.getStreamingConnection();

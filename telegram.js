@@ -28,6 +28,13 @@ const {
 const token = process.env.TELEGRAM_BOT_TOKEN;
 if (!token) throw new Error("TELEGRAM_BOT_TOKEN missing");
 
+const { connectDB } = require("./db");
+
+let bot = null;
+
+
+
+
 const COMMANDS = {
   USER: [
     { cmd: "/register", desc: "Request access to the bot" },
@@ -52,8 +59,6 @@ const COMMANDS = {
   ]
 };
 
-
-const bot = new TelegramBot(token, { polling: true });
 
 /* ---------- RBAC GUARD ---------- */
 
@@ -90,8 +95,16 @@ function renderHelp(role) {
   return text;
 }
 
+async function initTelegramBot() {
+  if (bot) return bot; // idempotent
 
-/* ---------- COMMAND HANDLER ---------- */
+  await connectDB();
+  console.log("[DB] MongoDB connected (Telegram)");
+
+  bot = new TelegramBot(token, { polling: true });
+  console.log("📲 Telegram bot polling started");
+
+  /* ---------- COMMAND HANDLER ---------- */
 
 bot.on("message", async (msg) => {
   if (!msg.text || !msg.text.startsWith("/")) return;
@@ -238,33 +251,6 @@ bot.on("message", async (msg) => {
         `;
 
         return bot.sendMessage(chatId, status);
-        }
-
-        case "/start": {
-            const exists = await getTelegramUser(telegramId);
-
-            if (exists) {
-                return bot.sendMessage(chatId, "You are already registered.");
-            }
-
-            return bot.sendMessage(
-                chatId,
-                "Welcome. You are not registered yet.\nSend /register to request access."
-            );
-        }
-
-        case "/register": {
-            const exists = await getTelegramUser(telegramId);
-            if (exists) {
-                return bot.sendMessage(chatId, "You are already registered.");
-            }
-
-            await addPendingUser(telegramId, msg.from.username);
-
-            return bot.sendMessage(
-                chatId,
-                "Registration request submitted.\nAwait admin approval."
-            );
         }
 
         case "/pending_users": {
@@ -438,4 +424,15 @@ bot.on("message", async (msg) => {
   }
 });
 
-module.exports = { bot };
+  return bot;
+}
+
+function getBot() {
+  if (!bot) {
+    throw new Error("Telegram bot not initialized. Call initTelegramBot() first.");
+  }
+  return bot;
+}
+
+module.exports = { initTelegramBot, getBot };
+

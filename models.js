@@ -196,6 +196,32 @@ async function assignAccountToUser({ telegramId, accountId, symbol, broker }) {
   );
 }
 
+async function upsertDeployedAccount({
+  accountId,
+  broker = "EXNESS",
+  symbol = "XAUUSDm"
+}) {
+  return getDB().collection("accounts").updateOne(
+    { accountId },
+    {
+      $setOnInsert: {
+        accountId,
+        broker,
+        symbol,
+
+        telegramId: null,        // not assigned yet
+        enabled: false,          // hard safety gate
+        userPaused: true,        // paused by default
+
+        status: "DEPLOYED",      // DEPLOYED | ASSIGNED | ACTIVE
+        createdAt: new Date()
+      }
+    },
+    { upsert: true }
+  );
+}
+
+
 async function unassignAccount(accountId) {
   return getDB().collection("accounts").deleteOne({ accountId });
 }
@@ -252,6 +278,7 @@ module.exports = {
   removePendingUser,
   createUserFromPending,
   assignAccountToUser,
+  upsertDeployedAccount,
   unassignAccount,
   saveTrade,
   getTradesByUser,
