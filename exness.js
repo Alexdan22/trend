@@ -103,6 +103,17 @@ let candles_3m = [];   // array of {time, open, high, low, close}
 let candles_5m = [];   // array of {time, open, high, low, close}
 const MAX_CANDLES = 500; // keep last N candles
 
+// ========================
+// STRATEGY STATE
+// ========================
+const STRATEGY_STATE = {
+  trendBias: "NONE",        // BUY | SELL | NONE
+  marketRegime: "DEAD",     // ACTIVE | DEAD
+  setupState: "IDLE",       // IDLE | PULLBACK | CONFIRMED
+  lastUpdate: 0
+};
+
+
 // ATR / volatility config (tweakable)
 const ATR_PERIOD = 14;                // ATR period measured in M5 candles
 const ATR_TRIGGER_MULTIPLIER = 1.5;   // used to compute dynamic trigger = ATR * multiplier
@@ -228,6 +239,121 @@ function countCategory(category) {
         p.trades?.TRAILING?.ticket                  // trailing exists
     ).length;
 }
+
+//Candle Agrregation and Indicators
+
+function buildM15CandlesFromM5() {
+  const result = [];
+  for (let i = 0; i < candles_5m.length; i += 3) {
+    const slice = candles_5m.slice(i, i + 3);
+    if (slice.length < 3) continue;
+
+    result.push({
+      time: slice[0].time,
+      open: slice[0].open,
+      high: Math.max(...slice.map(c => c.high)),
+      low: Math.min(...slice.map(c => c.low)),
+      close: slice[slice.length - 1].close
+    });
+  }
+  return result;
+}
+
+function calculateEMA(values, period) {
+  if (values.length < period) return null;
+  const k = 2 / (period + 1);
+  let ema = values.slice(0, period).reduce((a, b) => a + b, 0) / period;
+
+  for (let i = period; i < values.length; i++) {
+    ema = values[i] * k + ema * (1 - k);
+  }
+  return ema;
+}
+
+function calculateRSI(values, period = 14) {
+  if (values.length < period + 1) return null;
+
+  let gains = 0, losses = 0;
+  for (let i = values.length - period; i < values.length; i++) {
+    const diff = values[i] - values[i - 1];
+    if (diff >= 0) gains += diff;
+    else losses -= diff;
+  }
+
+  if (losses === 0) return 100;
+  const rs = gains / losses;
+  return 100 - (100 / (1 + rs));
+}
+
+function calculateSMA(values, period) {
+  if (values.length < period) return null;
+  const slice = values.slice(-period);
+  return slice.reduce((a, b) => a + b, 0) / period;
+}
+
+function calculateStdDev(values, period) {
+  if (values.length < period) return null;
+  const slice = values.slice(-period);
+  const mean = calculateSMA(values, period);
+  const variance =
+    slice.reduce((s, v) => s + Math.pow(v - mean, 2), 0) / period;
+  return Math.sqrt(variance);
+}
+
+function calculateBollingerBands(values, period = 20, mult = 2) {
+  const mid = calculateSMA(values, period);
+  const std = calculateStdDev(values, period);
+  if (mid == null || std == null) return null;
+
+  return {
+    upper: mid + mult * std,
+    lower: mid - mult * std,
+    middle: mid,
+    width: (2 * mult * std) / mid // normalized BB width
+  };
+}
+
+function evaluateM5MarketRegime() {
+  if (candles_5m.length < 25) return;
+
+  const closes = candles_5m.map(c => c.close);
+  const bb = calculateBollingerBands(closes, 20, 2);
+  if (!bb) return;
+
+  // empirical starting threshold for XAUUSD M5
+  const MIN_BB_WIDTH = 0.0015;
+
+  const nextRegime =
+    bb.width >= MIN_BB_WIDTH ? "ACTIVE" : "DEAD";
+
+  if (STRATEGY_STATE.marketRegime !== nextRegime) {
+    STRATEGY_STATE.marketRegime = nextRegime;
+    STRATEGY_STATE.lastUpdate = Date.now();
+    console.log(
+      `[STRATEGY][M5] Regime → ${nextRegime} (BBW=${bb.width.toFixed(5)})`
+    );
+  }
+}
+
+function calculateStochastic(candles, period = 14) {
+  if (candles.length < period) return null;
+
+  const slice = candles.slice(-period);
+  const highs = slice.map(c => c.high);
+  const lows = slice.map(c => c.low);
+
+  const highestHigh = Math.max(...highs);
+  const lowestLow = Math.min(...lows);
+  const lastClose = slice[slice.length - 1].close;
+
+  if (highestHigh === lowestLow) return null;
+
+  return ((lastClose - lowestLow) / (highestHigh - lowestLow)) * 100;
+}
+
+
+
+//Transition and Trade Management Helpers
 
 function parseOrderResponse(res) {
   if (!res) return { ticket: null};
@@ -977,6 +1103,217 @@ async function safeGetPositions() {
 }
 
 
+// CORE Logic: Trend Evaluation and Trade Management
+
+function evaluateM15Trend() {
+  const m15 = buildM15CandlesFromM5();
+  if (m15.length < 210) return; // 200 EMA + buffer
+
+  const closes = m15.map(c => c.close);
+
+  const ema50 = calculateEMA(closes, 50);
+  const ema200 = calculateEMA(closes, 200);
+  const rsi = calculateRSI(closes, 14);
+
+  if (!ema50 || !ema200 || !rsi) return;
+
+  let nextBias = "NONE";
+
+  if (ema50 > ema200 && closes.at(-1) > ema50 && rsi >= 55) {
+    nextBias = "BUY";
+  } else if (ema50 < ema200 && closes.at(-1) < ema50 && rsi <= 45) {
+    nextBias = "SELL";
+  }
+
+  if (STRATEGY_STATE.trendBias !== nextBias) {
+    STRATEGY_STATE.trendBias = nextBias;
+    STRATEGY_STATE.lastUpdate = Date.now();
+    console.log(`[TREND] M15 trendBias → ${nextBias}`);
+  }
+}
+
+function detectPullbackSetup() {
+  if (STRATEGY_STATE.trendBias === "NONE") return;
+  if (STRATEGY_STATE.marketRegime !== "ACTIVE") return;
+  if (STRATEGY_STATE.setupState !== "IDLE") return;
+
+  if (candles_5m.length < 20) return;
+
+  const stoch = calculateStochastic(candles_5m, 14);
+  if (stoch == null) return;
+
+  let detected = false;
+
+  if (STRATEGY_STATE.trendBias === "BUY" && stoch <= 20) {
+    detected = true;
+  }
+
+  if (STRATEGY_STATE.trendBias === "SELL" && stoch >= 80) {
+    detected = true;
+  }
+
+  if (detected) {
+    STRATEGY_STATE.setupState = "PULLBACK";
+    STRATEGY_STATE.lastUpdate = Date.now();
+    console.log(
+      `[STRATEGY][SETUP] Pullback detected (${STRATEGY_STATE.trendBias}) | Stoch=${stoch.toFixed(1)}`
+    );
+  }
+}
+
+function confirmPullbackEntry() {
+  if (STRATEGY_STATE.setupState !== "PULLBACK") return;
+  if (candles_5m.length < 20) return;
+
+  const closes = candles_5m.map(c => c.close);
+
+  const stochNow = calculateStochastic(candles_5m, 14);
+  const stochPrev = calculateStochastic(candles_5m.slice(0, -1), 14);
+
+  const rsiNow = calculateRSI(closes, 14);
+  const rsiPrev = calculateRSI(closes.slice(0, -1), 14);
+
+  if (
+    stochNow == null ||
+    stochPrev == null ||
+    rsiNow == null ||
+    rsiPrev == null
+  ) return;
+
+  const last = candles_5m.at(-1);
+  const bullish = last.close > last.open;
+  const bearish = last.close < last.open;
+
+  let confirmed = false;
+
+  // -------- BUY CONFIRMATION --------
+  if (
+    STRATEGY_STATE.trendBias === "BUY" &&
+    stochPrev <= 20 &&
+    stochNow > 20 &&
+    rsiNow > rsiPrev &&
+    rsiNow >= 45 &&
+    bullish
+  ) {
+    confirmed = true;
+  }
+
+  // -------- SELL CONFIRMATION --------
+  if (
+    STRATEGY_STATE.trendBias === "SELL" &&
+    stochPrev >= 80 &&
+    stochNow < 80 &&
+    rsiNow < rsiPrev &&
+    rsiNow <= 55 &&
+    bearish
+  ) {
+    confirmed = true;
+  }
+
+  if (confirmed) {
+    STRATEGY_STATE.setupState = "CONFIRMED";
+    STRATEGY_STATE.lastUpdate = Date.now();
+
+    console.log(
+      `[STRATEGY][CONFIRMED] ${STRATEGY_STATE.trendBias} confirmed | ` +
+      `Stoch=${stochNow.toFixed(1)} RSI=${rsiNow.toFixed(1)}`
+    );
+  }
+}
+
+async function tryExecuteStrategyTrade() {
+  if (STRATEGY_STATE.setupState !== "CONFIRMED") return;
+  if (STRATEGY_STATE.trendBias === "NONE") return;
+
+  // Prevent duplicate entries
+  if (isEntryLocked()) {
+    console.log("[STRATEGY][EXEC] Blocked — entry lock active");
+    return;
+  }
+
+  const side = STRATEGY_STATE.trendBias;
+
+  // Prevent stacking same-direction trades
+  const hasSameSideOpen = Object.values(openPairs).some(
+    p => p.side === side && p.state !== PAIR_STATE.CLOSED
+  );
+  if (hasSameSideOpen) {
+    console.log(`[STRATEGY][EXEC] Blocked — ${side} trade already open`);
+    STRATEGY_STATE.setupState = "IDLE";
+    return;
+  }
+
+  acquireEntryLock("strategy-entry");
+
+  try {
+    // 1️⃣ Get price
+    const priceRef = await safeGetPrice(SYMBOL);
+    if (!priceRef) {
+      console.warn("[STRATEGY][EXEC] No price available");
+      releaseEntryLock("price-missing");
+      return;
+    }
+
+    const entryRef =
+      side === "BUY" ? priceRef.ask : priceRef.bid;
+
+    // 2️⃣ Lot sizing
+    const totalLot = await internalLotSizing();
+
+    // 3️⃣ SL / TP (reuse existing logic)
+    let sltp = calculateDynamicSLTP(side, entryRef);
+
+    // Warm-up fallback safety
+    if (!sltp) {
+      console.warn("[STRATEGY][EXEC] Using fallback SL/TP");
+      if (side === "BUY") {
+        sltp = {
+          sl: entryRef - FALLBACK_SL_DISTANCE,
+          tp: entryRef + FALLBACK_TP_DISTANCE
+        };
+      } else {
+        sltp = {
+          sl: entryRef + FALLBACK_SL_DISTANCE,
+          tp: entryRef - FALLBACK_TP_DISTANCE
+        };
+      }
+    }
+
+    // 4️⃣ Place paired order (YOUR EXISTING ENGINE)
+    const pair = await placePairedOrder(
+      side,
+      totalLot,
+      sltp.sl,
+      sltp.tp
+    );
+
+    if (!pair) {
+      console.error("[STRATEGY][EXEC] Order placement failed");
+      releaseEntryLock("entry-failed");
+      return;
+    }
+
+    // Attach strategy metadata
+    openPairs[pair.pairId].category = "STRATEGY_PULLBACK";
+    openPairs[pair.pairId].signalId = `strategy-${Date.now()}`;
+
+    const { savePair } = require("./models");
+    await savePair(openPairs[pair.pairId]);
+
+    console.log(
+      `[STRATEGY][EXEC] ${side} trade executed | Pair=${pair.pairId}`
+    );
+
+  } catch (err) {
+    console.error("[STRATEGY][EXEC] Fatal error:", err.message || err);
+    releaseEntryLock("exec-error");
+  } finally {
+    // Reset strategy state no matter what
+    STRATEGY_STATE.setupState = "IDLE";
+  }
+}
+
+
 
 
 
@@ -1085,6 +1422,34 @@ async function handleTick(tick) {
           last5.low  = Math.min(last5.low, priceMid);
           last5.close = priceMid;
         }
+
+        // --- M15 TREND FILTER ---
+        if (candles_5m.length >= 3) {
+          const last5 = candles_5m.at(-1);
+          if (last5 && last5.time % (15 * 60 * 1000) === 0) {
+            evaluateM15Trend();
+          }
+        }
+
+        // ========================
+        // STRATEGY LAYER (M5)
+        // ========================
+        evaluateM5MarketRegime();
+        detectPullbackSetup();
+
+        // ========================
+        // STRATEGY CONFIRMATION
+        // ========================
+        confirmPullbackEntry();
+
+        // ========================
+        // STRATEGY EXECUTION
+        // ========================
+        await tryExecuteStrategyTrade();
+
+
+
+
       }
     } catch (err) {
       console.log('[CANDLE BUILD] error:', err.message || err);
