@@ -101,6 +101,7 @@ let streamingInitializing = false;
 let candles_1m = [];   // array of {time, open, high, low, close}
 let candles_3m = [];   // array of {time, open, high, low, close}
 let candles_5m = [];   // array of {time, open, high, low, close}
+let candles_15m = [];
 const MAX_CANDLES = 500; // keep last N candles
 
 // ========================
@@ -167,6 +168,11 @@ globalThis.zoneApproval = {
   "R_SELL": { "3M": false, "5M": false }
 };
 
+// ========================
+// HISTORICAL GAP CONTROL
+// ========================
+let historicalGapLock = false;
+let gapRefreshScheduled = false;
 
 
 
@@ -241,23 +247,6 @@ function countCategory(category) {
 }
 
 //Candle Agrregation and Indicators
-
-function buildM15CandlesFromM5() {
-  const result = [];
-  for (let i = 0; i < candles_5m.length; i += 3) {
-    const slice = candles_5m.slice(i, i + 3);
-    if (slice.length < 3) continue;
-
-    result.push({
-      time: slice[0].time,
-      open: slice[0].open,
-      high: Math.max(...slice.map(c => c.high)),
-      low: Math.min(...slice.map(c => c.low)),
-      close: slice[slice.length - 1].close
-    });
-  }
-  return result;
-}
 
 function calculateEMA(values, period) {
   if (values.length < period) return null;
@@ -350,6 +339,103 @@ function calculateStochastic(candles, period = 14) {
 
   return ((lastClose - lowestLow) / (highestHigh - lowestLow)) * 100;
 }
+
+
+
+
+// Preload recent M5 candles on startup for ATR and regime evaluation
+
+async function preloadHistoricalM5() {
+  try {
+    console.log("[HISTORY] Loading M5 history...");
+
+    const history = await account.getHistoricalCandles(
+      SYMBOL,
+      '5m',
+      null,
+      700
+    );
+
+    if (!history?.length) {
+      console.warn("[HISTORY] No M5 candles returned");
+      return;
+    }
+
+    const first = history[0];
+    const last = history[history.length - 1];
+
+    console.log("===== HISTORICAL RANGE =====");
+    console.log({
+      firstISO: new Date(first.time).toISOString(),
+      lastISO: new Date(last.time).toISOString(),
+      totalCandles: history.length,
+      expectedSpanMinutes: history.length * 5
+    });
+    console.log("============================");
+
+    const map = new Map();
+
+    for (const c of history) {
+      const rawTime = new Date(c.time).getTime();
+
+      // 🔒 Same bucket logic as tick handler
+      const bucket = Math.floor(rawTime / 300000) * 300000;
+
+      map.set(bucket, {
+        time: bucket,
+        open: Number(c.open),
+        high: Number(c.high),
+        low: Number(c.low),
+        close: Number(c.close)
+      });
+    }
+
+    candles_5m = Array.from(map.values())
+      .sort((a, b) => a.time - b.time);
+
+    console.log(`[HISTORY] Loaded ${candles_5m.length} aligned M5 candles`);
+
+  } catch (err) {
+    console.error("[HISTORY] Failed to preload M5:", err.message || err);
+  }
+}
+
+function bootstrapM15FromM5() {
+  candles_15m = [];
+
+  for (const c of candles_5m) {
+    const bucket = Math.floor(c.time / 900000) * 900000;
+
+    let last = candles_15m[candles_15m.length - 1];
+
+    if (!last || last.time !== bucket) {
+      candles_15m.push({
+        time: bucket,
+        open: c.open,
+        high: c.high,
+        low: c.low,
+        close: c.close
+      });
+    } else {
+      last.high = Math.max(last.high, c.high);
+      last.low  = Math.min(last.low, c.low);
+      last.close = c.close;
+    }
+  }
+
+  console.log(`[HISTORY] Bootstrapped ${candles_15m.length} M15 candles`);
+}
+
+function getHistoricalGapCount() {
+  if (!candles_5m.length || !latestPrice) return 0;
+
+  const lastHist = candles_5m.at(-1).time;
+  const liveBucket = Math.floor(latestPrice.timestamp / 300000) * 300000;
+
+  const diff = liveBucket - lastHist;
+  return Math.floor(diff / 300000);
+}
+
 
 
 
@@ -1106,7 +1192,7 @@ async function safeGetPositions() {
 // CORE Logic: Trend Evaluation and Trade Management
 
 function evaluateM15Trend() {
-  const m15 = buildM15CandlesFromM5();
+  const m15 = candles_15m;
   if (m15.length < 210) return; // 200 EMA + buffer
 
   const closes = m15.map(c => c.close);
@@ -1314,6 +1400,31 @@ async function tryExecuteStrategyTrade() {
 }
 
 
+let printedOnce = false;
+
+function printLatestCandles() {
+  function format(c) {
+    return {
+      time: new Date(c.time).toISOString(),
+      open: Number(c.open.toFixed(2)),
+      high: Number(c.high.toFixed(2)),
+      low: Number(c.low.toFixed(2)),
+      close: Number(c.close.toFixed(2))
+    };
+  }
+
+  // Exclude currently forming candle (last one)
+  const closed5m = candles_5m.slice(0, -1).slice(-5);
+  const closed15m = candles_15m.slice(0, -1).slice(-5);
+
+  console.log("\n========== LAST 5 CLOSED M5 ==========");
+  closed5m.map(format).forEach(c => console.log(c));
+
+  console.log("========== LAST 5 CLOSED M15 ==========");
+  closed15m.map(format).forEach(c => console.log(c));
+  console.log("=======================================\n");
+}
+
 
 
 
@@ -1323,8 +1434,47 @@ async function handleTick(tick) {
     const tickBid = tick.bid ?? tick.price;
     const tickAsk = tick.ask ?? tick.price;
     const tickPrice = tickBid ?? tickAsk;
-    const tickTime = Date.now();
+    const tickTime = new Date(tick.time).getTime();
 
+    // ========================
+    // PRE-BUILD GAP CHECK
+    // ========================
+    const lastHist = candles_5m.length
+      ? candles_5m.at(-1).time
+      : null;
+
+    const liveBucket = Math.floor(tickTime / 300000) * 300000;
+
+    if (lastHist && liveBucket - lastHist > 300000) {
+      const gapCandles = Math.floor((liveBucket - lastHist) / 300000);
+
+      if (!historicalGapLock) {
+        console.warn(`[GAP LOCK] Detected ${gapCandles} missing candles BEFORE build`);
+      }
+
+      historicalGapLock = true;
+
+      return; // 🔒 STOP before modifying candles
+    }
+
+
+    // 🔎 DEBUG: Effective tickTime used for candle engine
+    if (!global.__tickEffectiveLogged) {
+      const nowUtc = Date.now();
+      const diffMin = ((tickTime - nowUtc) / 60000).toFixed(2);
+
+      console.log("====== EFFECTIVE TICK TIME (ENGINE) ======");
+      console.log({
+        sourceUsed: tick.time ? "brokerTime" : "tick.time",
+        tickTime_ms: tickTime,
+        tickTime_iso: new Date(tickTime).toISOString(),
+        realUTC_now: new Date(nowUtc).toISOString(),
+        difference_from_realUTC_minutes: diffMin
+      });
+      console.log("==========================================");
+
+      global.__tickEffectiveLogged = true;
+    }
     // --- Update latestPrice (required for partial/BE logic) ---
     latestPrice = {
       bid: tickBid,
@@ -1382,10 +1532,11 @@ async function handleTick(tick) {
 
     // --- CANDLE BUILDER (1m, 3m, 5m) ---
     try {
-      const nowMs = Date.now();
-      const minuteBucket = Math.floor(nowMs / 60000) * 60000;       // 1m bucket (ms)
+      const nowMs = tickTime;
+      const minuteBucket = Math.floor(nowMs / 60000) * 60000; // 1m bucket (60000ms)
       const threeMinBucket = Math.floor(minuteBucket / 180000) * 180000; // 3m bucket (180000ms)
       const fiveMinBucket = Math.floor(minuteBucket / 300000) * 300000;  // 5m bucket (300000ms)
+      const fifteenMinBucket = Math.floor(minuteBucket / 900000) * 900000; // 15m bucket (900000ms)
 
       const priceMid = (tick.bid != null && tick.ask != null) ? ((tick.bid + tick.ask) / 2) : (tick.bid ?? tick.ask ?? null);
 
@@ -1423,30 +1574,67 @@ async function handleTick(tick) {
           last5.close = priceMid;
         }
 
-        // --- M15 TREND FILTER ---
-        if (candles_5m.length >= 3) {
-          const last5 = candles_5m.at(-1);
-          if (last5 && last5.time % (15 * 60 * 1000) === 0) {
-            evaluateM15Trend();
+        // 15m candle (built directly from ticks)
+        let last15 = candles_15m[candles_15m.length - 1];
+        if (!last15 || last15.time !== fifteenMinBucket) {
+          candles_15m.push({
+            time: fifteenMinBucket,
+            open: priceMid,
+            high: priceMid,
+            low: priceMid,
+            close: priceMid
+          });
+          if (candles_15m.length > MAX_CANDLES) candles_15m.shift();
+        } else {
+          last15.high = Math.max(last15.high, priceMid);
+          last15.low  = Math.min(last15.low, priceMid);
+          last15.close = priceMid;
+        }
+
+        if (!printedOnce && candles_15m.length > 5) {
+          printLatestCandles();
+          printedOnce = true;
+        }
+        
+        
+        // ========================
+        // HISTORICAL GAP CHECK
+        // ========================
+        const gap = getHistoricalGapCount();
+
+        if (gap > 0) {
+          if (!historicalGapLock) {
+            console.warn(`[GAP LOCK] Missing ${gap} M5 candles → Strategy paused`);
           }
+          historicalGapLock = true;
+
+          // Schedule refresh only once
+          if (!gapRefreshScheduled) {
+            gapRefreshScheduled = true;
+            setTimeout(async () => {
+              console.log("[HISTORY] Refreshing after gap...");
+              await preloadHistoricalM5();
+              bootstrapM15FromM5();
+              gapRefreshScheduled = false;
+            }, 60_000); // wait 1 min for broker to finalize
+          }
+        } else {
+          if (historicalGapLock) {
+            console.log("[GAP LOCK] Gap resolved → Strategy resumed");
+          }
+          historicalGapLock = false;
         }
 
         // ========================
         // STRATEGY LAYER (M5)
         // ========================
-        evaluateM5MarketRegime();
-        detectPullbackSetup();
-
-        // ========================
-        // STRATEGY CONFIRMATION
-        // ========================
-        confirmPullbackEntry();
-
-        // ========================
-        // STRATEGY EXECUTION
-        // ========================
-        await tryExecuteStrategyTrade();
-
+        if (!historicalGapLock) {
+          evaluateM15Trend();
+          evaluateM5MarketRegime();
+          detectPullbackSetup();
+          confirmPullbackEntry();
+          await tryExecuteStrategyTrade();
+        }
 
 
 
@@ -1905,6 +2093,12 @@ async function startBot() {
     } else {
       console.log('[METAAPI] First tick received.');
     }
+
+    // ===== HISTORICAL PRELOAD =====
+    await preloadHistoricalM5();
+    bootstrapM15FromM5();
+    evaluateM15Trend(); // initialize bias immediately
+    evaluateM5MarketRegime(); // initialize regime
 
     // fetch initial balance snapshot if available
     try {
