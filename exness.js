@@ -168,14 +168,11 @@ globalThis.zoneApproval = {
   "R_SELL": { "3M": false, "5M": false }
 };
 
-// ========================
-// HISTORICAL GAP CONTROL
-// ========================
-let historicalGapLock = false;
-let gapRefreshScheduled = false;
 
 
-
+let coldStartMode = true;
+let coldStartStartedAt = Date.now();
+const COLD_START_DURATION = 60 * 60 * 1000; // 1 hour
 
 
 
@@ -361,17 +358,6 @@ async function preloadHistoricalM5() {
       return;
     }
 
-    const first = history[0];
-    const last = history[history.length - 1];
-
-    console.log("===== HISTORICAL RANGE =====");
-    console.log({
-      firstISO: new Date(first.time).toISOString(),
-      lastISO: new Date(last.time).toISOString(),
-      totalCandles: history.length,
-      expectedSpanMinutes: history.length * 5
-    });
-    console.log("============================");
 
     const map = new Map();
 
@@ -426,14 +412,30 @@ function bootstrapM15FromM5() {
   console.log(`[HISTORY] Bootstrapped ${candles_15m.length} M15 candles`);
 }
 
-function getHistoricalGapCount() {
-  if (!candles_5m.length || !latestPrice) return 0;
 
-  const lastHist = candles_5m.at(-1).time;
-  const liveBucket = Math.floor(latestPrice.timestamp / 300000) * 300000;
+async function backfillHistoricalData() {
+  const history = await account.getHistoricalCandles(SYMBOL, '5m', null, 700);
+  if (!history?.length) return;
 
-  const diff = liveBucket - lastHist;
-  return Math.floor(diff / 300000);
+  const existingTimes = new Set(candles_5m.map(c => c.time));
+
+  for (const c of history) {
+    const bucket = Math.floor(new Date(c.time).getTime() / 300000) * 300000;
+
+    if (!existingTimes.has(bucket)) {
+      candles_5m.push({
+        time: bucket,
+        open: Number(c.open),
+        high: Number(c.high),
+        low: Number(c.low),
+        close: Number(c.close)
+      });
+    }
+  }
+
+  candles_5m.sort((a, b) => a.time - b.time);
+
+  bootstrapM15FromM5();
 }
 
 
@@ -1400,31 +1402,6 @@ async function tryExecuteStrategyTrade() {
 }
 
 
-let printedOnce = false;
-
-function printLatestCandles() {
-  function format(c) {
-    return {
-      time: new Date(c.time).toISOString(),
-      open: Number(c.open.toFixed(2)),
-      high: Number(c.high.toFixed(2)),
-      low: Number(c.low.toFixed(2)),
-      close: Number(c.close.toFixed(2))
-    };
-  }
-
-  // Exclude currently forming candle (last one)
-  const closed5m = candles_5m.slice(0, -1).slice(-5);
-  const closed15m = candles_15m.slice(0, -1).slice(-5);
-
-  console.log("\n========== LAST 5 CLOSED M5 ==========");
-  closed5m.map(format).forEach(c => console.log(c));
-
-  console.log("========== LAST 5 CLOSED M15 ==========");
-  closed15m.map(format).forEach(c => console.log(c));
-  console.log("=======================================\n");
-}
-
 
 
 
@@ -1436,45 +1413,7 @@ async function handleTick(tick) {
     const tickPrice = tickBid ?? tickAsk;
     const tickTime = new Date(tick.time).getTime();
 
-    // ========================
-    // PRE-BUILD GAP CHECK
-    // ========================
-    const lastHist = candles_5m.length
-      ? candles_5m.at(-1).time
-      : null;
 
-    const liveBucket = Math.floor(tickTime / 300000) * 300000;
-
-    if (lastHist && liveBucket - lastHist > 300000) {
-      const gapCandles = Math.floor((liveBucket - lastHist) / 300000);
-
-      if (!historicalGapLock) {
-        console.warn(`[GAP LOCK] Detected ${gapCandles} missing candles BEFORE build`);
-      }
-
-      historicalGapLock = true;
-
-      return; // 🔒 STOP before modifying candles
-    }
-
-
-    // 🔎 DEBUG: Effective tickTime used for candle engine
-    if (!global.__tickEffectiveLogged) {
-      const nowUtc = Date.now();
-      const diffMin = ((tickTime - nowUtc) / 60000).toFixed(2);
-
-      console.log("====== EFFECTIVE TICK TIME (ENGINE) ======");
-      console.log({
-        sourceUsed: tick.time ? "brokerTime" : "tick.time",
-        tickTime_ms: tickTime,
-        tickTime_iso: new Date(tickTime).toISOString(),
-        realUTC_now: new Date(nowUtc).toISOString(),
-        difference_from_realUTC_minutes: diffMin
-      });
-      console.log("==========================================");
-
-      global.__tickEffectiveLogged = true;
-    }
     // --- Update latestPrice (required for partial/BE logic) ---
     latestPrice = {
       bid: tickBid,
@@ -1590,45 +1529,13 @@ async function handleTick(tick) {
           last15.low  = Math.min(last15.low, priceMid);
           last15.close = priceMid;
         }
-
-        if (!printedOnce && candles_15m.length > 5) {
-          printLatestCandles();
-          printedOnce = true;
-        }
         
         
-        // ========================
-        // HISTORICAL GAP CHECK
-        // ========================
-        const gap = getHistoricalGapCount();
-
-        if (gap > 0) {
-          if (!historicalGapLock) {
-            console.warn(`[GAP LOCK] Missing ${gap} M5 candles → Strategy paused`);
-          }
-          historicalGapLock = true;
-
-          // Schedule refresh only once
-          if (!gapRefreshScheduled) {
-            gapRefreshScheduled = true;
-            setTimeout(async () => {
-              console.log("[HISTORY] Refreshing after gap...");
-              await preloadHistoricalM5();
-              bootstrapM15FromM5();
-              gapRefreshScheduled = false;
-            }, 60_000); // wait 1 min for broker to finalize
-          }
-        } else {
-          if (historicalGapLock) {
-            console.log("[GAP LOCK] Gap resolved → Strategy resumed");
-          }
-          historicalGapLock = false;
-        }
 
         // ========================
         // STRATEGY LAYER (M5)
         // ========================
-        if (!historicalGapLock) {
+        if (!coldStartMode) {
           evaluateM15Trend();
           evaluateM5MarketRegime();
           detectPullbackSetup();
@@ -2094,11 +2001,7 @@ async function startBot() {
       console.log('[METAAPI] First tick received.');
     }
 
-    // ===== HISTORICAL PRELOAD =====
-    await preloadHistoricalM5();
-    bootstrapM15FromM5();
-    evaluateM15Trend(); // initialize bias immediately
-    evaluateM5MarketRegime(); // initialize regime
+    console.log("[COLD START] Live build mode activated (no preload)");
 
     // fetch initial balance snapshot if available
     try {
@@ -2115,6 +2018,17 @@ async function startBot() {
     lastDisconnectTime = null;
     maintenanceAlertSent = false;
     reconnecting = false;
+
+    setInterval(async () => {
+      if (coldStartMode && Date.now() - coldStartStartedAt >= COLD_START_DURATION) {
+        console.log("[COLD START] 1hr completed → Fetching historical backfill");
+
+        await backfillHistoricalData();
+
+        coldStartMode = false;
+        console.log("[COLD START] Backfill done → Strategy Activated");
+      }
+    }, 10_000);
 
     // --- start tick poll
     const pollIntervalMs = 2000;
