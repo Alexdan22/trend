@@ -155,6 +155,7 @@ let openPairs = {}; // ticket -> metadata
 
 // Prevent newly placed trades from being marked as external
 const recentTickets = new Set();
+let lastM15EvaluationTime = null;
 
 
 
@@ -1194,8 +1195,9 @@ async function safeGetPositions() {
 // CORE Logic: Trend Evaluation and Trade Management
 
 function evaluateM15Trend() {
+
   const m15 = candles_15m;
-  if (m15.length < 210) return; // 200 EMA + buffer
+  if (m15.length < 210) return;
 
   const closes = m15.map(c => c.close);
 
@@ -1205,17 +1207,32 @@ function evaluateM15Trend() {
 
   if (!ema50 || !ema200 || !rsi) return;
 
-  let nextBias = "NONE";
+  const lastClose = closes.at(-1);
 
-  if (ema50 > ema200 && closes.at(-1) > ema50 && rsi >= 55) {
+  const prevBias = STRATEGY_STATE.trendBias;
+  let nextBias = prevBias;
+
+  const buyCondition =
+    ema50 > ema200 &&
+    lastClose > ema50 &&
+    rsi >= 55;
+
+  const sellCondition =
+    ema50 < ema200 &&
+    lastClose < ema50 &&
+    rsi <= 45;
+
+  if (buyCondition) {
     nextBias = "BUY";
-  } else if (ema50 < ema200 && closes.at(-1) < ema50 && rsi <= 45) {
+  }
+  else if (sellCondition) {
     nextBias = "SELL";
   }
 
-  if (STRATEGY_STATE.trendBias !== nextBias) {
+  if (prevBias !== nextBias) {
     STRATEGY_STATE.trendBias = nextBias;
     STRATEGY_STATE.lastUpdate = Date.now();
+
     console.log(`[TREND] M15 trendBias → ${nextBias}`);
   }
 }
@@ -1536,7 +1553,15 @@ async function handleTick(tick) {
         // STRATEGY LAYER (M5)
         // ========================
         if (!coldStartMode) {
-          evaluateM15Trend();
+          const latestM15 = candles_15m[candles_15m.length - 1];
+
+          if (latestM15 && latestM15.time !== lastM15EvaluationTime) {
+
+            lastM15EvaluationTime = latestM15.time;
+
+            evaluateM15Trend();
+          }
+
           evaluateM5MarketRegime();
           detectPullbackSetup();
           confirmPullbackEntry();
