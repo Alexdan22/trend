@@ -19,7 +19,8 @@ function evaluateState(strategyResult) {
     case states.IDLE:
 
       if (strategyResult && strategyResult.signal) {
-        currentState = states.READY;
+
+        currentState = states.TRADE_ACTIVE;
 
         return {
           action: "ENTER",
@@ -30,19 +31,9 @@ function evaluateState(strategyResult) {
 
       break;
 
-    case states.READY:
-
-      currentState = states.TRADE_ACTIVE;
-
-      return {
-        action: "EXECUTE"
-      };
-
     case states.TRADE_ACTIVE:
 
-      return {
-        action: "HOLD"
-      };
+      return { action: "HOLD" };
 
     case states.COOLDOWN:
 

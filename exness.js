@@ -31,6 +31,14 @@ const RAW_ORDERS_LOG = '/tmp/raw_order_responses.log';
 const { connectDB } = require("./db");
 const { loadOpenPairs, saveTrade } = require("./models");
 const { initTelegramBot, getBot } = require("./telegram");
+const { initSymbol } = require('./src/core/symbolRegistry');
+const { updatePrice } = require('./src/core/symbolRegistry');
+const { getContext } = require('./src/core/symbolRegistry');
+const { runStrategy } = require('./src/strategy/strategyEngine');
+const { evaluateState } = require('./src/strategy/stateMachine/strategyStateMachine');
+const { notifyTradeClosed } = require("./src/strategy/stateMachine/strategyStateMachine");
+
+
 
 
 const EXNESS_PORT = process.env.EXNESS_PORT || 5002;
@@ -51,6 +59,9 @@ const FALLBACK_TP_DISTANCE = 8;   // XAUUSD dollars
 
 // --------------------- CONFIG ---------------------
 const SYMBOL = process.env.SYMBOL || "XAUUSDm"; // change to XAUUSDm/GOLD/etc. per broker
+
+initSymbol(SYMBOL);
+
 const MIN_LOT = 0.01; // minimum lot size per broker
 // ---------------- LOT SIZING ----------------
 let FIXED_LOT = 0.02;   // default lot size for ALL trades
@@ -123,6 +134,7 @@ const ATR_TRIGGER_MULTIPLIER = 1.5;   // used to compute dynamic trigger = ATR *
 
 let latestPrice = null;   // { bid, ask, timestamp }
 let lastTradeMonitorRun = 0;
+let lastStrategyCandle = 0;
 const PAIR_STATE = Object.freeze({
   CREATED: "CREATED",                 // object exists, no broker interaction yet
   ENTRY_IN_PROGRESS: "ENTRY_IN_PROGRESS", // LEG1 placed, LEG2 pending
@@ -155,7 +167,6 @@ let openPairs = {}; // ticket -> metadata
 
 // Prevent newly placed trades from being marked as external
 const recentTickets = new Set();
-let lastM15EvaluationTime = null;
 
 
 
@@ -298,28 +309,6 @@ function calculateBollingerBands(values, period = 20, mult = 2) {
     middle: mid,
     width: (2 * mult * std) / mid // normalized BB width
   };
-}
-
-function evaluateM5MarketRegime() {
-  if (candles_5m.length < 25) return;
-
-  const closes = candles_5m.map(c => c.close);
-  const bb = calculateBollingerBands(closes, 20, 2);
-  if (!bb) return;
-
-  // empirical starting threshold for XAUUSD M5
-  const MIN_BB_WIDTH = 0.0015;
-
-  const nextRegime =
-    bb.width >= MIN_BB_WIDTH ? "ACTIVE" : "DEAD";
-
-  if (STRATEGY_STATE.marketRegime !== nextRegime) {
-    STRATEGY_STATE.marketRegime = nextRegime;
-    STRATEGY_STATE.lastUpdate = Date.now();
-    console.log(
-      `[STRATEGY][M5] Regime → ${nextRegime} (BBW=${bb.width.toFixed(5)})`
-    );
-  }
 }
 
 function calculateStochastic(candles, period = 14) {
@@ -567,9 +556,9 @@ async function finalizePair(pairId, reason) {
       err.message || err
     );
   }
-
   // always cleanup local state
   delete openPairs[pairId];
+  notifyTradeClosed();
 
 
   console.log(
@@ -914,9 +903,122 @@ async function placePairedOrder(side, totalLot, slPrice, tpPrice, riskPercent) {
   }
 }
 
+async function processStrategyEntry(side, score = null) {
 
+  if (isEntryLocked()) {
+    console.log('[ENTRY] ⛔ Blocked — entry lock active');
+    return;
+  }
 
+  acquireEntryLock('strategy-entry');
 
+  try {
+
+    const accountId = process.env.METAAPI_ACCOUNT_ID;
+
+    const allowed = await canPlaceTrade(accountId);
+
+    if (!allowed) {
+      console.log("[ENTRY] ⛔ Blocked by account/user state");
+      releaseEntryLock('entry-rejected');
+      return;
+    }
+
+    // ---- LOT SIZING ----
+    const totalLot = await internalLotSizing();
+
+    // ---- PRICE REF ----
+    const priceRef = await safeGetPrice(SYMBOL);
+
+    if (!priceRef) {
+      releaseEntryLock('price-unavailable');
+      return;
+    }
+
+    const entryRef =
+      side === 'BUY'
+        ? priceRef.ask
+        : priceRef.bid;
+
+    // ---- SL / TP ----
+    let sltp = calculateDynamicSLTP(side, entryRef);
+
+    if (!sltp) {
+
+      console.warn('[WARMUP] Using fallback SL/TP');
+
+      if (side === 'BUY') {
+        sltp = {
+          sl: entryRef - FALLBACK_SL_DISTANCE,
+          tp: entryRef + FALLBACK_TP_DISTANCE,
+          slDistance: FALLBACK_SL_DISTANCE
+        };
+      } else {
+        sltp = {
+          sl: entryRef + FALLBACK_SL_DISTANCE,
+          tp: entryRef - FALLBACK_TP_DISTANCE,
+          slDistance: FALLBACK_SL_DISTANCE
+        };
+      }
+    }
+
+    const { sl, tp, slDistance } = sltp;
+
+    // ---- PLACE ORDER ----
+    const prePair = await placePairedOrder(
+      side,
+      totalLot,
+      sl,
+      tp
+    );
+
+    if (!prePair) {
+      console.log("[ENTRY] ❌ Order failed");
+      releaseEntryLock('entry-failed');
+      return;
+    }
+
+    openPairs[prePair.pairId].sl = sl;
+    openPairs[prePair.pairId].tp = tp;
+    openPairs[prePair.pairId].slDistance = slDistance;
+
+    // ---- SAVE TO DB ----
+    const { savePair } = require("./models");
+    await savePair(openPairs[prePair.pairId]);
+
+    // ---- TELEGRAM ALERT ----
+    const safePairId = md2(prePair.pairId);
+    const entryPrice = Number(prePair.entryPrice);
+    const slPrice = Number(sl);
+    const tpPrice = Number(tp);
+    const lot = prePair.totalLot;
+
+    const scoreText = score !== null
+      ? `📊 Score: ${score}\n`
+      : '';
+
+    await sendTelegram(
+      `${side === 'BUY' ? '🟢 BUY Trade Placed' : '🔴 SELL Trade Placed'}\n` +
+      `━━━━━━━━━━━━━━━\n` +
+      `${scoreText}` +
+      `🆔 Pair: ${safePairId}\n` +
+      `💰 Lot: ${lot}\n` +
+      `🎯 Entry: ${entryPrice.toFixed(2)}\n` +
+      `📊 SL: ${slPrice.toFixed(2)}\n` +
+      `🎯 TP: ${tpPrice.toFixed(2)}\n` +
+      `📅 Time: ${new Date().toLocaleTimeString()} UTC`,
+      { parse_mode: 'MarkdownV2' }
+    );
+
+    console.log("[ENTRY] ✔ STRATEGY ENTRY completed");
+
+  } catch (err) {
+
+    console.error("[ENTRY] ❌ Strategy entry error:", err.message);
+
+    releaseEntryLock('entry-error');
+  }
+}
 
 async function processTickForOpenPairs(price) {
   if (!price) return;
@@ -1192,235 +1294,6 @@ async function safeGetPositions() {
 }
 
 
-// CORE Logic: Trend Evaluation and Trade Management
-
-function evaluateM15Trend() {
-
-  const m15 = candles_15m;
-  if (m15.length < 210) return;
-
-  const closes = m15.map(c => c.close);
-
-  const ema50 = calculateEMA(closes, 50);
-  const ema200 = calculateEMA(closes, 200);
-  const rsi = calculateRSI(closes, 14);
-
-  if (!ema50 || !ema200 || !rsi) return;
-
-  const lastClose = closes.at(-1);
-
-  const prevBias = STRATEGY_STATE.trendBias;
-  let nextBias = prevBias;
-
-  const buyCondition =
-    ema50 > ema200 &&
-    lastClose > ema50 &&
-    rsi >= 55;
-
-  const sellCondition =
-    ema50 < ema200 &&
-    lastClose < ema50 &&
-    rsi <= 45;
-
-  if (buyCondition) {
-    nextBias = "BUY";
-  }
-  else if (sellCondition) {
-    nextBias = "SELL";
-  }
-
-  if (prevBias !== nextBias) {
-    STRATEGY_STATE.trendBias = nextBias;
-    STRATEGY_STATE.lastUpdate = Date.now();
-
-    console.log(`[TREND] M15 trendBias → ${nextBias}`);
-  }
-}
-
-function detectPullbackSetup() {
-  if (STRATEGY_STATE.trendBias === "NONE") return;
-  if (STRATEGY_STATE.marketRegime !== "ACTIVE") return;
-  if (STRATEGY_STATE.setupState !== "IDLE") return;
-
-  if (candles_5m.length < 20) return;
-
-  const stoch = calculateStochastic(candles_5m, 14);
-  if (stoch == null) return;
-
-  let detected = false;
-
-  if (STRATEGY_STATE.trendBias === "BUY" && stoch <= 20) {
-    detected = true;
-  }
-
-  if (STRATEGY_STATE.trendBias === "SELL" && stoch >= 80) {
-    detected = true;
-  }
-
-  if (detected) {
-    STRATEGY_STATE.setupState = "PULLBACK";
-    STRATEGY_STATE.lastUpdate = Date.now();
-    console.log(
-      `[STRATEGY][SETUP] Pullback detected (${STRATEGY_STATE.trendBias}) | Stoch=${stoch.toFixed(1)}`
-    );
-  }
-}
-
-function confirmPullbackEntry() {
-  if (STRATEGY_STATE.setupState !== "PULLBACK") return;
-  if (candles_5m.length < 20) return;
-
-  const closes = candles_5m.map(c => c.close);
-
-  const stochNow = calculateStochastic(candles_5m, 14);
-  const stochPrev = calculateStochastic(candles_5m.slice(0, -1), 14);
-
-  const rsiNow = calculateRSI(closes, 14);
-  const rsiPrev = calculateRSI(closes.slice(0, -1), 14);
-
-  if (
-    stochNow == null ||
-    stochPrev == null ||
-    rsiNow == null ||
-    rsiPrev == null
-  ) return;
-
-  const last = candles_5m.at(-1);
-  const bullish = last.close > last.open;
-  const bearish = last.close < last.open;
-
-  let confirmed = false;
-
-  // -------- BUY CONFIRMATION --------
-  if (
-    STRATEGY_STATE.trendBias === "BUY" &&
-    stochPrev <= 20 &&
-    stochNow > 20 &&
-    rsiNow > rsiPrev &&
-    rsiNow >= 45 &&
-    bullish
-  ) {
-    confirmed = true;
-  }
-
-  // -------- SELL CONFIRMATION --------
-  if (
-    STRATEGY_STATE.trendBias === "SELL" &&
-    stochPrev >= 80 &&
-    stochNow < 80 &&
-    rsiNow < rsiPrev &&
-    rsiNow <= 55 &&
-    bearish
-  ) {
-    confirmed = true;
-  }
-
-  if (confirmed) {
-    STRATEGY_STATE.setupState = "CONFIRMED";
-    STRATEGY_STATE.lastUpdate = Date.now();
-
-    console.log(
-      `[STRATEGY][CONFIRMED] ${STRATEGY_STATE.trendBias} confirmed | ` +
-      `Stoch=${stochNow.toFixed(1)} RSI=${rsiNow.toFixed(1)}`
-    );
-  }
-}
-
-async function tryExecuteStrategyTrade() {
-  if (STRATEGY_STATE.setupState !== "CONFIRMED") return;
-  if (STRATEGY_STATE.trendBias === "NONE") return;
-
-  // Prevent duplicate entries
-  if (isEntryLocked()) {
-    console.log("[STRATEGY][EXEC] Blocked — entry lock active");
-    return;
-  }
-
-  const side = STRATEGY_STATE.trendBias;
-
-  // Prevent stacking same-direction trades
-  const hasSameSideOpen = Object.values(openPairs).some(
-    p => p.side === side && p.state !== PAIR_STATE.CLOSED
-  );
-  if (hasSameSideOpen) {
-    console.log(`[STRATEGY][EXEC] Blocked — ${side} trade already open`);
-    STRATEGY_STATE.setupState = "IDLE";
-    return;
-  }
-
-  acquireEntryLock("strategy-entry");
-
-  try {
-    // 1️⃣ Get price
-    const priceRef = await safeGetPrice(SYMBOL);
-    if (!priceRef) {
-      console.warn("[STRATEGY][EXEC] No price available");
-      releaseEntryLock("price-missing");
-      return;
-    }
-
-    const entryRef =
-      side === "BUY" ? priceRef.ask : priceRef.bid;
-
-    // 2️⃣ Lot sizing
-    const totalLot = await internalLotSizing();
-
-    // 3️⃣ SL / TP (reuse existing logic)
-    let sltp = calculateDynamicSLTP(side, entryRef);
-
-    // Warm-up fallback safety
-    if (!sltp) {
-      console.warn("[STRATEGY][EXEC] Using fallback SL/TP");
-      if (side === "BUY") {
-        sltp = {
-          sl: entryRef - FALLBACK_SL_DISTANCE,
-          tp: entryRef + FALLBACK_TP_DISTANCE
-        };
-      } else {
-        sltp = {
-          sl: entryRef + FALLBACK_SL_DISTANCE,
-          tp: entryRef - FALLBACK_TP_DISTANCE
-        };
-      }
-    }
-
-    // 4️⃣ Place paired order (YOUR EXISTING ENGINE)
-    const pair = await placePairedOrder(
-      side,
-      totalLot,
-      sltp.sl,
-      sltp.tp
-    );
-
-    if (!pair) {
-      console.error("[STRATEGY][EXEC] Order placement failed");
-      releaseEntryLock("entry-failed");
-      return;
-    }
-
-    // Attach strategy metadata
-    openPairs[pair.pairId].category = "STRATEGY_PULLBACK";
-    openPairs[pair.pairId].signalId = `strategy-${Date.now()}`;
-
-    const { savePair } = require("./models");
-    await savePair(openPairs[pair.pairId]);
-
-    console.log(
-      `[STRATEGY][EXEC] ${side} trade executed | Pair=${pair.pairId}`
-    );
-
-  } catch (err) {
-    console.error("[STRATEGY][EXEC] Fatal error:", err.message || err);
-    releaseEntryLock("exec-error");
-  } finally {
-    // Reset strategy state no matter what
-    STRATEGY_STATE.setupState = "IDLE";
-  }
-}
-
-
-
-
 
 // --------------------- TICK HANDLER (clean TradingView version) ---------------------
 async function handleTick(tick) {
@@ -1429,6 +1302,10 @@ async function handleTick(tick) {
     const tickAsk = tick.ask ?? tick.price;
     const tickPrice = tickBid ?? tickAsk;
     const tickTime = new Date(tick.time).getTime();
+    const ctx = getContext(SYMBOL);
+    updatePrice(SYMBOL, tickBid, tickAsk, tickTime);
+
+    
 
 
     // --- Update latestPrice (required for partial/BE logic) ---
@@ -1502,6 +1379,7 @@ async function handleTick(tick) {
         if (!last1 || last1.time !== minuteBucket) {
           candles_1m.push({ time: minuteBucket, open: priceMid, high: priceMid, low: priceMid, close: priceMid });
           if (candles_1m.length > MAX_CANDLES) candles_1m.shift();
+          ctx.candles.m1 = candles_1m;
         } else {
           last1.high = Math.max(last1.high, priceMid);
           last1.low  = Math.min(last1.low, priceMid);
@@ -1524,6 +1402,7 @@ async function handleTick(tick) {
         if (!last5 || last5.time !== fiveMinBucket) {
           candles_5m.push({ time: fiveMinBucket, open: priceMid, high: priceMid, low: priceMid, close: priceMid });
           if (candles_5m.length > MAX_CANDLES) candles_5m.shift();
+          ctx.candles.m5 = candles_5m;
         } else {
           last5.high = Math.max(last5.high, priceMid);
           last5.low  = Math.min(last5.low, priceMid);
@@ -1541,31 +1420,48 @@ async function handleTick(tick) {
             close: priceMid
           });
           if (candles_15m.length > MAX_CANDLES) candles_15m.shift();
+          ctx.candles.m15 = candles_15m;
         } else {
           last15.high = Math.max(last15.high, priceMid);
           last15.low  = Math.min(last15.low, priceMid);
           last15.close = priceMid;
         }
         
+        const m5Closes = candles_5m.map(c => c.close);
+        const m15Closes = candles_15m.map(c => c.close);
+
+        ctx.indicators.rsi = calculateRSI(m5Closes, 14);
+        ctx.indicators.stochastic = calculateStochastic(candles_5m, 14);
+
+        ctx.indicators.ema50 = calculateEMA(m15Closes, 50);
+        ctx.indicators.ema200 = calculateEMA(m15Closes, 200);
+
+        ctx.indicators.bollinger = calculateBollingerBands(m5Closes, 20, 2);
+
+        ctx.indicators.atr = computeATR_M5();
         
 
-        // ========================
-        // STRATEGY LAYER (M5)
-        // ========================
-        if (!coldStartMode) {
-          const latestM15 = candles_15m[candles_15m.length - 1];
+        const lastM5 = candles_5m[candles_5m.length - 1];
 
-          if (latestM15 && latestM15.time !== lastM15EvaluationTime) {
+        if (lastM5 && lastM5.time !== lastStrategyCandle) {
 
-            lastM15EvaluationTime = latestM15.time;
+          lastStrategyCandle = lastM5.time;
 
-            evaluateM15Trend();
+          const strategyResult = runStrategy(SYMBOL);
+
+          if (strategyResult) {
+
+            const action = evaluateState(strategyResult);
+
+            if (action?.action === "ENTER") {
+
+              await processStrategyEntry(
+                action.signal,
+                strategyResult.score
+              );
+
+            }
           }
-
-          evaluateM5MarketRegime();
-          detectPullbackSetup();
-          confirmPullbackEntry();
-          await tryExecuteStrategyTrade();
         }
 
 
