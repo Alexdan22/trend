@@ -14,8 +14,6 @@ function runStrategy(symbol) {
   const momentum = confirmMomentum(symbol);
   const liquidity = evaluateLiquidity(symbol);
 
-  const result = evaluateScore(symbol);
-
   console.log('\n================ STRATEGY DEBUG ================');
   console.log('[ENGINE] Regime:', regime);
   console.log('[ENGINE] Trend:', trend);
@@ -32,9 +30,12 @@ function runStrategy(symbol) {
 
   console.log('[STRATEGY] ✅ Signal:', result.signal, '| Score:', result.score, '\n');
 
+  const ctx = getContext(symbol);
+  const scoreResult = evaluateScore(symbol);
+
   return {
-    signal: result.signal,
-    score: result.score
+    ctx,
+    scoreResult
   };
 }
 

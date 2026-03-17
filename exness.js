@@ -1449,29 +1449,23 @@ async function handleTick(tick) {
 
           const strategyResult = runStrategy(SYMBOL);
 
-          console.log('[TICK] Strategy Output:', strategyResult);
-
           if (strategyResult) {
 
-            const action = evaluateState(strategyResult);
+            const { ctx, scoreResult } = strategyResult;
 
-            console.log('[STATE MACHINE]', action);
+            const action = evaluateState(ctx, scoreResult);
+
+            console.log('[STATE]', getState(), '| ACTION:', action);
 
             if (action?.action === "ENTER") {
 
-              console.log('[ENTRY] 🚀 Triggering entry:', action.signal);
+              console.log('[ENTRY] 🚀', action.signal);
 
               await processStrategyEntry(
                 action.signal,
-                strategyResult.score
+                action.score
               );
-
-            } else {
-              console.log('[ENTRY] ❌ No entry action');
             }
-
-          } else {
-            console.log('[STRATEGY] ❌ No result from strategy');
           }
         }
 
