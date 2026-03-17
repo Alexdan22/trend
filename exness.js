@@ -35,7 +35,7 @@ const { initSymbol } = require('./src/core/symbolRegistry');
 const { updatePrice } = require('./src/core/symbolRegistry');
 const { getContext } = require('./src/core/symbolRegistry');
 const { runStrategy } = require('./src/strategy/strategyEngine');
-const { evaluateState } = require('./src/strategy/stateMachine/strategyStateMachine');
+const { evaluateState, getState } = require('./strategy/strategyStateMachine');
 const { notifyTradeClosed } = require("./src/strategy/stateMachine/strategyStateMachine");
 
 
