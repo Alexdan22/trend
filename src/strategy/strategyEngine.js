@@ -8,17 +8,29 @@ const { evaluateScore } = require('./evaluation/scoreEvaluator');
 
 function runStrategy(symbol) {
 
-  // Run engines sequentially
-  evaluateRegime(symbol);
-  evaluateTrend(symbol);
-  detectPullback(symbol);
-  confirmMomentum(symbol);
-  evaluateLiquidity(symbol);
+  const regime = evaluateRegime(symbol);
+  const trend = evaluateTrend(symbol);
+  const pullback = detectPullback(symbol);
+  const momentum = confirmMomentum(symbol);
+  const liquidity = evaluateLiquidity(symbol);
 
-  // Evaluate score
   const result = evaluateScore(symbol);
 
-  if (!result) return null;
+  console.log('\n================ STRATEGY DEBUG ================');
+  console.log('[ENGINE] Regime:', regime);
+  console.log('[ENGINE] Trend:', trend);
+  console.log('[ENGINE] Pullback:', pullback);
+  console.log('[ENGINE] Momentum:', momentum);
+  console.log('[ENGINE] Liquidity:', liquidity);
+  console.log('[ENGINE] Score Result:', result);
+  console.log('================================================\n');
+
+  if (!result) {
+    console.log('[STRATEGY] ❌ No signal generated\n');
+    return null;
+  }
+
+  console.log('[STRATEGY] ✅ Signal:', result.signal, '| Score:', result.score, '\n');
 
   return {
     signal: result.signal,
