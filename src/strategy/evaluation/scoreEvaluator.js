@@ -1,6 +1,6 @@
 const { getContext } = require('../../core/symbolRegistry');
 
-const SCORE_THRESHOLD = 6;
+const SCORE_THRESHOLD = 5;
 
 function evaluateScore(symbol) {
 
@@ -9,7 +9,6 @@ function evaluateScore(symbol) {
 
   const regime = ctx.strategy.regime;
   const trend = ctx.strategy.trend;
-  const pullback = ctx.strategy.pullback;
   const momentum = ctx.strategy.momentum;
   const liquidity = ctx.strategy.liquidity;
   const atr = ctx.indicators.atr;
@@ -24,9 +23,6 @@ function evaluateScore(symbol) {
     score += 2;
   }
 
-  if (pullback === true) {
-    score += 2;
-  }
 
   if (momentum === "BUY_CONFIRM" || momentum === "SELL_CONFIRM") {
     score += 2;
@@ -44,14 +40,16 @@ function evaluateScore(symbol) {
 
   if (score >= SCORE_THRESHOLD) {
 
-    if (momentum === "BUY_CONFIRM") {
+    if (trend === "BUY") {
       signal = "BUY";
     }
 
-    if (momentum === "SELL_CONFIRM") {
+    if (trend === "SELL") {
       signal = "SELL";
     }
   }
+  
+  if (!signal) return null;
 
   return {
     signal,
