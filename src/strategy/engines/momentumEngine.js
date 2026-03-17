@@ -37,22 +37,35 @@ function confirmMomentum(symbol) {
 
   let momentum = "NONE";
 
-  if (
-    trend === "BUY" &&
-    stochasticPrev <= 20 &&
-    stochasticNow > 20 &&
-    last.close > last.open
-  ) {
-    momentum = "BUY_CONFIRM";
+  const bullishCandle = last.close > last.open;
+  const bearishCandle = last.close < last.open;
+
+  const stochasticRising = stochasticNow > stochasticPrev;
+  const stochasticFalling = stochasticNow < stochasticPrev;
+
+  const rsiBullish = rsi !== null && rsi > 50;
+  const rsiBearish = rsi !== null && rsi < 50;
+
+  if (trend === "BUY") {
+
+    if (
+      (stochasticRising && rsiBullish) ||   // strong confirmation
+      (bullishCandle && rsiBullish)         // fallback confirmation
+    ) {
+      momentum = "BUY_CONFIRM";
+    }
+
   }
 
-  else if (
-    trend === "SELL" &&
-    stochasticPrev >= 80 &&
-    stochasticNow < 80 &&
-    last.close < last.open
-  ) {
-    momentum = "SELL_CONFIRM";
+  else if (trend === "SELL") {
+
+    if (
+      (stochasticFalling && rsiBearish) ||
+      (bearishCandle && rsiBearish)
+    ) {
+      momentum = "SELL_CONFIRM";
+    }
+
   }
 
   ctx.strategy.momentum = momentum;
