@@ -1,34 +1,68 @@
 const { getContext } = require('../../core/symbolRegistry');
 
-/*
-Pullback Detection Engine
-
-Outputs:
-true  → pullback detected
-false → no pullback
-*/
-
 function detectPullback(symbol) {
-
   const ctx = getContext(symbol);
   if (!ctx) return;
 
   const trend = ctx.strategy.trend;
   const stochastic = ctx.indicators.stochastic;
 
-  if (!trend || stochastic === null) return;
+  if (stochastic == null) return;
 
-  let pullback = false;
+  const pb = ctx.strategy.pullback;
 
-  if (trend === "BUY" && stochastic <= 20) {
-    pullback = true;
+  // initialize memory
+  if (pb.lastStochastic === null) {
+    pb.lastStochastic = stochastic;
+    pb.active = false;
+    return;
   }
 
-  else if (trend === "SELL" && stochastic >= 80) {
-    pullback = true;
+  // ---------------- BUY PULLBACK ----------------
+  if (trend === "BUY") {
+
+    // Step 1: detect dip
+    if (!pb.active && stochastic < 30) {
+      pb.active = true;
+      pb.direction = "BUY";
+      console.log('[PULLBACK] BUY pullback started');
+    }
+
+    // Step 2: detect recovery (KEY)
+    if (pb.active && stochastic > pb.lastStochastic) {
+      ctx.strategy.pullbackSignal = "BUY_READY";
+
+      console.log('[PULLBACK] BUY pullback completed');
+
+      // reset
+      pb.active = false;
+      pb.direction = null;
+    }
   }
 
-  ctx.strategy.pullback = pullback;
+  // ---------------- SELL PULLBACK ----------------
+  else if (trend === "SELL") {
+
+    // Step 1: detect spike
+    if (!pb.active && stochastic > 70) {
+      pb.active = true;
+      pb.direction = "SELL";
+      console.log('[PULLBACK] SELL pullback started');
+    }
+
+    // Step 2: detect drop (KEY)
+    if (pb.active && stochastic < pb.lastStochastic) {
+      ctx.strategy.pullbackSignal = "SELL_READY";
+
+      console.log('[PULLBACK] SELL pullback completed');
+
+      // reset
+      pb.active = false;
+      pb.direction = null;
+    }
+  }
+
+  pb.lastStochastic = stochastic;
 }
 
 module.exports = {

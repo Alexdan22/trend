@@ -34,8 +34,21 @@ function createEmptyContext(symbol) {
     strategy: {
       regime: null,
       trend: null,
-      pullback: false,
+      pullback: {
+        active: false,
+        direction: null,     // BUY or SELL
+        lastStochastic: null
+      },
       momentum: null
+    },
+
+    phase: {
+      state: "IDLE",          // IDLE | TREND | SETUP
+      trendBias: null,        // BUY | SELL
+      pullbackSeen: false,
+      momentumSeen: false,
+      setupReady: false,
+      lastTransition: null
     },
 
     risk: {

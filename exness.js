@@ -7,17 +7,36 @@ const MetaApi = require('metaapi.cloud-sdk').default;
 const MemoryHistoryStorage =
   require('metaapi.cloud-sdk/dist/metaApi/memoryHistoryStorage').default;
 
-const _origGetDealKey = MemoryHistoryStorage.prototype._getDealKey;
+const _origAddDeal = MemoryHistoryStorage.prototype._addDeal;
+const _origAddHistoryOrder = MemoryHistoryStorage.prototype._addHistoryOrder;
 
 // global counter (lives for process lifetime)
 let corruptedDealCount = 0;
 
-MemoryHistoryStorage.prototype._getDealKey = function (deal) {
+MemoryHistoryStorage.prototype._addDeal = async function (deal, existing) {
   try {
-    return _origGetDealKey.call(this, deal);
+    // Check if time is a valid Date object to prevent AVL tree insert crashes
+    if (deal && deal.time && typeof deal.time.getTime !== 'function') {
+      throw new Error("Invalid time format");
+    }
+    this._getDealKey(deal); // Can it throw? Throwing here prevents mutation
+    return await _origAddDeal.call(this, deal, existing);
   } catch (e) {
     corruptedDealCount++;
-    return null; // silently skip
+    return; // silently skip
+  }
+};
+
+MemoryHistoryStorage.prototype._addHistoryOrder = async function (historyOrder, existing) {
+  try {
+    if (historyOrder && historyOrder.doneTime && typeof historyOrder.doneTime.getTime !== 'function') {
+      throw new Error("Invalid time format");
+    }
+    this._getHistoryOrderKey(historyOrder);
+    return await _origAddHistoryOrder.call(this, historyOrder, existing);
+  } catch (e) {
+    corruptedDealCount++;
+    return; // silently skip
   }
 };
 
@@ -2093,307 +2112,6 @@ async function startBot() {
 
 startBot().catch(err => console.error('BOT start failed:', err));
 
-
-// --------------------- WEBHOOK / TRADINGVIEW SIGNAL HANDLER ---------------------
-
-
-// ---- MAIN HANDLER ----
-async function handleTradingViewSignal(req, res) {
-  try {
-    const payload = req.body;
-
-    if (!payload || !payload.signal) {
-      console.log("[WEBHOOK] ❌ Rejected: Missing 'signal'");
-      return res.status(400).json({ ok: false, error: "Missing 'signal' in payload" });
-    }
-
-    // Idempotency
-    const signalId = payload.signalId ? String(payload.signalId) : null;
-    if (signalId && processedSignalIds.has(signalId)) {
-      console.log(`[WEBHOOK] 🔁 Duplicate ignored (signalId=${signalId})`);
-      return res.status(200).json({ ok: true, message: "Duplicate ignored (idempotent)" });
-    }
-
-    // Parse the incoming signal
-    const parsed = parseSignalString(payload.signal);
-
-    // ==========================================
-    // ZONE APPROVAL HANDLER
-    // Format example:
-    // signal: "3M ZONE T BUY"
-    // approval: true/false
-    // ==========================================
-    try {
-      const z = payload.signal.trim().toUpperCase().split(/\s+/);
-
-      // Expected: [ "3M", "ZONE", "T", "BUY" ]
-      if (z.length === 4 && z[1] === "ZONE") {
-          const timeframe = z[0];    // "3M" or "5M"
-          const type = z[2];         // "T" or "R"
-          const side = z[3];         // "BUY" or "SELL"
-
-          const category = `${type}_${side}`;  // T_BUY, T_SELL, R_BUY, R_SELL
-          const approval = Boolean(payload.approval);
-
-          if (globalThis.zoneApproval[category]) {
-              globalThis.zoneApproval[category][timeframe] = approval;
-
-              return res.status(200).json({
-                ok: true,
-                updated: { category, timeframe, approval }
-              });
-          }
-      }
-    } catch (err) {
-      console.log("[ZONE] Error updating zone:", err.message);
-    }
-
-
-    if (!parsed) {
-      console.log("[WEBHOOK] ❌ Invalid signal format");
-      return res.status(400).json({ ok: false, error: "Invalid signal format" });
-    }
-
-    // ================================
-    //           ENTRY LOGIC
-    // ================================
-    if (parsed.kind === "ENTRY") {
-
-
-      if (isEntryLocked()) {
-        console.log('[ENTRY] ⛔ Blocked — entry lock active');
-        return;
-      }
-
-      acquireEntryLock('entry-processing');
-
-
-
-      const category = normalizeCategory(parsed.type, parsed.side);
-      const side = parsed.side;
-      const now = Date.now();
-
-      console.log(`[ENTRY] Received ENTRY → type=${parsed.type}, side=${side}, category=${category}`);
-
-      // ==========================================
-      // APPROVAL ZONE CHECK
-      // ==========================================
-      const zone3 = globalThis.zoneApproval?.[category]?.["3M"];
-      const zone5 = globalThis.zoneApproval?.[category]?.["5M"];
-
-      console.log(`[ENTRY] Zone Check: 3M=${zone3}, 5M=${zone5}`);
-
-      if (!zone3 || !zone5) {
-        console.log(`[ENTRY] ⛔ Blocked: Approval zones not satisfied for ${category}`);
-        releaseEntryLock('entry-rejected');
-        return res.status(403).json({
-            ok: false,
-            error: `Approval zones not satisfied: 3M=${zone3}, 5M=${zone5}`
-        });
-      }
-
-      const accountId = process.env.METAAPI_ACCOUNT_ID; // or mapped account
-
-      const allowed = await canPlaceTrade(accountId);
-
-      if (!allowed) {
-        console.log("[ENTRY] ⛔ Blocked by account/user state");
-        releaseEntryLock('entry-rejected');
-        return res.status(403).json({
-          ok: false,
-          error: "Trading is paused for this account"
-        });
-      }
-
-
-
-      if (!category) {
-        console.log("[ENTRY] ❌ Invalid category");
-        releaseEntryLock('entry-rejected');
-        return res.status(400).json({ ok: false, error: "Invalid category" });
-      }
-
-      // ---- CATEGORY LIMIT CHECK ----
-      console.log(`[ENTRY] Category Count(${category}) = ${countCategory(category)}, Max=${MAX_PER_CATEGORY}`);
-
-      if (countCategory(category) >= MAX_PER_CATEGORY) {
-        console.log(`[ENTRY] ❌ Blocked: Category limit reached for ${category}`);
-        releaseEntryLock('entry-rejected');
-        return res.status(429).json({ ok: false, error: `Max trades reached for ${category}` });
-      }
-
-
-
-      // Mark idempotency ID early
-      if (signalId) processedSignalIds.add(signalId);
-
-      // ---- LOT SIZING ----
-      console.log("[ENTRY] Calculating lot size...");
-      const totalLot = await internalLotSizing();
-      console.log("[ENTRY] Lot decided:", totalLot);
-
-      // 1️⃣ Get a price reference FIRST
-      const priceRef = await safeGetPrice(SYMBOL);
-      if (!priceRef) {
-        releaseEntryLock('price-unavailable');
-        return res.status(500).json({ ok: false, error: 'No price available' });
-      }
-
-      const entryRef =
-        side === 'BUY' ? priceRef.ask : priceRef.bid;
-
-      // 2️⃣ Calculate SL / TP
-      let sltp = calculateDynamicSLTP(side, entryRef);
-      let usingFallback = false;
-
-      if (!sltp) {
-        // 🚧 INDICATOR WARM-UP FALLBACK
-        usingFallback = true;
-
-        if (side === 'BUY') {
-          sltp = {
-            sl: entryRef - FALLBACK_SL_DISTANCE,
-            tp: entryRef + FALLBACK_TP_DISTANCE,
-            slDistance: FALLBACK_SL_DISTANCE
-          };
-        } else {
-          sltp = {
-            sl: entryRef + FALLBACK_SL_DISTANCE,
-            tp: entryRef - FALLBACK_TP_DISTANCE,
-            slDistance: FALLBACK_SL_DISTANCE
-          };
-        }
-
-        console.warn('[WARMUP] Using fallback SL/TP — indicators not ready');
-      }
-
-
-      const { sl, tp, slDistance } = sltp;
-
-      // 3️⃣ Place paired order WITH SL/TP
-      const prePair = await placePairedOrder(
-        side,
-        totalLot,
-        sl,
-        tp
-      );
-
-      
-            
-      if (!prePair) {
-        console.log("[ENTRY] ❌ Order failed → removing signalId & exiting");
-        releaseEntryLock('entry-rejected');
-        if (signalId) processedSignalIds.delete(signalId);
-        return res.status(500).json({ ok: false, error: "Entry failed" });
-      }
-      
-      openPairs[prePair.pairId].sl = sl;
-      openPairs[prePair.pairId].tp = tp;
-      openPairs[prePair.pairId].slDistance = slDistance;
-      openPairs[prePair.pairId].category = category;
-      openPairs[prePair.pairId].signalId = signalId || null;
-
-      const { savePair } = require("./models");
-      await savePair(openPairs[prePair.pairId]);
-
-
-      
-      const safeCategory = category.replace(/[^a-zA-Z0-9 ]/g, '');
-      const safePairId = md2(prePair.pairId);
-      const entryPrice = Number(prePair.entryPrice);
-      const slPrice = Number(sl);
-      const tpPrice = Number(tp);
-      const lot = prePair.totalLot;
-
-
-      await sendTelegram(
-        `${side === 'BUY' ? '🟢 BUY Trade Placed' : '🔴 SELL Trade Placed'}\n` +
-        `━━━━━━━━━━━━━━━\n` +
-        `🆔 Pair: ${safePairId}\n` +
-        `📈 Category: ${safeCategory}\n` +
-        `💰 Lot: ${lot}\n` +
-        `🎯 Entry: ${entryPrice.toFixed(2)}\n` +
-        `📊 SL: ${slPrice.toFixed(2)}\n` +
-        `🎯 TP: ${tpPrice.toFixed(2)}\n` +
-        `📅 Time: ${new Date().toLocaleTimeString()} UTC`,
-        { parse_mode: 'MarkdownV2' }
-      );
-
-
-
-
-
-      console.log("[ENTRY] ✔ ENTRY completed\n");
-
-      return res.status(200).json({ ok: true, pair: openPairs[prePair.pairId] });
-    }
-
-    // ================================
-    //           CLOSE LOGIC (CATEGORY)
-    // ================================
-    if (parsed.kind === "CLOSE") {
-
-      const category = parsed.category;
-      console.log(`[CLOSE] Received CLOSE signal for category=${category}`);
-
-      const toClose = Object.entries(openPairs)
-        .filter(([_, rec]) => rec.category === category);
-
-      console.log(`[CLOSE] Found ${toClose.length} pairs to close for ${category}`);
-
-      if (signalId) processedSignalIds.add(signalId);
-
-      for (const [pairId, rec] of toClose) {
-
-        if (rec.state === PAIR_STATE.CLOSED || rec.state === PAIR_STATE.CLOSING) {
-          continue;
-        }
-
-        transitionPairState(rec, PAIR_STATE.CLOSING, "MANUAL_CLOSE");
-
-        console.log(`[CLOSE] Closing pairId=${pairId} (category=${category})`);
-
-        for (const key of ["PARTIAL", "TRAILING"]) {
-          const t = rec.trades[key];
-          if (t?.ticket) {
-            console.log(`[CLOSE] Attempting to close ${key} → ticket=${t.ticket}`);
-            await safeClosePosition(t.ticket, t.lot).catch(e =>
-              console.log(`[CLOSE] Failed closing ${key}:`, e.message)
-            );
-            rec.trades[key].ticket = null;
-          }
-        }
-
-        finalizePair(pairId, "MANUAL_CLOSE");
-        const safeCategory = category.replace(/[^a-zA-Z0-9 ]/g, '');
-        const safePairId = md2(pairId);
-
-        await sendTelegram(
-          `🔴 *CATEGORY CLOSE*\n` +
-          `Category: ${safeCategory}\n` +
-          `Pair: ${safePairId}`,
-          { parse_mode: "MarkdownV2" }
-        );
-
-        console.log(`[CLOSE] ✔ Pair closed: ${pairId}`);
-      }
-
-      return res.status(200).json({
-        ok: true,
-        category,
-        closed: toClose.length
-      });
-    }
-
-
-    console.log("[WEBHOOK] ❌ Unknown signal type");
-    return res.status(400).json({ ok: false, error: "Unknown signal" });
-
-  } catch (err) {
-    console.error("[WEBHOOK] ❌ Unhandled Error:", err);
-    return res.status(500).json({ ok: false, error: err.message });
-  }
-}
 
 
 
