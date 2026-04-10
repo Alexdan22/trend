@@ -53,12 +53,12 @@ function evaluateState(ctx, scoreResult) {
     case states.SETUP:
 
       // timeout safety
-      if (Date.now() - setupStartTime > SETUP_TIMEOUT) {
-        console.log('[STATE] SETUP timeout → TREND reset');
-        currentState = states.TREND;
-        setupStartTime = Date.now();
-        break;
-      }
+      // if (Date.now() - setupStartTime > SETUP_TIMEOUT) {
+      //   console.log('[STATE] SETUP timeout → TREND reset');
+      //   currentState = states.TREND;
+      //   setupStartTime = Date.now();
+      //   break;
+      // }
 
       // trend must still hold
       if (trend !== trendBias) {
