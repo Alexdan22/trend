@@ -2120,9 +2120,6 @@ function startWebhookServer() {
   const app = express();
   app.use(bodyParser.json());
 
-  app.post("/webhook", handleTradingViewSignal);
-  app.get("/_health", (_, res) => res.send("OK"));
-
   app.listen(EXNESS_PORT, () =>
     console.log(`[WEBHOOK] Ready on port ${EXNESS_PORT}`)
   );
