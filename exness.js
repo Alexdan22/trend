@@ -53,9 +53,7 @@ const { initTelegramBot, getBot } = require("./telegram");
 const { initSymbol } = require('./src/core/symbolRegistry');
 const { updatePrice } = require('./src/core/symbolRegistry');
 const { getContext } = require('./src/core/symbolRegistry');
-const { runStrategy } = require('./src/strategy/strategyEngine');
-const { evaluateState, getState } = require('./src/strategy/stateMachine/strategyStateMachine');
-const { notifyTradeClosed } = require("./src/strategy/stateMachine/strategyStateMachine");
+const { strategyEngine } = require('./src/strategy/strategyEngine');
 
 
 
@@ -300,6 +298,7 @@ function calculateRSI(values, period = 14) {
   if (losses === 0) return 100;
   const rs = gains / losses;
   return 100 - (100 / (1 + rs));
+  
 }
 
 function calculateSMA(values, period) {
@@ -1459,6 +1458,13 @@ async function handleTick(tick) {
 
         ctx.indicators.atr = computeATR_M5();
         
+        if (ctx.indicators.prevStochastic != null) {
+        ctx.indicators.stochasticDelta =
+          ctx.indicators.stochastic - ctx.indicators.prevStochastic;
+        }
+
+        ctx.indicators.prevStochastic = ctx.indicators.stochastic;
+        
 
         const lastM5 = candles_5m[candles_5m.length - 1];
 
@@ -1466,24 +1472,11 @@ async function handleTick(tick) {
 
           lastStrategyCandle = lastM5.time;
 
-          const strategyResult = runStrategy(SYMBOL);
+          if (ctx) {
+            const result = strategyEngine(ctx);
 
-          if (strategyResult) {
-
-            const { ctx, scoreResult } = strategyResult;
-
-            const action = evaluateState(ctx, scoreResult);
-
-            console.log('[STATE]', getState(), '| ACTION:', action);
-
-            if (action?.action === "ENTER") {
-
-              console.log('[ENTRY] 🚀', action.signal);
-
-              await processStrategyEntry(
-                action.signal,
-                action.score
-              );
+            if (result?.action === "ENTER") {
+              await processStrategyEntry(result.signal, result.score);
             }
           }
         }
