@@ -63,6 +63,70 @@ function reset() {
   };
 }
 
+function computeTrendScore(memory) {
+  if (!memory.length) return 0;
+
+  const avg = memory.reduce((acc, m) => {
+    acc.emaDiff += m.emaDiff || 0;
+    acc.priceDistance += m.priceDistance || 0;
+    acc.bbWidth += m.bbWidth || 0;
+    return acc;
+  }, { emaDiff: 0, priceDistance: 0, bbWidth: 0 });
+
+  const n = memory.length;
+
+  const emaScore = avg.emaDiff / n;
+  const distScore = avg.priceDistance / n;
+  const volScore = avg.bbWidth / n;
+
+  // Normalize (tune later)
+  return Math.min(40,
+    (emaScore * 10) +
+    (distScore * 5) +
+    (volScore * 100)
+  );
+}
+
+function computeSetupScore(memory, signal) {
+  if (!memory.length) return 0;
+
+  let score = 0;
+
+  for (const m of memory) {
+    const { stochastic, rsi } = m;
+
+    if (signal === "BUY") {
+      if (stochastic < 30) score += 2;
+      if (rsi < 45) score += 1;
+    } else {
+      if (stochastic > 70) score += 2;
+      if (rsi > 55) score += 1;
+    }
+  }
+
+  return Math.min(30, score);
+}
+
+function computeMomentumScore(memory, signal) {
+  if (!memory.length) return 0;
+
+  let score = 0;
+
+  for (const m of memory) {
+    const { delta, rsi } = m;
+
+    if (signal === "BUY") {
+      if (delta > 0) score += 2;
+      if (rsi > 50) score += 1;
+    } else {
+      if (delta < 0) score += 2;
+      if (rsi < 50) score += 1;
+    }
+  }
+
+  return Math.min(30, score);
+}
+
 // ==============================
 // ENGINE
 // ==============================
