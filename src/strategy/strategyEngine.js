@@ -199,3 +199,6 @@ function strategyEngine(ctx) {
 
   return { action: null };
 }
+
+
+module.exports = { strategyEngine };
