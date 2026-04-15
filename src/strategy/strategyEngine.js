@@ -1,24 +1,8 @@
 const CONFIG = {
   THRESHOLD: 75,
-  MEMORY_LIMIT: 20,     // max candles per phase
-  DECAY: 0.6           // partial carry-over (0.5–0.8 range)
+  MEMORY_LIMIT: 20,
+  DECAY: 0.6
 };
-
-// ==============================
-// HELPERS
-// ==============================
-function clamp(v, min = 0, max = 1) {
-  return Math.max(min, Math.min(v, max));
-}
-
-function scale10(v) {
-  return clamp(v) * 10;
-}
-
-function avg(arr, key) {
-  if (!arr.length) return 0;
-  return arr.reduce((s, x) => s + x[key], 0) / arr.length;
-}
 
 // ==============================
 // STATE (persistent)
@@ -26,6 +10,8 @@ function avg(arr, key) {
 const state = {
   phase: "IDLE",
   signal: null,
+
+  prevStochastic: null,
 
   memory: {
     trend: [],
@@ -68,6 +54,8 @@ function strategyEngine(ctx) {
   }
 
   let action = null;
+  const prevStoch = state.prevStochastic;
+  state.prevStochastic = stochastic;
 
   // ==============================
   // IDLE → TREND
@@ -76,16 +64,18 @@ function strategyEngine(ctx) {
     if (ema50 > ema200) {
       state.phase = "TREND";
       state.signal = "BUY";
+      return { action: null }; // 🔴 stop execution
     } else if (ema50 < ema200) {
       state.phase = "TREND";
       state.signal = "SELL";
+      return { action: null };
     }
   }
 
   // ==============================
   // TREND PHASE
   // ==============================
-  if (state.phase === "TREND") {
+  else if (state.phase === "TREND") {
     state.memory.trend.push({
       emaDiff: Math.abs(ema50 - ema200),
       priceDistance: Math.abs(price - ema50),
@@ -94,40 +84,53 @@ function strategyEngine(ctx) {
 
     trim(state.memory.trend);
 
+    // Trend invalidation
     if (
       (state.signal === "BUY" && ema50 < ema200) ||
       (state.signal === "SELL" && ema50 > ema200)
     ) {
-      console.log("[RESET] Trend invalidated");
       reset();
       return { action: null };
     }
 
-    // Transition condition
-    if (
-      (state.signal === "BUY" && stochastic < 50) ||
-      (state.signal === "SELL" && stochastic > 50)
-    ) {
+    // 🔴 REQUIRE CROSS into pullback zone
+    const pullbackTriggered =
+      prevStoch !== null &&
+      (
+        (state.signal === "BUY" && prevStoch > 30 && stochastic <= 30) ||
+        (state.signal === "SELL" && prevStoch < 70 && stochastic >= 70)
+      );
+
+    if (pullbackTriggered && state.memory.trend.length >= 5) {
       state.scores.trend = computeTrendScore(state.memory.trend);
       state.memory.trend = decay(state.memory.trend);
 
       state.phase = "SETUP";
-      console.log(`[PHASE] TREND → SETUP`);
+      return { action: null }; // 🔴 stop here
     }
   }
 
   // ==============================
   // SETUP PHASE
   // ==============================
-  if (state.phase === "SETUP") {
+  else if (state.phase === "SETUP") {
     state.memory.setup.push({ stochastic, rsi });
-
     trim(state.memory.setup);
 
-    if (
-      (state.signal === "BUY" && stochastic > 20) ||
-      (state.signal === "SELL" && stochastic < 80)
-    ) {
+    // 🔴 stay in setup until enough structure
+    if (state.memory.setup.length < 5) {
+      return { action: null };
+    }
+
+    // 🔴 REQUIRE CROSS OUT of pullback
+    const recoveryTriggered =
+      prevStoch !== null &&
+      (
+        (state.signal === "BUY" && prevStoch <= 30 && stochastic > 30) ||
+        (state.signal === "SELL" && prevStoch >= 70 && stochastic < 70)
+      );
+
+    if (recoveryTriggered) {
       state.scores.setup = computeSetupScore(
         state.memory.setup,
         state.signal
@@ -136,14 +139,13 @@ function strategyEngine(ctx) {
       state.memory.setup = decay(state.memory.setup);
 
       state.phase = "SCORING";
-      console.log(`[PHASE] SETUP → SCORING`);
+      return { action: null }; // 🔴 stop here
     }
   }
 
   // ==============================
   // MOMENTUM COLLECTION
   // ==============================
-  let finalScore = 0;
   if (state.phase === "SETUP" || state.phase === "SCORING") {
     state.memory.momentum.push({
       delta: indicators.stochasticDelta || 0,
@@ -154,15 +156,15 @@ function strategyEngine(ctx) {
   }
 
   // ==============================
-  // SCORING
+  // SCORING PHASE
   // ==============================
-  if (state.phase === "SCORING") {
+  else if (state.phase === "SCORING") {
     state.scores.momentum = computeMomentumScore(
       state.memory.momentum,
       state.signal
     );
 
-    finalScore =
+    const finalScore =
       state.scores.trend +
       state.scores.setup +
       state.scores.momentum;
@@ -176,116 +178,24 @@ function strategyEngine(ctx) {
         trend: state.memory.trend.length,
         setup: state.memory.setup.length,
         momentum: state.memory.momentum.length
-      },
-      indicators: {
-        rsi,
-        stochastic,
-        delta: indicators.stochasticDelta,
-        atr
       }
     });
 
     if (finalScore >= CONFIG.THRESHOLD) {
-      action = "ENTER";
-    } else {
+      const result = {
+        action: "ENTER",
+        signal: state.signal,
+        score: finalScore
+      };
+
       reset();
+      return result;
     }
+
+    // ❌ DO NOT RESET
+    // stay in scoring and continue building
+    return { action: null };
   }
 
-  if (action === "ENTER") {
-    const result = {
-      action,
-      signal: state.signal,
-      score: finalScore
-    };
-
-    reset(); // reset AFTER capturing result
-    return result;
-  }
   return { action: null };
 }
-
-// ==============================
-// SCORING FUNCTIONS (AVG BASED)
-// ==============================
-function computeTrendScore(mem) {
-  const emaScore = scale10(avg(mem, "emaDiff") / 0.002);
-  const priceScore = scale10(avg(mem, "priceDistance") / 0.003);
-  const bbScore = scale10(avg(mem, "bbWidth") / 0.01);
-
-  return emaScore + priceScore + bbScore;
-}
-
-function computeSetupScore(mem, signal) {
-  const avgStoch = avg(mem, "stochastic");
-  const avgRsi = avg(mem, "rsi");
-
-  const depthScore = scale10(Math.abs(avgStoch - 50) / 50);
-
-  let structureScore = 0;
-  if (signal === "BUY") {
-    structureScore = avgStoch < 50 ? 7 : -5;
-  } else {
-    structureScore = avgStoch > 50 ? 7 : -5;
-  }
-
-  const rsiScore = scale10(
-    signal === "BUY"
-      ? (avgRsi - 40) / 30
-      : (60 - avgRsi) / 30
-  );
-
-  return depthScore + structureScore + rsiScore;
-}
-
-function computeMomentumScore(mem, signal) {
-  const valid = mem.filter(m =>
-    (signal === "BUY" && m.delta > 0) ||
-    (signal === "SELL" && m.delta < 0)
-  );
-
-  if (!valid.length) return 0;
-
-  const avgDelta =
-    valid.reduce((s, x) => s + Math.abs(x.delta), 0) / valid.length;
-
-  const avgRsi = avg(valid, "rsi");
-
-  const stochScore = scale10(avgDelta / 5);
-  const rsiScore = scale10(Math.abs(avgRsi - 50) / 50);
-
-  return stochScore + rsiScore;
-}
-
-// ==============================
-// UTILITIES
-// ==============================
-function trim(arr) {
-  if (arr.length > CONFIG.MEMORY_LIMIT) {
-    arr.shift();
-  }
-}
-
-function decay(arr) {
-  const keep = Math.floor(arr.length * CONFIG.DECAY);
-  return arr.slice(-keep);
-}
-
-function reset() {
-  state.phase = "IDLE";
-  state.signal = null;
-
-  state.scores = {
-    trend: 0,
-    setup: 0,
-    momentum: 0
-  };
-
-  state.memory = {
-    trend: [],
-    setup: [],
-    momentum: []
-  };
-}
-
-module.exports = { strategyEngine };
