@@ -27,6 +27,43 @@ const state = {
 };
 
 // ==============================
+// HELPERS
+// ==============================
+
+function trim(arr) {
+  if (arr.length > CONFIG.MEMORY_LIMIT) {
+    arr.splice(0, arr.length - CONFIG.MEMORY_LIMIT);
+  }
+}
+
+function decay(arr) {
+  return arr.map(item => {
+    const decayed = {};
+    for (const key in item) {
+      decayed[key] = item[key] * CONFIG.DECAY;
+    }
+    return decayed;
+  });
+}
+
+function reset() {
+  state.phase = "IDLE";
+  state.signal = null;
+
+  state.memory = {
+    trend: [],
+    setup: [],
+    momentum: []
+  };
+
+  state.scores = {
+    trend: 0,
+    setup: 0,
+    momentum: 0
+  };
+}
+
+// ==============================
 // ENGINE
 // ==============================
 function strategyEngine(ctx) {
