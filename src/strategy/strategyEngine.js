@@ -235,11 +235,8 @@ function strategyEngine(ctx) {
       reset();
       return result;
     }else{
-      
-        console.log("[SCORING] Score below threshold", {
-          signal: state.signal,
-          score: finalScore
-        });
+
+        console.log("[SCORING] Score below threshold");
 
         reset();
         return { action: null };
