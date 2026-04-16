@@ -143,14 +143,23 @@ function strategyEngine(ctx) {
     atr
   } = indicators;
 
-  if (
-    !price ||
-    !ema50 ||
-    !ema200 ||
-    !bollinger ||
-    rsi == null ||
-    stochastic == null
-  ) {
+  if (!price) {
+    console.log("[ENGINE BLOCK] price missing");
+    return { action: null };
+  }
+
+  if (!ema50 || !ema200) {
+    console.log("[ENGINE BLOCK] EMA missing", { ema50, ema200 });
+    return { action: null };
+  }
+
+  if (!bollinger) {
+    console.log("[ENGINE BLOCK] Bollinger missing");
+    return { action: null };
+  }
+
+  if (rsi == null || stochastic == null) {
+    console.log("[ENGINE BLOCK] RSI/Stoch missing", { rsi, stochastic });
     return { action: null };
   }
 

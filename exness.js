@@ -1473,6 +1473,7 @@ async function handleTick(tick) {
           lastStrategyCandle = lastM5.time;
 
           if (ctx) {
+            ctx.price = latestPrice; // 🔴 ADD THIS
             const result = strategyEngine(ctx);
 
             if (result?.action === "ENTER") {
