@@ -934,13 +934,13 @@ async function processStrategyEntry(side, score = null) {
 
     const accountId = process.env.METAAPI_ACCOUNT_ID;
 
-    const allowed = await canPlaceTrade(accountId);
+    // const allowed = await canPlaceTrade(accountId);
 
-    if (!allowed) {
-      console.log("[ENTRY] ⛔ Blocked by account/user state");
-      releaseEntryLock('entry-rejected');
-      return;
-    }
+    // if (!allowed) {
+    //   console.log("[ENTRY] ⛔ Blocked by account/user state");
+    //   releaseEntryLock('entry-rejected');
+    //   return;
+    // }
 
     // ---- LOT SIZING ----
     const totalLot = await internalLotSizing();

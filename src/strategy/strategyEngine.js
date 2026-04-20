@@ -132,12 +132,12 @@ function computeMomentumScore(memory, signal) {
     const { delta, rsi } = m;
 
     if (signal === "BUY") {
-      if (delta > 0) score += 3;
-      if (Math.abs(delta) > 5) score += 2;
+      if (delta > 0) score += 4;
+      if (Math.abs(delta) > 5) score += 3;
       if (rsi > 50) score += 1;
     } else {
-      if (delta < 0) score += 3;
-      if (Math.abs(delta) > 5) score += 2;
+      if (delta < 0) score += 4;
+      if (Math.abs(delta) > 5) score += 3;
       if (rsi < 50) score += 1;
     }
   }
@@ -190,6 +190,7 @@ function strategyEngine(ctx) {
       state.phase = "TREND";
       state.signal = "SELL";
     }
+    console.log("[Phase] → TREND", state.signal);
 
     return { action: null };
   }
@@ -226,6 +227,8 @@ function strategyEngine(ctx) {
 
       state.memory.trend = decay(state.memory.trend);
       state.phase = "SETUP";
+      console.log("[TREND] Locked Trend Score:", state.lockedScores.trend.toFixed(2));
+      console.log("[Phase] → SETUP");
 
       return { action: null };
     }
@@ -239,7 +242,7 @@ function strategyEngine(ctx) {
     state.memory.setup.push({ stochastic, rsi });
     trim(state.memory.setup);
 
-    if (state.memory.setup.length < 3) {
+    if (state.memory.setup.length < 2) {
       return { action: null };
     }
 
@@ -257,6 +260,8 @@ function strategyEngine(ctx) {
       state.memory.setup = decay(state.memory.setup);
       state.phase = "SCORING";
       state.scoringStartTime = Date.now();
+      console.log("[SETUP] Locked Setup Score:", state.lockedScores.setup.toFixed(2));
+      console.log("[Phase] → SCORING");
 
       return { action: null };
     }
@@ -300,18 +305,21 @@ if (state.phase === "SCORING") {
     };
 
     reset();
+    console.log("[SCORING] Final Score:", finalScore.toFixed(2));
     return result;
   }
 
   // TIMEOUT EXIT
   if (Date.now() - state.scoringStartTime > CONFIG.SCORING_TIMEOUT) {
     reset();
+    console.log("[SCORING] Timeout reached");
     return { action: null };
   }
 
   // MOMENTUM COLLAPSE
   if (state.liveScore.momentum < 5) {
     reset();
+    console.log("[SCORING] Momentum collapsed");
     return { action: null };
   }
 }
