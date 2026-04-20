@@ -164,15 +164,48 @@ function strategyEngine(ctx) {
   const prevStoch = state.prevStochastic;
   state.prevStochastic = stochastic;
 
+  
+  console.log("[TICK]", {
+    phase: state.phase,
+  signal: state.signal,
+  price,
+  ema50,
+  ema200,
+  rsi,
+  stochastic,
+  atr,
+  mem: {
+    trend: state.memory.trend.length,
+    setup: state.memory.setup.length,
+    momentum: state.memory.momentum.length
+  }
+});
+
   // ==============================
   // BLOCKERS
   // ==============================
-  if (!price || !ema50 || !ema200 || !bollinger || rsi == null || stochastic == null) {
+  if (!price) {
+    console.log("[BLOCK] Missing price");
     return { action: null };
   }
 
-  // ATR filter (important)
+  if (!ema50 || !ema200) {
+    console.log("[BLOCK] EMA missing", { ema50, ema200 });
+    return { action: null };
+  }
+
+  if (!bollinger) {
+    console.log("[BLOCK] Bollinger missing");
+    return { action: null };
+  }
+
+  if (rsi == null || stochastic == null) {
+    console.log("[BLOCK] RSI/Stoch missing", { rsi, stochastic });
+    return { action: null };
+  }
+
   if (atr && atr < 1.5) {
+    console.log("[BLOCK] ATR too low", atr);
     return { action: null };
   }
 
@@ -184,13 +217,14 @@ function strategyEngine(ctx) {
     if (ema50 > ema200) {
       state.phase = "TREND";
       state.signal = "BUY";
+      console.log("[Phase] IDLE → TREND (BUY)");
     }
 
     if (ema50 < ema200) {
       state.phase = "TREND";
       state.signal = "SELL";
+      console.log("[Phase] IDLE → TREND (SELL)");
     }
-    console.log("[Phase] → TREND", state.signal);
 
     return { action: null };
   }
@@ -206,6 +240,15 @@ function strategyEngine(ctx) {
       bbWidth: bollinger.width || 0
     });
 
+    console.log("[TREND]", {
+      signal: state.signal,
+      emaDiff: Math.abs(ema50 - ema200),
+      priceDistance: Math.abs(price - ema50),
+      bbWidth: bollinger.width,
+      stochastic,
+      memory: state.memory.trend.length
+    });
+
     trim(state.memory.trend);
 
     // Trend invalidation
@@ -214,8 +257,16 @@ function strategyEngine(ctx) {
       (state.signal === "SELL" && ema50 > ema200)
     ) {
       reset();
+      console.log("[TREND] Invalidated, returning to IDLE");
       return { action: null };
     }
+
+    console.log("[TREND CHECK]", {
+      condition:
+        (state.signal === "BUY" && stochastic < 35) ||
+        (state.signal === "SELL" && stochastic > 65),
+      stochastic
+    });
 
     const pullbackTriggered =
       (state.signal === "BUY" && stochastic < 35) ||
@@ -242,9 +293,23 @@ function strategyEngine(ctx) {
     state.memory.setup.push({ stochastic, rsi });
     trim(state.memory.setup);
 
+    console.log("[SETUP]", {
+      stochastic,
+      rsi,
+      memory: state.memory.setup.length
+    });
+
     if (state.memory.setup.length < 2) {
       return { action: null };
     }
+
+    console.log("[SETUP CHECK]", {
+      recovery:
+        (state.signal === "BUY" && stochastic > 35) ||
+        (state.signal === "SELL" && stochastic < 65),
+      stochastic,
+      rsi
+    });
 
     const recoveryTriggered =
       (state.signal === "BUY" && stochastic > 35) ||
@@ -290,10 +355,20 @@ if (state.phase === "SCORING") {
     state.lockedScores.setup +
     state.liveScore.momentum;
 
-  console.log("[SCORING]", {
+  console.log("[SCORING DETAIL]", {
+    trend: state.lockedScores.trend,
+    setup: state.lockedScores.setup,
+    momentum: state.liveScore.momentum,
     finalScore,
-    locked: state.lockedScores,
-    momentum: state.liveScore.momentum
+    threshold: CONFIG.THRESHOLD,
+    delta: indicators.stochasticDelta,
+    rsi
+  });
+
+  console.log("[ENTRY CHECK]", {
+    finalScore,
+    threshold: CONFIG.THRESHOLD,
+    decision: finalScore >= CONFIG.THRESHOLD
   });
 
   // ENTRY
@@ -312,14 +387,16 @@ if (state.phase === "SCORING") {
   // TIMEOUT EXIT
   if (Date.now() - state.scoringStartTime > CONFIG.SCORING_TIMEOUT) {
     reset();
-    console.log("[SCORING] Timeout reached");
+    console.log("[RESET] Reason: SCORING TIMEOUT");
     return { action: null };
   }
 
   // MOMENTUM COLLAPSE
   if (state.liveScore.momentum < 5) {
     reset();
-    console.log("[SCORING] Momentum collapsed");
+    console.log("[RESET] Reason: MOMENTUM COLLAPSE", {
+      momentum: state.liveScore.momentum
+    });
     return { action: null };
   }
 }
