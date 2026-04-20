@@ -1,7 +1,8 @@
 const CONFIG = {
-  THRESHOLD: 75,
-  MEMORY_LIMIT: 20,
-  DECAY: 0.6
+  THRESHOLD: 60,          // ↓ lowered from 75
+  MEMORY_LIMIT: 15,       // ↓ more reactive
+  DECAY: 0.6,
+  SCORING_TIMEOUT: 10 * 60 * 1000 // 10 min
 };
 
 // ==============================
@@ -19,11 +20,18 @@ const state = {
     momentum: []
   },
 
-  scores: {
+  // 🔒 LOCKED SCORES
+  lockedScores: {
     trend: 0,
-    setup: 0,
+    setup: 0
+  },
+
+  // LIVE
+  liveScore: {
     momentum: 0
-  }
+  },
+
+  scoringStartTime: null
 };
 
 // ==============================
@@ -56,12 +64,21 @@ function reset() {
     momentum: []
   };
 
-  state.scores = {
+  state.lockedScores = {
     trend: 0,
-    setup: 0,
+    setup: 0
+  };
+
+  state.liveScore = {
     momentum: 0
   };
+
+  state.scoringStartTime = null;
 }
+
+// ==============================
+// SCORING FUNCTIONS (UNCHANGED CORE)
+// ==============================
 
 function computeTrendScore(memory) {
   if (!memory.length) return 0;
@@ -79,8 +96,7 @@ function computeTrendScore(memory) {
   const distScore = avg.priceDistance / n;
   const volScore = avg.bbWidth / n;
 
-  // Normalize (tune later)
-  return Math.min(40,
+  return Math.min(30,
     (emaScore * 10) +
     (distScore * 5) +
     (volScore * 100)
@@ -96,10 +112,10 @@ function computeSetupScore(memory, signal) {
     const { stochastic, rsi } = m;
 
     if (signal === "BUY") {
-      if (stochastic < 30) score += 2;
+      if (stochastic < 35) score += 2;
       if (rsi < 45) score += 1;
     } else {
-      if (stochastic > 70) score += 2;
+      if (stochastic > 65) score += 2;
       if (rsi > 55) score += 1;
     }
   }
@@ -116,15 +132,17 @@ function computeMomentumScore(memory, signal) {
     const { delta, rsi } = m;
 
     if (signal === "BUY") {
-      if (delta > 0) score += 2;
+      if (delta > 0) score += 3;
+      if (Math.abs(delta) > 5) score += 2;
       if (rsi > 50) score += 1;
     } else {
-      if (delta < 0) score += 2;
+      if (delta < 0) score += 3;
+      if (Math.abs(delta) > 5) score += 2;
       if (rsi < 50) score += 1;
     }
   }
 
-  return Math.min(30, score);
+  return Math.min(40, score);
 }
 
 // ==============================
@@ -143,78 +161,43 @@ function strategyEngine(ctx) {
     atr
   } = indicators;
 
-  // ==============================
-  // GLOBAL DEBUG SNAPSHOT
-  // ==============================
-  console.log("[TICK]", {
-    phase: state.phase,
-    signal: state.signal,
-    price,
-    ema50,
-    ema200,
-    rsi,
-    stochastic,
-    memorySizes: {
-      trend: state.memory.trend.length,
-      setup: state.memory.setup.length,
-      momentum: state.memory.momentum.length
-    }
-  });
+  const prevStoch = state.prevStochastic;
+  state.prevStochastic = stochastic;
 
   // ==============================
   // BLOCKERS
   // ==============================
-  if (!price) {
-    console.log("[BLOCK] Missing price");
+  if (!price || !ema50 || !ema200 || !bollinger || rsi == null || stochastic == null) {
     return { action: null };
   }
 
-  if (!ema50 || !ema200) {
-    console.log("[BLOCK] EMA missing", { ema50, ema200 });
+  // ATR filter (important)
+  if (atr && atr < 1.5) {
     return { action: null };
   }
-
-  if (!bollinger) {
-    console.log("[BLOCK] Bollinger missing");
-    return { action: null };
-  }
-
-  if (rsi == null || stochastic == null) {
-    console.log("[BLOCK] RSI/Stoch missing", { rsi, stochastic });
-    return { action: null };
-  }
-
-  const prevStoch = state.prevStochastic;
-  state.prevStochastic = stochastic;
 
   // ==============================
   // IDLE → TREND
   // ==============================
   if (state.phase === "IDLE") {
-    console.log("[PHASE] IDLE");
 
     if (ema50 > ema200) {
-      console.log("[TRANSITION] IDLE → TREND (BUY)", { ema50, ema200 });
       state.phase = "TREND";
       state.signal = "BUY";
-      return { action: null };
     }
 
     if (ema50 < ema200) {
-      console.log("[TRANSITION] IDLE → TREND (SELL)", { ema50, ema200 });
       state.phase = "TREND";
       state.signal = "SELL";
-      return { action: null };
     }
 
-    console.log("[IDLE] No trend detected");
+    return { action: null };
   }
 
   // ==============================
   // TREND
   // ==============================
-  else if (state.phase === "TREND") {
-    console.log("[PHASE] TREND", { signal: state.signal });
+  if (state.phase === "TREND") {
 
     state.memory.trend.push({
       emaDiff: Math.abs(ema50 - ema200),
@@ -224,40 +207,22 @@ function strategyEngine(ctx) {
 
     trim(state.memory.trend);
 
-    // Invalidation
+    // Trend invalidation
     if (
       (state.signal === "BUY" && ema50 < ema200) ||
       (state.signal === "SELL" && ema50 > ema200)
     ) {
-      console.log("[RESET] Trend invalidated", {
-        signal: state.signal,
-        ema50,
-        ema200
-      });
       reset();
       return { action: null };
     }
 
     const pullbackTriggered =
-      prevStoch !== null &&
-      (
-        (state.signal === "BUY" && prevStoch > 30 && stochastic <= 30) ||
-        (state.signal === "SELL" && prevStoch < 70 && stochastic >= 70)
-      );
+      (state.signal === "BUY" && stochastic < 35) ||
+      (state.signal === "SELL" && stochastic > 65);
 
-    console.log("[TREND]", {
-      pullbackTriggered,
-      prevStoch,
-      stochastic,
-      trendMemory: state.memory.trend.length
-    });
+    if (pullbackTriggered && state.memory.trend.length >= 3) {
 
-    if (pullbackTriggered && state.memory.trend.length >= 5) {
-      state.scores.trend = computeTrendScore(state.memory.trend);
-
-      console.log("[TREND → SETUP]", {
-        trendScore: state.scores.trend
-      });
+      state.lockedScores.trend = computeTrendScore(state.memory.trend);
 
       state.memory.trend = decay(state.memory.trend);
       state.phase = "SETUP";
@@ -269,117 +234,89 @@ function strategyEngine(ctx) {
   // ==============================
   // SETUP
   // ==============================
-  else if (state.phase === "SETUP") {
-    console.log("[PHASE] SETUP", { signal: state.signal });
+  if (state.phase === "SETUP") {
 
     state.memory.setup.push({ stochastic, rsi });
     trim(state.memory.setup);
 
-    console.log("[SETUP]", {
-      setupMemory: state.memory.setup.length
-    });
-
-    if (state.memory.setup.length < 5) {
-      console.log("[SETUP] Waiting for structure...");
+    if (state.memory.setup.length < 3) {
       return { action: null };
     }
 
     const recoveryTriggered =
-      prevStoch !== null &&
-      (
-        (state.signal === "BUY" && prevStoch <= 30 && stochastic > 30) ||
-        (state.signal === "SELL" && prevStoch >= 70 && stochastic < 70)
-      );
-
-    console.log("[SETUP]", {
-      recoveryTriggered,
-      prevStoch,
-      stochastic
-    });
+      (state.signal === "BUY" && stochastic > 35) ||
+      (state.signal === "SELL" && stochastic < 65);
 
     if (recoveryTriggered) {
-      state.scores.setup = computeSetupScore(
+
+      state.lockedScores.setup = computeSetupScore(
         state.memory.setup,
         state.signal
       );
 
-      console.log("[SETUP → SCORING]", {
-        setupScore: state.scores.setup
-      });
-
       state.memory.setup = decay(state.memory.setup);
       state.phase = "SCORING";
+      state.scoringStartTime = Date.now();
 
       return { action: null };
     }
   }
 
   // ==============================
-  // MOMENTUM COLLECTION
-  // ==============================
-  if (state.phase === "SETUP" || state.phase === "SCORING") {
-    state.memory.momentum.push({
-      delta: indicators.stochasticDelta || 0,
-      rsi
-    });
+  // SCORING (ONLY MOMENTUM LIVE)
+// ==============================
+if (state.phase === "SCORING") {
 
-    trim(state.memory.momentum);
+  // Collect momentum
+  state.memory.momentum.push({
+    delta: indicators.stochasticDelta || 0,
+    rsi
+  });
 
-    console.log("[MOMENTUM]", {
-      size: state.memory.momentum.length,
-      last: state.memory.momentum[state.memory.momentum.length - 1]
-    });
+  trim(state.memory.momentum);
+
+  state.liveScore.momentum = computeMomentumScore(
+    state.memory.momentum,
+    state.signal
+  );
+
+  const finalScore =
+    state.lockedScores.trend +
+    state.lockedScores.setup +
+    state.liveScore.momentum;
+
+  console.log("[SCORING]", {
+    finalScore,
+    locked: state.lockedScores,
+    momentum: state.liveScore.momentum
+  });
+
+  // ENTRY
+  if (finalScore >= CONFIG.THRESHOLD) {
+    const result = {
+      action: "ENTER",
+      signal: state.signal,
+      score: finalScore
+    };
+
+    reset();
+    return result;
   }
 
-  // ==============================
-  // SCORING
-  // ==============================
-  else if (state.phase === "SCORING") {
-    console.log("[PHASE] SCORING");
-
-    state.scores.momentum = computeMomentumScore(
-      state.memory.momentum,
-      state.signal
-    );
-
-    const finalScore =
-      state.scores.trend +
-      state.scores.setup +
-      state.scores.momentum;
-
-    console.log("[SCORING]", {
-      finalScore,
-      breakdown: state.scores
-    });
-
-    if (finalScore >= CONFIG.THRESHOLD) {
-      console.log("[ENTRY]", {
-        signal: state.signal,
-        score: finalScore
-      });
-
-      const result = {
-        action: "ENTER",
-        signal: state.signal,
-        score: finalScore
-      };
-
-      reset();
-      return result;
-    }else{
-
-      console.log("[SCORING] Score below threshold", {
-        finalScore,
-        breakdown: state.scores,
-        threshold: CONFIG.THRESHOLD
-      });
-      reset();
-      return { action: null };
-    }
+  // TIMEOUT EXIT
+  if (Date.now() - state.scoringStartTime > CONFIG.SCORING_TIMEOUT) {
+    reset();
+    return { action: null };
   }
+
+  // MOMENTUM COLLAPSE
+  if (state.liveScore.momentum < 5) {
+    reset();
+    return { action: null };
+  }
+}
 
   return { action: null };
 }
-
 
 module.exports = { strategyEngine };
