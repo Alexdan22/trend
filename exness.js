@@ -1823,6 +1823,14 @@ function attachStreamListener(connection) {
       }
     },
 
+    onSynchronizationStarted: () => {},
+    onPositionsReplaced: () => {},
+    onPendingOrdersReplaced: () => {},
+    onHistoryOrderAdded: () => {},
+    onHistoryOrdersSynchronized: () => {},
+    onDealAdded: () => {},
+    onDealsSynchronized: () => {},
+
     onSymbolPricesUpdated: () => {},
     onSymbolSpecificationUpdated: () => {},
     onSymbolSpecificationsUpdated: () => {},
