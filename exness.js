@@ -1784,12 +1784,12 @@ function attachStreamListener(connection) {
         const ask = price.ask;
 
         if (bid == null || ask == null) return;
-
+        
+        console.log(`[STREAM] Tick received: bid=${bid}, ask=${ask}, time=${price.time}`);
         if (bid === lastStreamPrice) return;
 
         lastStreamPrice = bid;
 
-        console.log(`[STREAM] Tick received: bid=${bid}, ask=${ask}, time=${price.time}`);
 
         if (marketFrozen) {
           marketFrozen = false;
