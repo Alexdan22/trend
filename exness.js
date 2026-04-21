@@ -1332,6 +1332,7 @@ async function handleTick(tick) {
       ask: tickAsk,
       timestamp: tickTime
     };
+    console.log(`[TICK] ${new Date(tickTime).toLocaleTimeString()} | Bid: ${tickBid} | Ask: ${tickAsk}`);
 
     // --- Market Freeze Detection ---
     if (lastTickPrice !== null) {
