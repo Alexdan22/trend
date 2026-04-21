@@ -1789,6 +1789,8 @@ function attachStreamListener(connection) {
 
         lastStreamPrice = bid;
 
+        console.log(`[STREAM] Tick received: bid=${bid}, ask=${ask}, time=${price.time}`);
+
         if (marketFrozen) {
           marketFrozen = false;
 
