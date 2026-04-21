@@ -177,6 +177,8 @@ const MAX_SL_DISTANCE = 8; // XAUUSD dollars
 
 
 let lastTickPrice = null;
+let isProcessingTick = false;
+let lastTickTime = Date.now();
 let stagnantTickCount = 0;
 let stagnantSince = null;
 let marketFrozen = false;
@@ -1334,42 +1336,6 @@ async function handleTick(tick) {
     };
     console.log(`[TICK] ${new Date(tickTime).toLocaleTimeString()} | Bid: ${tickBid} | Ask: ${tickAsk}`);
 
-    // --- Market Freeze Detection ---
-    if (lastTickPrice !== null) {
-      if (tickPrice !== lastTickPrice) {
-        // Price moved → reset freeze counter
-        if (marketFrozen) {
-          marketFrozen = false;
-          stagnantTickCount = 0;
-
-          console.log(`[MARKET] ✅ Price feed resumed`);
-          await sendTelegram(
-            `✅ *MARKET ACTIVE AGAIN*\n━━━━━━━━━━━━━━━\n💹 Live price feed restored\n🕒 ${new Date().toLocaleTimeString()}`,
-            { parse_mode: 'MarkdownV2' }
-          );
-        } else {
-          stagnantTickCount = 0;
-        }
-      } else {
-        // Price did not move
-        stagnantTickCount++;
-
-        // After ~2 minutes (60 ticks @ 2s), consider frozen
-        if (stagnantTickCount > 60 && !marketFrozen) {
-          marketFrozen = true;
-          stagnantSince = new Date().toISOString();
-
-          console.warn(`[MARKET] ⚠️ Price feed frozen since ${stagnantSince}`);
-          await sendTelegram(
-            `⚠️ *MARKET FREEZE DETECTED*\n━━━━━━━━━━━━━━━\n📉 No price movement detected\n🕒 Since: ${new Date().toLocaleTimeString()}`,
-            { parse_mode: 'MarkdownV2' }
-          );
-        }
-
-        // If frozen, STOP all tick-based logic
-        if (marketFrozen) return;
-      }
-    }
 
     lastTickPrice = tickPrice;
 
@@ -1381,7 +1347,12 @@ async function handleTick(tick) {
         console.warn('[TICK] processTickForOpenPairs error:', err.message || err);
       }
     }
-
+    
+    
+    if(marketFrozen) {
+      return;
+    }
+    
     // --- CANDLE BUILDER (1m, 3m, 5m) ---
     try {
       const nowMs = tickTime;
@@ -1802,6 +1773,69 @@ async function syncOpenPairsWithPositions(positions) {
   }
 }
 
+function attachStreamListener(connection) {
+  let lastStreamPrice = null;
+
+  connection.addSynchronizationListener({
+    onSymbolPriceUpdated: async (instanceIndex, price) => {
+      try {
+        if (!price || price.symbol !== SYMBOL) return;
+
+        const bid = price.bid;
+        const ask = price.ask;
+
+        if (bid == null || ask == null) return;
+
+        if (bid === lastStreamPrice) return;
+
+        lastStreamPrice = bid;
+
+        if (marketFrozen) {
+          marketFrozen = false;
+
+          console.log('[MARKET] ✅ Price feed resumed');
+
+          await sendTelegram(
+            `✅ *MARKET ACTIVE AGAIN*`,
+            { parse_mode: 'MarkdownV2' }
+          );
+        }
+
+        if (isProcessingTick) return;
+        isProcessingTick = true;
+
+        try {
+          lastTickTime = Date.now();
+
+          await handleTick({
+            bid,
+            ask,
+            time: price.time || new Date().toISOString()
+          });
+
+        } finally {
+          isProcessingTick = false;
+        }
+
+
+      } catch (err) {
+        console.error('[STREAM] Tick handler error:', err.message);
+      }
+    },
+
+    onSymbolPricesUpdated: () => {},
+    onSymbolSpecificationUpdated: () => {},
+    onSymbolSpecificationsUpdated: () => {},
+    onBrokerConnectionStatusChanged: () => {},
+    onHealthStatus: () => {},
+    onConnected: () => {},
+    onDisconnected: () => {},
+    onAccountInformationUpdated: () => {}
+  });
+
+  console.log('[STREAM] Listener attached');
+}
+
 
 
 
@@ -1826,7 +1860,6 @@ async function startBot() {
   const MAINTENANCE_ALERT_THRESHOLD = 30 * 60 * 1000; // 30min
 
   let reconnecting = false;
-  let lastTickTime = Date.now();
   let lastDisconnectTime = null;
   let maintenanceAlertSent = false;
 
@@ -1923,6 +1956,13 @@ async function startBot() {
       console.warn('[METAAPI] subscribeToMarketData() not present on connection object.');
     }
 
+    // =========================
+    // 🔴 STREAMING TICK ENGINE
+    // =========================
+    attachStreamListener(connection);
+
+    console.log('[STREAM] ✅ Real-time tick streaming initialized');
+
     // wait for first tick (with timeout)
     console.log('[METAAPI] Waiting for first valid tick (max 60s)...');
     const firstTickTimeout = Date.now() + 60 * 1000;
@@ -1970,25 +2010,6 @@ async function startBot() {
       }
     }, 10_000);
 
-    // --- start tick poll
-    const pollIntervalMs = 2000;
-    setInterval(async () => {
-      try {
-        // guard: only process ticks when connection is synchronized & terminal state present
-        if (!connection || !connection.synchronized || !connection.terminalState) {
-          // connection not ready; skip
-          return;
-        }
-        const price = connection.terminalState.price(SYMBOL);
-        if (price && price.bid != null && price.ask != null) {
-          lastTickTime = Date.now();
-          await handleTick(price);
-        }
-      } catch (e) {
-        console.warn('[POLL] error while polling tick:', e.message || e);
-      }
-    }, pollIntervalMs);
-
     setInterval(async () => {
       try {
         const positions = await safeGetPositions();
@@ -2001,6 +2022,21 @@ async function startBot() {
         console.error('[WATCHDOG] Error:', e.message);
       }
     }, 3000); // every 3 seconds
+
+    setInterval(() => {
+      const now = Date.now();
+
+      if (now - lastTickTime > 20000 && !marketFrozen) {
+        marketFrozen = true;
+
+        console.warn('[MARKET] ⚠️ Price feed frozen');
+
+        sendTelegram(
+          `⚠️ *MARKET FREEZE DETECTED*\nNo ticks for 20s`,
+          { parse_mode: 'MarkdownV2' }
+        );
+      }
+    }, 5000);
 
 
     // --- unified watchdog (non-overlapping)
@@ -2058,6 +2094,7 @@ async function startBot() {
         console.log('[METAAPI] reconnecting streaming connection...');
         await connection.connect();
         await connection.waitSynchronized({ timeoutInSeconds: 60 });
+        attachStreamListener(connection);
         console.log('[METAAPI] re-synchronized.');
 
         if (typeof connection.subscribeToMarketData === 'function') {
