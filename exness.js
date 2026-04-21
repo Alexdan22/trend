@@ -1785,7 +1785,6 @@ function attachStreamListener(connection) {
 
         if (bid == null || ask == null) return;
         
-        console.log(`[STREAM] Tick received: bid=${bid}, ask=${ask}, time=${price.time}`);
         if (bid === lastStreamPrice) return;
 
         lastStreamPrice = bid;
@@ -2027,10 +2026,40 @@ async function startBot() {
     setInterval(() => {
       const now = Date.now();
 
+      const gapMs = now - lastTickTime;
+
       if (now - lastTickTime > 20000 && !marketFrozen) {
         marketFrozen = true;
 
-        console.warn('[MARKET] ⚠️ Price feed frozen');
+        // console.warn('[MARKET] ⚠️ Price feed frozen');
+
+        console.warn('[FREEZE DIAGNOSTIC]', {
+          gapMs: now - lastTickTime,
+
+          // MetaAPI connection state
+          accountState: account?.state,
+          connectionStatus: account?.connectionStatus,
+
+          // Streaming state
+          connectionSynchronized: connection?.synchronized,
+          connectionActive: !!connection,
+
+          // Price availability
+          terminalPrice: connection?.terminalState?.price?.(SYMBOL),
+
+          // Tick tracking
+          lastTickTime: new Date(lastTickTime).toISOString(),
+
+          // Internal flags
+          marketFrozen,
+          isProcessingTick,
+
+          // Candle health
+          m1Count: candles_1m.length,
+          m5Count: candles_5m.length,
+          m15Count: candles_15m.length
+        });
+
 
         sendTelegram(
           `⚠️ *MARKET FREEZE DETECTED*\nNo ticks for 20s`,
