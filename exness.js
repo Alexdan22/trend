@@ -1334,7 +1334,6 @@ async function handleTick(tick) {
       ask: tickAsk,
       timestamp: tickTime
     };
-    console.log(`[TICK] ${new Date(tickTime).toLocaleTimeString()} | Bid: ${tickBid} | Ask: ${tickAsk}`);
 
 
     lastTickPrice = tickPrice;
