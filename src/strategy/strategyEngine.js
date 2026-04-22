@@ -1,8 +1,8 @@
 const CONFIG = {
   THRESHOLD: 60,          // ↓ lowered from 75
   MEMORY_LIMIT: 15,       // ↓ more reactive
-  DECAY: 0.6,
-  SCORING_TIMEOUT: 10 * 60 * 1000 // 10 min
+  DECAY: 0.8,
+  SCORING_TIMEOUT: 15 * 60 * 1000 // 15 min
 };
 
 // ==============================
@@ -96,6 +96,8 @@ function computeTrendScore(memory, context) {
   } = context;
 
   const latest = memory[memory.length - 1];
+  const avgWidth =
+    memory.reduce((sum, m) => sum + (m.bbWidth || 0), 0) / memory.length;
 
   // ==============================
   // 1. EMA ALIGNMENT (0–10)
@@ -103,13 +105,19 @@ function computeTrendScore(memory, context) {
   let alignmentScore = 0;
 
   if (signal === "BUY") {
-    if (price > ema50 && ema50 > ema200) alignmentScore = 10;
-    else if (price > ema50) alignmentScore = 6;
-    else alignmentScore = 2;
+    if (ema50 > ema200) {
+      if (price > ema50) alignmentScore = 10;
+      else alignmentScore = 7;
+    } else {
+      alignmentScore = 2;
+    }
   } else {
-    if (price < ema50 && ema50 < ema200) alignmentScore = 10;
-    else if (price < ema50) alignmentScore = 6;
-    else alignmentScore = 2;
+    if (ema50 < ema200) {
+      if (price < ema50) alignmentScore = 10;
+      else alignmentScore = 7;
+    } else {
+      alignmentScore = 2;
+    }
   }
 
   // ==============================
@@ -121,11 +129,11 @@ function computeTrendScore(memory, context) {
     const prev = memory[memory.length - 2];
 
     const slope = latest.emaDiff - prev.emaDiff;
+    const normalizedSlope = slope / (context.atr || 1);
 
-    // normalize slope
-    if (slope > 0.0005) slopeScore = 10;
-    else if (slope > 0.0002) slopeScore = 7;
-    else if (slope > 0) slopeScore = 5;
+    if (normalizedSlope > 0.2) slopeScore = 10;
+    else if (normalizedSlope > 0.1) slopeScore = 7;
+    else if (normalizedSlope > 0) slopeScore = 5;
     else slopeScore = 2;
   }
 
@@ -133,6 +141,7 @@ function computeTrendScore(memory, context) {
   // 3. HTF CONFIRMATION (0–10)
   // ==============================
   let htfScore = 0;
+  console.log("[HTF]", state.m15Trend);
 
   if (!m15Trend) {
     htfScore = 5; // neutral fallback
@@ -147,12 +156,11 @@ function computeTrendScore(memory, context) {
   // ==============================
   let volatilityScore = 0;
 
-  const avgWidth =
-    memory.reduce((sum, m) => sum + (m.bbWidth || 0), 0) / memory.length;
+  const normalizedWidth = avgWidth / (context.atr || 1);
 
-  if (avgWidth > 0.002) volatilityScore = 10;
-  else if (avgWidth > 0.001) volatilityScore = 7;
-  else if (avgWidth > 0.0005) volatilityScore = 5;
+  if (normalizedWidth > 1.5) volatilityScore = 10;
+  else if (normalizedWidth > 1.0) volatilityScore = 7;
+  else if (normalizedWidth > 0.5) volatilityScore = 5;
   else volatilityScore = 2;
 
   // ==============================
@@ -199,17 +207,18 @@ function computeSetupScore(memory, context) {
     signal === "BUY" ? c.delta < 0 : c.delta > 0
   );
 
-  const avgPullbackStrength =
-    opposingMoves.reduce((sum, c) => sum + Math.abs(c.delta), 0) /
-    (opposingMoves.length || 1);
+  const maxPullbackStrength = Math.max(
+    ...opposingMoves.map(c => Math.abs(c.delta)),
+    0
+  );
 
   const avgTrendStrength =
     memory.reduce((sum, c) => sum + Math.abs(c.delta), 0) /
     memory.length;
 
   let behaviorScore = 0;
-  if (avgPullbackStrength < avgTrendStrength * 0.6) behaviorScore = 10;
-  else if (avgPullbackStrength < avgTrendStrength) behaviorScore = 6;
+  if (maxPullbackStrength < avgTrendStrength * 0.6) behaviorScore = 10;
+  else if (maxPullbackStrength < avgTrendStrength) behaviorScore = 6;
   else behaviorScore = 2;
 
   // ==============================
@@ -225,7 +234,7 @@ function computeSetupScore(memory, context) {
   let confirmationScore = 0;
 
   const strongMove =
-    Math.abs(last.delta) > avgDelta * 1.2;
+    Math.abs(last.delta) > avgDelta * 1.0;
 
   if (signal === "BUY") {
     if (last.delta > 0 && prev.delta <= 0 && strongMove) confirmationScore = 10;
@@ -236,13 +245,20 @@ function computeSetupScore(memory, context) {
     else if (last.delta < 0) confirmationScore = 6;
     else confirmationScore = 2;
   }
+  
+  let structureBonus = 0;
 
-  const total = locationScore + behaviorScore + confirmationScore;
+  if (opposingMoves.length >= 2 && confirmationScore >= 6) {
+    structureBonus = 3;
+  }
+
+  const total = locationScore + behaviorScore + confirmationScore + structureBonus;
 
   console.log("[SETUP SCORE]", {
     locationScore,
     behaviorScore,
     confirmationScore,
+    structureBonus, 
     total
   });
 
@@ -517,7 +533,7 @@ function strategyEngine(ctx) {
       state.memory.setup.length;
 
     const strongMove =
-      Math.abs(last.delta) > avgDelta * 1.2;
+      Math.abs(last.delta) > avgDelta * 1.0;
 
     const resuming =
       state.signal === "BUY"
@@ -531,7 +547,7 @@ function strategyEngine(ctx) {
       ...state.memory.setup.map(c => Math.abs(c.price - c.ema50))
     );
 
-    const hasDepth = maxDistance > (atr * 0.5);
+    const hasDepth = maxDistance > (atr * 0.4);
 
     // ==============================
     // FINAL SETUP VALIDATION
@@ -572,6 +588,7 @@ function strategyEngine(ctx) {
       }
 
       state.memory.setup = decay(state.memory.setup);
+      state.prevPrice = price;
       state.phase = "SCORING";
       state.scoringStartTime = Date.now();
 
@@ -582,82 +599,73 @@ function strategyEngine(ctx) {
     }
   }
   // ==============================
-  // SCORING (ONLY MOMENTUM LIVE)
-// ==============================
-if (state.phase === "SCORING") {
+  // SCORING 
+  // ==============================
+  if (state.phase === "SCORING") {
 
-  // Collect momentum
-  const delta = price - (state.prevPrice || price);
+    // Collect momentum
+    const delta = price - (state.prevPrice || price);
 
-  state.memory.momentum.push({
-    delta
-  });
-
-  state.prevPrice = price;
-
-  trim(state.memory.momentum);
-
-  state.liveScore.momentum = computeMomentumScore(
-    state.memory.momentum,
-    {
-      signal: state.signal,
-      atr
-    }
-  );
-
-  const finalScore =
-    state.lockedScores.trend +
-    state.lockedScores.setup +
-    state.liveScore.momentum;
-
-    state.bestScore = Math.max(state.bestScore, finalScore);
-
-  console.log("[SCORING DETAIL]", {
-    trend: state.lockedScores.trend,
-    setup: state.lockedScores.setup,
-    momentum: state.liveScore.momentum,
-    finalScore,
-    bestScore: state.bestScore,
-    threshold: CONFIG.THRESHOLD,
-    delta: state.memory.momentum.at(-1)?.delta,
-    rsi
-  });
-
-  console.log("[ENTRY CHECK]", {
-    finalScore,
-    threshold: CONFIG.THRESHOLD,
-    decision: state.bestScore >= CONFIG.THRESHOLD
-  });
-
-  // ENTRY
-  if (state.bestScore >= CONFIG.THRESHOLD) {
-    const result = {
-      action: "ENTER",
-      signal: state.signal,
-      score: state.bestScore
-    };
-
-    reset();
-    console.log("[SCORING] Final Score:", state.bestScore.toFixed(2));
-    return result;
-  }
-
-  // TIMEOUT EXIT
-  if (Date.now() - state.scoringStartTime > CONFIG.SCORING_TIMEOUT) {
-    reset();
-    console.log("[RESET] Reason: SCORING TIMEOUT");
-    return { action: null };
-  }
-
-  // MOMENTUM COLLAPSE
-  if (state.liveScore.momentum < 3) {
-    reset();
-    console.log("[RESET] Reason: MOMENTUM COLLAPSE", {
-      momentum: state.liveScore.momentum
+    state.memory.momentum.push({
+      delta
     });
-    return { action: null };
+
+    state.prevPrice = price;
+
+    trim(state.memory.momentum);
+
+    state.liveScore.momentum = computeMomentumScore(
+      state.memory.momentum,
+      {
+        signal: state.signal,
+        atr
+      }
+    );
+
+    const finalScore =
+      state.lockedScores.trend +
+      state.lockedScores.setup +
+      state.liveScore.momentum;
+
+      state.bestScore = Math.max(state.bestScore, finalScore);
+
+    console.log("[SCORING DETAIL]", {
+      trend: state.lockedScores.trend,
+      setup: state.lockedScores.setup,
+      momentum: state.liveScore.momentum,
+      finalScore,
+      bestScore: state.bestScore,
+      threshold: CONFIG.THRESHOLD,
+      delta: state.memory.momentum.at(-1)?.delta,
+      rsi
+    });
+
+    console.log("[ENTRY CHECK]", {
+      finalScore,
+      threshold: CONFIG.THRESHOLD,
+      decision: state.bestScore >= CONFIG.THRESHOLD
+    });
+
+    // ENTRY
+    if (state.bestScore >= CONFIG.THRESHOLD) {
+      const result = {
+        action: "ENTER",
+        signal: state.signal,
+        score: state.bestScore
+      };
+
+      reset();
+      console.log("[SCORING] Final Score:", state.bestScore.toFixed(2));
+      return result;
+    }
+
+    // TIMEOUT EXIT
+    if (Date.now() - state.scoringStartTime > CONFIG.SCORING_TIMEOUT) {
+      reset();
+      console.log("[RESET] Reason: SCORING TIMEOUT");
+      return { action: null };
+    }
   }
-}
 
   return { action: null };
 }
