@@ -2079,6 +2079,30 @@ async function startBot() {
       }
     }, 5000);
 
+    let lastPriceUpdate = Date.now();
+
+    setInterval(async () => {
+      const price = connection?.terminalState?.price(SYMBOL);
+
+      if (price?.time) {
+        const priceTime = new Date(price.time).getTime();
+
+        if (Date.now() - priceTime > 30000) {
+          console.error("[STREAM STALLED] Reconnecting...");
+
+          try {
+            await connection.close();
+            await connection.connect();
+            await connection.waitSynchronized();
+
+            console.log("[STREAM RECOVERED]");
+          } catch (err) {
+            console.error("[RECONNECT FAILED]", err.message);
+          }
+        }
+      }
+    }, 15000);
+
 
     // --- unified watchdog (non-overlapping)
     setInterval(async () => {
