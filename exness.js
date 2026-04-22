@@ -578,7 +578,6 @@ async function finalizePair(pairId, reason) {
   }
   // always cleanup local state
   delete openPairs[pairId];
-  notifyTradeClosed();
 
 
   console.log(
