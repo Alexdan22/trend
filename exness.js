@@ -2033,10 +2033,13 @@ async function startBot() {
 
     setInterval(() => {
       const now = Date.now();
+      const lastPriceTime = new Date(
+        connection?.terminalState?.price(SYMBOL)?.time
+      ).getTime();
 
-      const gapMs = now - lastTickTime;
+      const isActuallyFrozen = now - lastPriceTime > 20000;
 
-      if (now - lastTickTime > 20000 && !marketFrozen) {
+      if (isActuallyFrozen && !marketFrozen) {
         marketFrozen = true;
 
         // console.warn('[MARKET] ⚠️ Price feed frozen');
