@@ -1774,7 +1774,7 @@ async function syncOpenPairsWithPositions(positions) {
 function attachStreamListener(connection) {
   let lastStreamPrice = null;
 
-  connection.addSynchronizationListener({
+  const listener = new Proxy({
     onSymbolPriceUpdated: async (instanceIndex, price) => {
       try {
         if (!price || price.symbol !== SYMBOL) return;
@@ -1783,64 +1783,49 @@ function attachStreamListener(connection) {
         const ask = price.ask;
 
         if (bid == null || ask == null) return;
-        
         if (bid === lastStreamPrice) return;
 
         lastStreamPrice = bid;
 
+        // ✅ ALWAYS update tick time immediately
+        lastTickTime = Date.now();
 
+        // ✅ Resume detection
         if (marketFrozen) {
           marketFrozen = false;
 
           console.log('[MARKET] ✅ Price feed resumed');
 
-          await sendTelegram(
-            `✅ *MARKET ACTIVE AGAIN*`,
-            { parse_mode: 'MarkdownV2' }
-          );
+          sendTelegram(`✅ *MARKET ACTIVE AGAIN*`, {
+            parse_mode: 'MarkdownV2'
+          });
         }
 
-        if (isProcessingTick) return;
-        isProcessingTick = true;
-
-        try {
-          lastTickTime = Date.now();
-
-          await handleTick({
+        // ❗ DO NOT BLOCK STREAM
+        setImmediate(() => {
+          handleTick({
             bid,
             ask,
             time: price.time || new Date().toISOString()
-          });
-
-        } finally {
-          isProcessingTick = false;
-        }
-
+          }).catch(err =>
+            console.error('[TICK ERROR]', err.message)
+          );
+        });
 
       } catch (err) {
         console.error('[STREAM] Tick handler error:', err.message);
       }
-    },
-
-    onSynchronizationStarted: () => {},
-    onPositionsReplaced: () => {},
-    onPendingOrdersReplaced: () => {},
-    onHistoryOrderAdded: () => {},
-    onHistoryOrdersSynchronized: () => {},
-    onDealAdded: () => {},
-    onDealsSynchronized: () => {},
-
-    onSymbolPricesUpdated: () => {},
-    onSymbolSpecificationUpdated: () => {},
-    onSymbolSpecificationsUpdated: () => {},
-    onBrokerConnectionStatusChanged: () => {},
-    onHealthStatus: () => {},
-    onConnected: () => {},
-    onDisconnected: () => {},
-    onAccountInformationUpdated: () => {}
+    }
+  }, {
+    get(target, prop) {
+      if (!(prop in target)) return () => {};
+      return target[prop];
+    }
   });
 
-  console.log('[STREAM] Listener attached');
+  connection.addSynchronizationListener(listener);
+
+  console.log('[STREAM] Listener attached (safe mode)');
 }
 
 
@@ -2030,75 +2015,70 @@ async function startBot() {
       }
     }, 3000); // every 3 seconds
 
+    let freezeState = "NONE";
+
     setInterval(() => {
       const now = Date.now();
-      const lastPriceTime = new Date(
-        connection?.terminalState?.price(SYMBOL)?.time
-      ).getTime();
+      const gap = now - lastTickTime;
 
-      const isActuallyFrozen = now - lastPriceTime > 20000;
+      if (gap > 20000) {
+        const isHealthy =
+          connection?.synchronized &&
+          account?.connectionStatus === 'CONNECTED';
 
-      if (isActuallyFrozen && !marketFrozen) {
-        marketFrozen = true;
+        if (isHealthy) {
+          freezeState = "CONFIRMED";
+          marketFrozen = true;
 
-        // console.warn('[MARKET] ⚠️ Price feed frozen');
+          console.warn('[MARKET] ⚠️ Freeze confirmed');
 
-        console.warn('[FREEZE DIAGNOSTIC]', {
-          gapMs: now - lastTickTime,
-
-          // MetaAPI connection state
-          accountState: account?.state,
-          connectionStatus: account?.connectionStatus,
-
-          // Streaming state
-          connectionSynchronized: connection?.synchronized,
-          connectionActive: !!connection,
-
-          // Price availability
-          terminalPrice: connection?.terminalState?.price?.(SYMBOL),
-
-          // Tick tracking
-          lastTickTime: new Date(lastTickTime).toISOString(),
-
-          // Internal flags
-          marketFrozen,
-          isProcessingTick,
-
-          // Candle health
-          m1Count: candles_1m.length,
-          m5Count: candles_5m.length,
-          m15Count: candles_15m.length
-        });
-
-
-        sendTelegram(
-          `⚠️ *MARKET FREEZE DETECTED*\nNo ticks for 20s`,
-          { parse_mode: 'MarkdownV2' }
-        );
+          sendTelegram(
+            `⚠️ *MARKET FREEZE DETECTED*\nNo ticks for 20s`,
+            { parse_mode: 'MarkdownV2' }
+          );
+        } else {
+          freezeState = "SUSPECTED";
+        }
+      } else {
+        freezeState = "NONE";
       }
     }, 5000);
 
-    let lastPriceUpdate = Date.now();
+    let lastReconnectAttempt = 0;
+    const RECONNECT_COOLDOWN = 2 * 60 * 1000;
 
     setInterval(async () => {
-      const price = connection?.terminalState?.price(SYMBOL);
+      try {
+        const gap = Date.now() - lastTickTime;
 
-      if (price?.time) {
-        const priceTime = new Date(price.time).getTime();
+        if (gap < 30000) return;
 
-        if (Date.now() - priceTime > 30000) {
-          console.error("[STREAM STALLED] Reconnecting...");
+        const isHealthy =
+          connection?.synchronized &&
+          account?.connectionStatus === 'CONNECTED';
 
-          try {
-            await connection.close();
-            await connection.connect();
-            await connection.waitSynchronized();
-
-            console.log("[STREAM RECOVERED]");
-          } catch (err) {
-            console.error("[RECONNECT FAILED]", err.message);
-          }
+        if (freezeState === "CONFIRMED" && isHealthy) {
+          console.log('[WATCHDOG] Freeze → skip reconnect');
+          return;
         }
+
+        if (Date.now() - lastReconnectAttempt < RECONNECT_COOLDOWN) {
+          console.warn('[WATCHDOG] Cooldown active');
+          return;
+        }
+
+        lastReconnectAttempt = Date.now();
+
+        console.error('[STREAM STALLED] Reconnecting...');
+
+        await connection.close();
+        await connection.connect();
+        await connection.waitSynchronized();
+
+        console.log('[STREAM RECOVERED]');
+
+      } catch (err) {
+        console.error('[RECONNECT FAILED]', err.message);
       }
     }, 15000);
 
