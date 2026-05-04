@@ -2055,14 +2055,6 @@ async function startBot() {
 
         if (gap < 30000) return;
 
-        const isHealthy =
-          connection?.synchronized &&
-          account?.connectionStatus === 'CONNECTED';
-
-        if (freezeState === "CONFIRMED" && isHealthy) {
-          console.log('[WATCHDOG] Freeze → skip reconnect');
-          return;
-        }
 
         if (Date.now() - lastReconnectAttempt < RECONNECT_COOLDOWN) {
           console.warn('[WATCHDOG] Cooldown active');
