@@ -2027,17 +2027,19 @@ async function startBot() {
           account?.connectionStatus === 'CONNECTED';
 
         if (isHealthy) {
-          freezeState = "CONFIRMED";
-          marketFrozen = true;
 
-          console.warn('[MARKET] ⚠️ Freeze confirmed');
+          if (!marketFrozen) {
+            freezeState = "CONFIRMED";
+            marketFrozen = true;
 
-          sendTelegram(
-            `⚠️ *MARKET FREEZE DETECTED*\nNo ticks for 20s`,
-            { parse_mode: 'MarkdownV2' }
-          );
-        } else {
-          freezeState = "SUSPECTED";
+            console.warn('[MARKET] ⚠️ Freeze confirmed');
+
+            sendTelegram(
+              `⚠️ *MARKET FREEZE DETECTED*\nNo ticks for 20s`,
+              { parse_mode: 'MarkdownV2' }
+            );
+          }
+
         }
       } else {
         freezeState = "NONE";

@@ -268,60 +268,95 @@ function computeSetupScore(memory, context) {
 function computeMomentumScore(memory, context) {
   const { signal, atr } = context;
 
-  if (memory.length < 3) return 0;
+  if (memory.length < 4) return 0;
 
   const deltas = memory.map(m => m.delta);
+  const absDeltas = deltas.map(d => Math.abs(d));
+
+  const last = deltas.at(-1);
+  const prev = deltas.at(-2);
+  const prev2 = deltas.at(-3);
+
+  const avg = absDeltas.reduce((a, b) => a + b, 0) / absDeltas.length;
 
   // ==============================
-  // 1. DIRECTIONAL STRENGTH (0–15)
+  // 1. PULLBACK CONTEXT (0–10)
   // ==============================
-  const directionalMoves = deltas.filter(d =>
-    signal === "BUY" ? d > 0 : d < 0
+  const oppositeMoves = deltas.filter(d =>
+    signal === "BUY" ? d < 0 : d > 0
   );
 
-  const directionalRatio = directionalMoves.length / deltas.length;
+  const pullbackRatio = oppositeMoves.length / deltas.length;
 
-  let directionScore = 0;
-  if (directionalRatio > 0.8) directionScore = 15;
-  else if (directionalRatio > 0.6) directionScore = 10;
-  else if (directionalRatio > 0.5) directionScore = 6;
-  else directionScore = 2;
+  let pullbackScore = 0;
 
-  // ==============================
-  // 2. ACCELERATION (0–15)
-  // ==============================
-  const avgDelta =
-    deltas.reduce((sum, d) => sum + Math.abs(d), 0) / deltas.length;
-
-  const last = Math.abs(deltas.at(-1));
-  const prev = Math.abs(deltas.at(-2));
-
-  let accelScore = 0;
-
-  if (last > prev && last > avgDelta * 1.2) accelScore = 15;
-  else if (last > avgDelta) accelScore = 10;
-  else if (last > avgDelta * 0.7) accelScore = 6;
-  else accelScore = 2;
+  if (pullbackRatio > 0.6) pullbackScore = 10;     // strong pullback
+  else if (pullbackRatio > 0.4) pullbackScore = 7; // moderate
+  else pullbackScore = 3;                          // weak / already trend
 
   // ==============================
-  // 3. CONSISTENCY (0–10)
+  // 2. EXHAUSTION (0–15) ⭐ KEY
+  // ==============================
+  const weakening =
+    Math.abs(last) < Math.abs(prev) &&
+    Math.abs(prev) < Math.abs(prev2);
+
+  const belowAverage = Math.abs(last) < avg * 0.8;
+
+  let exhaustionScore = 0;
+
+  if (weakening && belowAverage) exhaustionScore = 15;
+  else if (weakening) exhaustionScore = 10;
+  else if (belowAverage) exhaustionScore = 6;
+  else exhaustionScore = 2;
+
+  // ==============================
+  // 3. REVERSAL TRIGGER (0–15)
+  // ==============================
+  let reversalScore = 0;
+
+  const flipsDirection =
+    signal === "BUY"
+      ? (last > 0 && prev <= 0)
+      : (last < 0 && prev >= 0);
+
+  const strongFlip = Math.abs(last) > avg * 0.8;
+
+  if (flipsDirection && strongFlip) reversalScore = 15;
+  else if (flipsDirection) reversalScore = 10;
+  else if (
+    (signal === "BUY" && last > 0) ||
+    (signal === "SELL" && last < 0)
+  ) reversalScore = 6;
+  else reversalScore = 2;
+
+  // ==============================
+  // 4. NOISE FILTER (0–10)
   // ==============================
   const variance =
-    deltas.reduce((sum, d) => sum + Math.pow(d - avgDelta, 2), 0) /
-    deltas.length;
+    absDeltas.reduce((sum, d) => sum + Math.pow(d - avg, 2), 0) /
+    absDeltas.length;
 
-  let consistencyScore = 0;
+  let noiseScore = 0;
 
-  if (variance < atr * 0.2) consistencyScore = 10;
-  else if (variance < atr * 0.5) consistencyScore = 6;
-  else consistencyScore = 2;
+  if (variance < (atr || 1) * 0.2) noiseScore = 10;
+  else if (variance < (atr || 1) * 0.5) noiseScore = 6;
+  else noiseScore = 3;
 
-  const total = directionScore + accelScore + consistencyScore;
+  // ==============================
+  // FINAL SCORE
+  // ==============================
+  const total =
+    pullbackScore +
+    exhaustionScore +
+    reversalScore +
+    noiseScore;
 
-  console.log("[MOMENTUM SCORE]", {
-    directionScore,
-    accelScore,
-    consistencyScore,
+  console.log("[MOMENTUM V2]", {
+    pullbackScore,
+    exhaustionScore,
+    reversalScore,
+    noiseScore,
     total
   });
 
