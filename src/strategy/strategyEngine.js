@@ -81,6 +81,84 @@ function reset() {
 }
 
 // ==============================
+// TELEGRAM PHASE ALERTS
+// ==============================
+
+const phaseAlertState = {
+  lastAlert: {}
+};
+
+const PHASE_ALERT_COOLDOWN = 30 * 1000;
+
+async function sendPhaseAlert({
+  symbol = "XAUUSD",
+  from,
+  to,
+  signal,
+  price,
+  scores = {},
+  extra = {}
+}) {
+
+  try {
+
+    const now = Date.now();
+    const key = `${symbol}_${to}`;
+
+    // Anti-spam cooldown
+    if (
+      phaseAlertState.lastAlert[key] &&
+      now - phaseAlertState.lastAlert[key] < PHASE_ALERT_COOLDOWN
+    ) {
+      return;
+    }
+
+    phaseAlertState.lastAlert[key] = now;
+
+    const emojiMap = {
+      IDLE: "⚪",
+      TREND: "🔵",
+      SETUP: "🟡",
+      SCORING: "🟣",
+      ENTRY: "🟢",
+      INVALIDATED: "🔴"
+    };
+
+    const msg = `
+${emojiMap[to] || "⚪"} STRATEGY PHASE CHANGE
+
+Pair: ${symbol}
+
+${from} ➜ ${to}
+
+Signal: ${signal || "N/A"}
+Price: ${price || "N/A"}
+
+Trend Score: ${scores.trend ?? "-"}
+Setup Score: ${scores.setup ?? "-"}
+Momentum Score: ${scores.momentum ?? "-"}
+Final Score: ${scores.final ?? "-"}
+
+${extra.reason ? `Reason: ${extra.reason}` : ""}
+${extra.details ? `Details: ${extra.details}` : ""}
+`;
+
+    console.log("[PHASE ALERT]", msg);
+
+    // ==========================
+    // TELEGRAM SEND
+    // ==========================
+
+    if (global.sendTelegram) {
+      await global.sendTelegram(msg);
+    }
+
+  } catch (err) {
+    console.log("[PHASE ALERT ERROR]", err.message);
+  }
+}
+
+// ==============================
 // SCORING FUNCTIONS (UNCHANGED CORE)
 // ==============================
 
@@ -433,15 +511,43 @@ function strategyEngine(ctx) {
   if (state.phase === "IDLE") {
 
     if (ema50 > ema200) {
+      const previousPhase = state.phase;
+
       state.phase = "TREND";
       state.signal = "BUY";
+
       console.log("[Phase] IDLE → TREND (BUY)");
+
+      sendPhaseAlert({
+        from: previousPhase,
+        to: state.phase,
+        signal: state.signal,
+        price,
+        scores: {},
+        extra: {
+          reason: "EMA50 crossed above EMA200"
+        }
+      });
     }
 
     if (ema50 < ema200) {
+      const previousPhase = state.phase;
+
       state.phase = "TREND";
       state.signal = "SELL";
+
       console.log("[Phase] IDLE → TREND (SELL)");
+
+      sendPhaseAlert({
+        from: previousPhase,
+        to: state.phase,
+        signal: state.signal,
+        price,
+        scores: {},
+        extra: {
+          reason: "EMA50 crossed below EMA200"
+        }
+      });
     }
 
     return { action: null };
@@ -474,7 +580,18 @@ function strategyEngine(ctx) {
       (state.signal === "BUY" && ema50 < ema200) ||
       (state.signal === "SELL" && ema50 > ema200)
     ) {
+      sendPhaseAlert({
+        from: state.phase,
+        to: "INVALIDATED",
+        signal: state.signal,
+        price,
+        extra: {
+          reason: "Trend invalidation"
+        }
+      });
+
       reset();
+
       console.log("[TREND] Invalidated, returning to IDLE");
       return { action: null };
     }
@@ -500,8 +617,22 @@ function strategyEngine(ctx) {
         signal: state.signal
       });
 
-      state.memory.trend = decay(state.memory.trend);
+      const previousPhase = state.phase;
+
       state.phase = "SETUP";
+
+      sendPhaseAlert({
+        from: previousPhase,
+        to: state.phase,
+        signal: state.signal,
+        price,
+        scores: {
+          trend: state.lockedScores.trend
+        },
+        extra: {
+          reason: "Pullback detected"
+        }
+      });
       console.log("[TREND] Locked Trend Score:", state.lockedScores.trend.toFixed(2));
       console.log("[Phase] → SETUP");
 
@@ -624,11 +755,26 @@ function strategyEngine(ctx) {
 
       state.memory.setup = decay(state.memory.setup);
       state.prevPrice = price;
+      const previousPhase = state.phase;
       state.phase = "SCORING";
       state.scoringStartTime = Date.now();
 
       console.log("[SETUP] Locked Setup Score:", state.lockedScores.setup.toFixed(2));
       console.log("[Phase] → SCORING");
+
+      sendPhaseAlert({
+        from: previousPhase,
+        to: state.phase,
+        signal: state.signal,
+        price,
+        scores: {
+          trend: state.lockedScores.trend,
+          setup: state.lockedScores.setup
+        },
+        extra: {
+          reason: "Valid setup confirmed"
+        }
+      });
 
       return { action: null };
     }
@@ -689,6 +835,22 @@ function strategyEngine(ctx) {
         score: state.bestScore
       };
 
+      sendPhaseAlert({
+        from: "SCORING",
+        to: "ENTRY",
+        signal: state.signal,
+        price,
+        scores: {
+          trend: state.lockedScores.trend,
+          setup: state.lockedScores.setup,
+          momentum: state.liveScore.momentum,
+          final: state.bestScore
+        },
+        extra: {
+          reason: "Threshold reached"
+        }
+      });
+
       reset();
       console.log("[SCORING] Final Score:", state.bestScore.toFixed(2));
       return result;
@@ -696,7 +858,24 @@ function strategyEngine(ctx) {
 
     // TIMEOUT EXIT
     if (Date.now() - state.scoringStartTime > CONFIG.SCORING_TIMEOUT) {
+      sendPhaseAlert({
+        from: state.phase,
+        to: "IDLE",
+        signal: state.signal,
+        price,
+        scores: {
+          trend: state.lockedScores.trend,
+          setup: state.lockedScores.setup,
+          momentum: state.liveScore.momentum,
+          final: state.bestScore
+        },
+        extra: {
+          reason: "SCORING TIMEOUT"
+        }
+      });
+
       reset();
+
       console.log("[RESET] Reason: SCORING TIMEOUT");
       return { action: null };
     }
