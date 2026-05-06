@@ -89,18 +89,64 @@ let FIXED_LOT = 0.02;   // default lot size for ALL trades
 const ticketOwnershipMap = new Map(); // ticket -> pairId
 
 
-async function sendTelegram(message, options = {}) {
-  try {
-    const bot = getBot();
-    const chatId = process.env.TELEGRAM_CHAT_ID;
-    if (!chatId) return;
+const telegramQueue = [];
+let telegramProcessing = false;
 
-    const safeMessage = message.replace(/([\[\]\(\)~`>#+\-=|{}\.!])/g, '\\$1');
-    await bot.sendMessage(chatId, safeMessage, options);
-  } catch (e) {
-    console.warn("❌ Telegram send failed:", e.message);
+async function processTelegramQueue() {
+
+  if (telegramProcessing) return;
+
+  telegramProcessing = true;
+
+  while (telegramQueue.length > 0) {
+
+    const { message, options } = telegramQueue.shift();
+
+    try {
+
+      const bot = getBot();
+      const chatId = process.env.TELEGRAM_CHAT_ID;
+
+      if (!chatId) continue;
+
+      const safeMessage = message.replace(
+        /([\[\]\(\)~`>#+\-=|{}\.!])/g,
+        '\\$1'
+      );
+
+      await bot.sendMessage(
+        chatId,
+        safeMessage,
+        options
+      );
+
+    } catch (e) {
+
+      console.warn(
+        "❌ Telegram send failed:",
+        e.message
+      );
+    }
+
+    // pacing protection
+    await delay(400);
   }
+
+  telegramProcessing = false;
 }
+
+async function sendTelegram(message, options = {}) {
+
+  telegramQueue.push({
+    message,
+    options
+  });
+
+  processTelegramQueue();
+}
+
+// expose globally
+global.sendTelegram = sendTelegram;
 
 
 
@@ -2205,8 +2251,12 @@ process.on("uncaughtException", err => {
 });
 
 process.on("unhandledRejection", err => {
-  console.error("[FATAL] Unhandled Rejection:", err);
-  process.exit(1);
+
+  console.error(
+    "[UNHANDLED REJECTION]",
+    err?.stack || err
+  );
+
 });
 
  

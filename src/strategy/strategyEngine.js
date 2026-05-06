@@ -150,7 +150,14 @@ ${extra.details ? `Details: ${extra.details}` : ""}
     // ==========================
 
     if (global.sendTelegram) {
-      await global.sendTelegram(msg);
+      
+      setImmediate(() => {
+
+        global.sendTelegram(msg, {
+          parse_mode: 'MarkdownV2'
+        });
+
+      });
     }
 
   } catch (err) {
