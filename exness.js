@@ -1178,6 +1178,32 @@ async function processTickForOpenPairs(price) {
         }
       }
 
+            // ---------- BREAK-EVEN HIT ----------
+      if (rec.breakEvenActive && rec.internalSL && trailingRec?.ticket) {
+
+        const beHit =
+          (side === 'BUY'  && current <= rec.internalSL) ||
+          (side === 'SELL' && current >= rec.internalSL);
+
+        if (beHit) {
+
+          console.log(`[PAIR] 🔵 BREAK-EVEN HIT → closing trailing leg (${pairId})`);
+
+          await safeClosePosition(trailingRec.ticket, trailingRec.lot);
+          rec.trades.TRAILING.ticket = null;
+
+          finalizePair(pairId, 'BREAK_EVEN');
+
+          const safePairId = md2(pairId);
+          await sendTelegram(
+            `🔵 *BREAK-EVEN HIT*\n${safePairId}\nSide: ${side}`,
+            { parse_mode: 'MarkdownV2' }
+          );
+
+          continue;
+        }
+      }
+
       // ---------- STOP-LOSS HIT ----------
       const effectiveSL = rec.internalSL ?? rec.sl;
 
@@ -1219,31 +1245,7 @@ async function processTickForOpenPairs(price) {
 
 
 
-      // ---------- BREAK-EVEN HIT ----------
-      if (rec.breakEvenActive && rec.internalSL && trailingRec?.ticket) {
 
-        const beHit =
-          (side === 'BUY'  && current <= rec.internalSL) ||
-          (side === 'SELL' && current >= rec.internalSL);
-
-        if (beHit) {
-
-          console.log(`[PAIR] 🔵 BREAK-EVEN HIT → closing trailing leg (${pairId})`);
-
-          await safeClosePosition(trailingRec.ticket, trailingRec.lot);
-          rec.trades.TRAILING.ticket = null;
-
-          finalizePair(pairId, 'BREAK_EVEN');
-
-          const safePairId = md2(pairId);
-          await sendTelegram(
-            `🔵 *BREAK-EVEN HIT*\n${safePairId}\nSide: ${side}`,
-            { parse_mode: 'MarkdownV2' }
-          );
-
-          continue;
-        }
-      }
 
 
 
