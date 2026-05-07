@@ -1843,10 +1843,6 @@ function attachStreamListener(connection) {
           marketFrozen = false;
 
           console.log('[MARKET] ✅ Price feed resumed');
-
-          sendTelegram(`✅ *MARKET ACTIVE AGAIN*`, {
-            parse_mode: 'MarkdownV2'
-          });
         }
 
         // ❗ DO NOT BLOCK STREAM
@@ -2081,11 +2077,6 @@ async function startBot() {
             marketFrozen = true;
 
             console.warn('[MARKET] ⚠️ Freeze confirmed');
-
-            sendTelegram(
-              `⚠️ *MARKET FREEZE DETECTED*\nNo ticks for 20s`,
-              { parse_mode: 'MarkdownV2' }
-            );
           }
 
         }
