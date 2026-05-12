@@ -2,6 +2,7 @@ const CONFIG = {
   THRESHOLD: 60,          // ↓ lowered from 75
   MEMORY_LIMIT: 15,       // ↓ more reactive
   DECAY: 0.8,
+  SWING_MEMORY_LIMIT: 30,
   SCORING_TIMEOUT: 15 * 60 * 1000 // 15 min
 };
 
@@ -31,6 +32,55 @@ const state = {
     momentum: 0
   },
 
+  validation: {
+    healthyStructure: false,
+    continuationConfidence: 0,
+    contradictionRisk: 0,
+    reclaimQuality: 0,
+
+    constructiveCompression: false,
+    compressionQuality: 0,
+    compressionBias: 0,
+
+    dynamicDecayRisk: 0,
+
+    expansionReadiness: 0,
+    expansionPressure: 0,
+    expansionBias: "NEUTRAL",
+
+    expansionTriggerActive: false,
+    expansionTriggerStrength: 0,
+    displacementDetected: false,
+    volatilityReleaseDetected: false,
+    accelerationDetected: false,
+
+    behavioralValidation: false,
+    behavioralConfidence: 0,
+    behavioralEntryEligible: false
+  },
+
+  swingStructure: {
+    highs: [],
+    lows: [],
+    lastHigh: null,
+    lastLow: null,
+
+    marketStructure: "UNKNOWN",
+
+    higherHighs: 0,
+    higherLows: 0,
+
+    lowerHighs: 0,
+    lowerLows: 0,
+
+    bullishBOS: false,
+    bearishBOS: false,
+
+    structureBreakStrength: 0,
+
+    lastBreakDirection: null
+  },
+
   bestScore: 0,
 
   priceHistory: [],
@@ -44,9 +94,11 @@ const state = {
 // HELPERS
 // ==============================
 
-function trim(arr) {
-  if (arr.length > CONFIG.MEMORY_LIMIT) {
-    arr.splice(0, arr.length - CONFIG.MEMORY_LIMIT);
+
+function trim(arr, limit = CONFIG.MEMORY_LIMIT) {
+
+  if (arr.length > limit) {
+    arr.splice(0, arr.length - limit);
   }
 }
 
@@ -380,6 +432,824 @@ function analyzeMomentumProgression(memory, signal) {
   };
 }
 
+function analyzeContinuationState(memory, signal) {
+
+  if (memory.length < 10) {
+    return {
+      healthyStructure: false,
+      continuationConfidence: 0,
+      contradictionRisk: 100,
+      reclaimQuality: 0,
+      stabilizationStrength: 0,
+      weakeningOpposition: false
+    };
+  }
+
+  const recent = memory.slice(-5);
+  const older = memory.slice(-10, -5);
+
+  const efficiency =
+    computeDirectionalEfficiency(recent);
+
+  const alternation =
+    computeAlternationRatio(recent);
+
+  const bias =
+    computeDirectionalBias(
+      recent,
+      signal
+    );
+
+  // ==============================
+  // OPPOSITION ANALYSIS
+  // ==============================
+  const opposingRecent = recent.filter(c =>
+    signal === "BUY"
+      ? c.delta < 0
+      : c.delta > 0
+  );
+
+  const opposingOlder = older.filter(c =>
+    signal === "BUY"
+      ? c.delta < 0
+      : c.delta > 0
+  );
+
+  const recentOpposition =
+    opposingRecent.reduce((sum, c) =>
+      sum + Math.abs(c.delta), 0);
+
+  const olderOpposition =
+    opposingOlder.reduce((sum, c) =>
+      sum + Math.abs(c.delta), 0);
+
+  const weakeningOpposition =
+    olderOpposition > 0
+      ? recentOpposition < olderOpposition * 0.75
+      : false;
+
+  // ==============================
+  // STABILIZATION ANALYSIS
+  // ==============================
+  let stabilizationStrength = 0;
+
+  if (efficiency > 0.55)
+    stabilizationStrength += 30;
+
+  else if (efficiency > 0.40)
+    stabilizationStrength += 15;
+
+  if (alternation < 0.35)
+    stabilizationStrength += 25;
+
+  else if (alternation < 0.50)
+    stabilizationStrength += 10;
+
+  if (bias.dominance > 0.5)
+    stabilizationStrength += 30;
+
+  else if (bias.dominance > 0.2)
+    stabilizationStrength += 15;
+
+  if (weakeningOpposition)
+    stabilizationStrength += 15;
+
+  // ==============================
+  // CONTINUATION CONFIDENCE
+  // ==============================
+  let continuationConfidence = 0;
+
+  continuationConfidence += stabilizationStrength;
+
+  // ==============================
+  // HEALTHY STRUCTURE
+  // ==============================
+  const healthyStructure =
+    efficiency > 0.35 &&
+    alternation < 0.65 &&
+    bias.dominance > 0;
+
+  // ==============================
+  // CONTRADICTION RISK
+  // ==============================
+  let contradictionRisk = 0;
+
+  if (bias.dominance < 0)
+    contradictionRisk += 50;
+
+  if (alternation > 0.70)
+    contradictionRisk += 25;
+
+  if (efficiency < 0.20)
+    contradictionRisk += 25;
+
+  // ==============================
+  // RECLAIM QUALITY
+  // ==============================
+  let reclaimQuality = 0;
+
+  if (bias.dominance > 0.60)
+    reclaimQuality += 35;
+
+  else if (bias.dominance > 0.30)
+    reclaimQuality += 20;
+
+  if (weakeningOpposition)
+    reclaimQuality += 20;
+
+  if (efficiency > 0.50)
+    reclaimQuality += 25;
+
+  return {
+    healthyStructure,
+    continuationConfidence,
+    contradictionRisk,
+    reclaimQuality,
+    stabilizationStrength,
+    weakeningOpposition
+  };
+}
+
+function analyzeCompression(memory, signal) {
+
+  if (memory.length < 10) {
+    return {
+      constructiveCompression: false,
+      compressionQuality: 0,
+      compressionBias: 0,
+      volatilityCompression: false,
+      directionalCompression: false
+    };
+  }
+
+  const recent = memory.slice(-4);
+  const older = memory.slice(-8, -4);
+
+  // ==============================
+  // VOLATILITY COMPRESSION
+  // ==============================
+  const recentRange =
+    recent.reduce((sum, c) =>
+      sum + Math.abs(c.delta), 0);
+
+  const olderRange =
+    older.reduce((sum, c) =>
+      sum + Math.abs(c.delta), 0);
+
+  const volatilityCompression =
+    recentRange < olderRange * 0.75;
+
+  // ==============================
+  // STRUCTURE QUALITY
+  // ==============================
+  const recentEfficiency =
+    computeDirectionalEfficiency(recent);
+
+  const recentAlternation =
+    computeAlternationRatio(recent);
+
+  // ==============================
+  // DIRECTIONAL BIAS
+  // ==============================
+  const bias =
+    computeDirectionalBias(
+      recent,
+      signal
+    );
+
+  const directionalCompression =
+    bias.dominance > 0.20 &&
+    recentAlternation < 0.55;
+
+  // ==============================
+  // COMPRESSION QUALITY
+  // ==============================
+  let compressionQuality = 0;
+
+  if (volatilityCompression)
+    compressionQuality += 35;
+
+  if (recentEfficiency > 0.45)
+    compressionQuality += 25;
+
+  else if (recentEfficiency > 0.30)
+    compressionQuality += 15;
+
+  if (recentAlternation < 0.40)
+    compressionQuality += 20;
+
+  else if (recentAlternation < 0.55)
+    compressionQuality += 10;
+
+  if (bias.dominance > 0.40)
+    compressionQuality += 20;
+
+  else if (bias.dominance > 0.20)
+    compressionQuality += 10;
+
+  // ==============================
+  // FINAL CLASSIFICATION
+  // ==============================
+  const constructiveCompression =
+    volatilityCompression &&
+    directionalCompression &&
+    compressionQuality >= 60;
+
+  return {
+    constructiveCompression,
+    compressionQuality,
+    compressionBias: bias.dominance,
+    volatilityCompression,
+    directionalCompression
+  };
+}
+
+function analyzeDynamicDecay({
+  agingAnalysis,
+  continuationState,
+  compressionState,
+  efficiency,
+  alternation
+}) {
+
+  let dynamicDecayRisk = 0;
+
+  // ==============================
+  // BASE STALE PRESSURE
+  // ==============================
+  if (agingAnalysis.ageMinutes > 8)
+    dynamicDecayRisk += 25;
+
+  if (agingAnalysis.ageMinutes > 12)
+    dynamicDecayRisk += 20;
+
+  // ==============================
+  // STRUCTURE DETERIORATION
+  // ==============================
+  if (efficiency < 0.25)
+    dynamicDecayRisk += 20;
+
+  if (alternation > 0.65)
+    dynamicDecayRisk += 20;
+
+  // ==============================
+  // CONTRADICTION
+  // ==============================
+  dynamicDecayRisk +=
+    continuationState.contradictionRisk * 0.5;
+
+  // ==============================
+  // POSITIVE OFFSET
+  // ==============================
+  if (continuationState.healthyStructure)
+    dynamicDecayRisk -= 15;
+
+  if (compressionState.constructiveCompression)
+    dynamicDecayRisk -= 20;
+
+  if (continuationState.reclaimQuality > 50)
+    dynamicDecayRisk -= 15;
+
+  // Clamp
+  dynamicDecayRisk =
+    Math.max(0, Math.min(100, dynamicDecayRisk));
+
+  return {
+    dynamicDecayRisk,
+    decayingStructure:
+      dynamicDecayRisk >= 60
+  };
+}
+
+function detectSwings(memory) {
+
+  if (memory.length < 5) {
+    return {
+      swingHigh: null,
+      swingLow: null,
+      detectedHigh: false,
+      detectedLow: false
+    };
+  }
+
+  const mid =
+    memory[memory.length - 3];
+
+  const left1 =
+    memory[memory.length - 5];
+
+  const left2 =
+    memory[memory.length - 4];
+
+  const right1 =
+    memory[memory.length - 2];
+
+  const right2 =
+    memory[memory.length - 1];
+
+  // ==============================
+  // SWING HIGH
+  // ==============================
+  const detectedHigh =
+    mid.price > left1.price &&
+    mid.price > left2.price &&
+    mid.price > right1.price &&
+    mid.price > right2.price;
+
+  // ==============================
+  // SWING LOW
+  // ==============================
+  const detectedLow =
+    mid.price < left1.price &&
+    mid.price < left2.price &&
+    mid.price < right1.price &&
+    mid.price < right2.price;
+
+  return {
+    swingHigh:
+      detectedHigh ? mid.price : null,
+
+    swingLow:
+      detectedLow ? mid.price : null,
+
+    detectedHigh,
+    detectedLow
+  };
+}
+
+function classifyMarketStructure(swingStructure) {
+
+  const highs =
+    swingStructure.highs;
+
+  const lows =
+    swingStructure.lows;
+
+  if (
+    highs.length < 2 ||
+    lows.length < 2
+  ) {
+    return {
+      marketStructure: "UNKNOWN",
+
+      higherHighs: 0,
+      higherLows: 0,
+
+      lowerHighs: 0,
+      lowerLows: 0
+    };
+  }
+
+  const lastHigh =
+    highs[highs.length - 1];
+
+  const prevHigh =
+    highs[highs.length - 2];
+
+  const lastLow =
+    lows[lows.length - 1];
+
+  const prevLow =
+    lows[lows.length - 2];
+
+  const higherHighs =
+    lastHigh.price > prevHigh.price ? 1 : 0;
+
+  const lowerHighs =
+    lastHigh.price < prevHigh.price ? 1 : 0;
+
+  const higherLows =
+    lastLow.price > prevLow.price ? 1 : 0;
+
+  const lowerLows =
+    lastLow.price < prevLow.price ? 1 : 0;
+
+  let marketStructure = "RANGE";
+
+  if (
+    higherHighs &&
+    higherLows
+  ) {
+    marketStructure = "BULLISH";
+  }
+
+  else if (
+    lowerHighs &&
+    lowerLows
+  ) {
+    marketStructure = "BEARISH";
+  }
+
+  return {
+    marketStructure,
+
+    higherHighs,
+    higherLows,
+
+    lowerHighs,
+    lowerLows
+  };
+}
+
+function analyzeBreakOfStructure(
+  swingStructure,
+  currentPrice
+) {
+
+  const highs =
+    swingStructure.highs;
+
+  const lows =
+    swingStructure.lows;
+
+  if (
+    highs.length < 2 ||
+    lows.length < 2
+  ) {
+    return {
+      bullishBOS: false,
+      bearishBOS: false,
+      structureBreakStrength: 0,
+      lastBreakDirection: null
+    };
+  }
+
+  const lastHigh =
+    highs[highs.length - 1];
+
+  const prevHigh =
+    highs[highs.length - 2];
+
+  const lastLow =
+    lows[lows.length - 1];
+
+  const prevLow =
+    lows[lows.length - 2];
+
+  // ==============================
+  // BREAK CONDITIONS
+  // ==============================
+  const bullishBOS =
+    currentPrice > lastHigh.price &&
+    lastHigh.price > prevHigh.price;
+
+  const bearishBOS =
+    currentPrice < lastLow.price &&
+    lastLow.price < prevLow.price;
+
+  // ==============================
+  // BREAK STRENGTH
+  // ==============================
+  let structureBreakStrength = 0;
+
+  if (bullishBOS) {
+
+    const displacement =
+      currentPrice - lastHigh.price;
+
+    const priorExpansion =
+      lastHigh.price - prevHigh.price;
+
+    structureBreakStrength =
+      priorExpansion > 0
+        ? displacement / priorExpansion
+        : 0;
+  }
+
+  if (bearishBOS) {
+
+    const displacement =
+      lastLow.price - currentPrice;
+
+    const priorExpansion =
+      prevLow.price - lastLow.price;
+
+    structureBreakStrength =
+      priorExpansion > 0
+        ? displacement / priorExpansion
+        : 0;
+  }
+
+  return {
+    bullishBOS,
+    bearishBOS,
+
+    structureBreakStrength,
+
+    lastBreakDirection:
+      bullishBOS
+        ? "BULLISH"
+        : bearishBOS
+          ? "BEARISH"
+          : null
+  };
+}
+
+function analyzeExpansionReadiness({
+  continuationState,
+  compressionState,
+  swingStructure,
+  efficiency,
+  alternation
+}) {
+
+  let expansionReadiness = 0;
+
+  // ==============================
+  // CONTINUATION QUALITY
+  // ==============================
+  expansionReadiness +=
+    continuationState.continuationConfidence * 0.30;
+
+  // ==============================
+  // COMPRESSION QUALITY
+  // ==============================
+  expansionReadiness +=
+    compressionState.compressionQuality * 0.25;
+
+  // ==============================
+  // STRUCTURE HEALTH
+  // ==============================
+  if (
+    swingStructure.marketStructure === "BULLISH" ||
+    swingStructure.marketStructure === "BEARISH"
+  ) {
+    expansionReadiness += 15;
+  }
+
+  // ==============================
+  // BOS ALIGNMENT
+  // ==============================
+  if (
+    swingStructure.bullishBOS ||
+    swingStructure.bearishBOS
+  ) {
+    expansionReadiness += 20;
+  }
+
+  // ==============================
+  // EFFICIENCY
+  // ==============================
+  if (efficiency > 0.50)
+    expansionReadiness += 10;
+
+  else if (efficiency > 0.35)
+    expansionReadiness += 5;
+
+  // ==============================
+  // ALTERNATION PENALTY
+  // ==============================
+  if (alternation > 0.60)
+    expansionReadiness -= 15;
+
+  else if (alternation > 0.45)
+    expansionReadiness -= 5;
+
+  // Clamp
+  expansionReadiness =
+    Math.max(
+      0,
+      Math.min(100, expansionReadiness)
+    );
+
+  // ==============================
+  // EXPANSION PRESSURE
+  // ==============================
+  let expansionPressure = 0;
+
+  expansionPressure +=
+    continuationState.reclaimQuality * 0.4;
+
+  expansionPressure +=
+    compressionState.compressionQuality * 0.3;
+
+  expansionPressure +=
+    swingStructure.structureBreakStrength * 20;
+
+  expansionPressure =
+    Math.max(
+      0,
+      Math.min(100, expansionPressure)
+    );
+
+  // ==============================
+  // EXPANSION BIAS
+  // ==============================
+  let expansionBias = "NEUTRAL";
+
+  if (
+    swingStructure.marketStructure === "BULLISH" &&
+    continuationState.healthyStructure
+  ) {
+    expansionBias = "BULLISH";
+  }
+
+  else if (
+    swingStructure.marketStructure === "BEARISH" &&
+    continuationState.healthyStructure
+  ) {
+    expansionBias = "BEARISH";
+  }
+
+  return {
+    expansionReadiness,
+    expansionPressure,
+    expansionBias
+  };
+}
+
+function analyzeExpansionTrigger({
+  setupMemory,
+  compressionState,
+  swingStructure,
+  impulseAnalysis
+}) {
+
+  if (setupMemory.length < 5) {
+    return {
+      expansionTriggerActive: false,
+      expansionTriggerStrength: 0,
+      displacementDetected: false,
+      volatilityReleaseDetected: false,
+      accelerationDetected: false
+    };
+  }
+
+  const recent =
+    setupMemory.slice(-3);
+
+  const avgDelta =
+    setupMemory.reduce(
+      (sum, c) => sum + Math.abs(c.delta),
+      0
+    ) / setupMemory.length;
+
+  const latest =
+    recent[recent.length - 1];
+
+  const prev =
+    recent[recent.length - 2];
+
+  // ==============================
+  // DISPLACEMENT
+  // ==============================
+  const displacementDetected =
+    Math.abs(latest.delta) >
+    Math.max(
+      avgDelta * 1.8,
+      atr * 0.25
+    );
+
+  // ==============================
+  // ACCELERATION
+  // ==============================
+  const acceleration =
+    Math.abs(latest.delta) -
+    Math.abs(prev.delta);
+
+  const accelerationDetected =
+    acceleration > avgDelta * 0.5;
+
+  // ==============================
+  // VOLATILITY RELEASE
+  // ==============================
+  const volatilityReleaseDetected =
+    compressionState.constructiveCompression &&
+    impulseAnalysis.explosiveMove;
+
+  // ==============================
+  // TRIGGER STRENGTH
+  // ==============================
+  let expansionTriggerStrength = 0;
+
+  if (displacementDetected)
+    expansionTriggerStrength += 35;
+
+  if (accelerationDetected)
+    expansionTriggerStrength += 25;
+
+  if (volatilityReleaseDetected)
+    expansionTriggerStrength += 25;
+
+  if (
+    swingStructure.bullishBOS ||
+    swingStructure.bearishBOS
+  ) {
+    expansionTriggerStrength += 15;
+  }
+
+  // Clamp
+  expansionTriggerStrength =
+    Math.max(
+      0,
+      Math.min(100, expansionTriggerStrength)
+    );
+
+  // ==============================
+  // FINAL TRIGGER
+  // ==============================
+  const expansionTriggerActive =
+    expansionTriggerStrength >= 60;
+
+  return {
+    expansionTriggerActive,
+    expansionTriggerStrength,
+    displacementDetected,
+    volatilityReleaseDetected,
+    accelerationDetected
+  };
+}
+
+function analyzeBehavioralValidation({
+  continuationState,
+  compressionState,
+  swingStructure,
+  validation
+}) {
+
+  let behavioralConfidence = 0;
+
+  // ==============================
+  // CONTINUATION QUALITY
+  // ==============================
+  if (continuationState.healthyStructure)
+    behavioralConfidence += 20;
+
+  behavioralConfidence +=
+    continuationState.continuationConfidence * 0.20;
+
+  // ==============================
+  // COMPRESSION QUALITY
+  // ==============================
+  if (compressionState.constructiveCompression)
+    behavioralConfidence += 15;
+
+  behavioralConfidence +=
+    compressionState.compressionQuality * 0.15;
+
+  // ==============================
+  // STRUCTURE ALIGNMENT
+  // ==============================
+  if (
+    swingStructure.marketStructure === "BULLISH" ||
+    swingStructure.marketStructure === "BEARISH"
+  ) {
+    behavioralConfidence += 15;
+  }
+
+  // ==============================
+  // BOS ALIGNMENT
+  // ==============================
+  if (
+    swingStructure.bullishBOS ||
+    swingStructure.bearishBOS
+  ) {
+    behavioralConfidence += 15;
+  }
+
+  // ==============================
+  // EXPANSION READINESS
+  // ==============================
+  behavioralConfidence +=
+    validation.expansionReadiness * 0.15;
+
+  // ==============================
+  // EXPANSION TRIGGER
+  // ==============================
+  if (validation.expansionTriggerActive)
+    behavioralConfidence += 20;
+
+  // Clamp
+  behavioralConfidence =
+    Math.max(
+      0,
+      Math.min(100, behavioralConfidence)
+    );
+
+  // ==============================
+  // VALIDATION CONDITIONS
+  // ==============================
+  const behavioralValidation =
+    continuationState.healthyStructure &&
+    compressionState.constructiveCompression &&
+    validation.expansionReadiness >= 60 &&
+    validation.expansionTriggerActive &&
+    behavioralConfidence >= 70;
+
+  // ==============================
+  // ENTRY ELIGIBILITY
+  // ==============================
+  const behavioralEntryEligible =
+    behavioralValidation &&
+    swingStructure.marketStructure !== "RANGE";
+
+  return {
+    behavioralValidation,
+    behavioralConfidence,
+    behavioralEntryEligible
+  };
+}
+
 function reset() {
   state.phase = "IDLE";
   state.signal = null;
@@ -397,6 +1267,55 @@ function reset() {
 
   state.liveScore = {
     momentum: 0
+  };
+
+  state.validation = {
+    healthyStructure: false,
+    continuationConfidence: 0,
+    contradictionRisk: 0,
+    reclaimQuality: 0,
+
+    constructiveCompression: false,
+    compressionQuality: 0,
+    compressionBias: 0,
+
+    dynamicDecayRisk: 0,
+
+    expansionReadiness: 0,
+    expansionPressure: 0,
+    expansionBias: "NEUTRAL",
+    expansionTriggerActive: false,
+    expansionTriggerStrength: 0,
+
+    displacementDetected: false,
+    volatilityReleaseDetected: false,
+    accelerationDetected: false,
+
+    behavioralValidation: false,
+    behavioralConfidence: 0,
+    behavioralEntryEligible: false,
+  };
+
+  state.swingStructure = {
+    highs: [],
+    lows: [],
+    lastHigh: null,
+    lastLow: null,
+
+    marketStructure: "UNKNOWN",
+
+    higherHighs: 0,
+    higherLows: 0,
+
+    lowerHighs: 0,
+    lowerLows: 0,
+
+    bullishBOS: false,
+    bearishBOS: false,
+
+    structureBreakStrength: 0,
+
+    lastBreakDirection: null
   };
 
   state.priceHistory = [];
@@ -1216,18 +2135,189 @@ function strategyEngine(ctx) {
     const agingAnalysis =
       analyzeSetupAging(
         state.memory.setup
-      );  
+      );
+      
+    const continuationState =
+      analyzeContinuationState(
+        state.memory.setup,
+        state.signal
+      );
+
+    state.validation = continuationState;
+
+    const compressionState =
+      analyzeCompression(
+        state.memory.setup,
+        state.signal
+      );
+
+    state.validation = {
+      ...state.validation,
+      ...compressionState
+    };
+
+    const dynamicDecayState =
+      analyzeDynamicDecay({
+        agingAnalysis,
+        continuationState,
+        compressionState,
+        efficiency,
+        alternation
+      });
+
+    state.validation = {
+      ...state.validation,
+      ...dynamicDecayState
+    };
+
+    const swingState =
+      detectSwings(
+        state.memory.setup
+      );
+
+    if (swingState.detectedHigh) {
+
+      state.swingStructure.highs.push({
+        price: swingState.swingHigh,
+        timestamp: Date.now()
+      });
+
+      trim(
+        state.swingStructure.highs,
+        CONFIG.SWING_MEMORY_LIMIT
+      );
+
+      state.swingStructure.lastHigh =
+        swingState.swingHigh;
+    }
+
+    if (swingState.detectedLow) {
+
+      state.swingStructure.lows.push({
+        price: swingState.swingLow,
+        timestamp: Date.now()
+      });
+
+      trim(
+        state.swingStructure.lows,
+        CONFIG.SWING_MEMORY_LIMIT
+      );
+
+      state.swingStructure.lastLow =
+        swingState.swingLow;
+    }  
+
+    const structureState =
+      classifyMarketStructure(
+        state.swingStructure
+      );
+
+    state.swingStructure = {
+      ...state.swingStructure,
+      ...structureState
+    };
+
+    const bosState =
+      analyzeBreakOfStructure(
+        state.swingStructure,
+        price
+      );
+
+    state.swingStructure = {
+      ...state.swingStructure,
+      ...bosState
+    };
+    
+    const expansionState =
+      analyzeExpansionReadiness({
+        continuationState,
+        compressionState,
+        swingStructure:
+          state.swingStructure,
+        efficiency,
+        alternation
+      });
+
+    state.validation = {
+      ...state.validation,
+      ...expansionState
+    };
+
+    const expansionTriggerState =
+      analyzeExpansionTrigger({
+        setupMemory:
+          state.memory.setup,
+
+        compressionState,
+
+        swingStructure:
+          state.swingStructure,
+
+        impulseAnalysis,
+      });
+
+    state.validation = {
+      ...state.validation,
+      ...expansionTriggerState
+    };
+
+    const behavioralState =
+      analyzeBehavioralValidation({
+        continuationState,
+        compressionState,
+        swingStructure:
+          state.swingStructure,
+        validation:
+          state.validation
+      });
+
+    state.validation = {
+      ...state.validation,
+      ...behavioralState
+    };
 
     const staleSetup =
       agingAnalysis.staleStructure;
 
     const decayingSetup =
-      agingAnalysis.decayingStructure;  
+      dynamicDecayState.decayingStructure;  
 
       
     console.log("[MARKET STRUCTURE]", {
       efficiency: efficiency.toFixed(2),
-      alternation: alternation.toFixed(2)
+      alternation: alternation.toFixed(2),
+      lastSwingHigh:
+        state.swingStructure.lastHigh,
+
+      lastSwingLow:
+        state.swingStructure.lastLow,
+
+      marketStructure:
+        state.swingStructure.marketStructure,
+
+      higherHighs:
+        state.swingStructure.higherHighs,
+
+      higherLows:
+        state.swingStructure.higherLows,
+
+      lowerHighs:
+        state.swingStructure.lowerHighs,
+
+      lowerLows:
+        state.swingStructure.lowerLows,  
+
+      bullishBOS:
+        state.swingStructure.bullishBOS,
+
+      bearishBOS:
+        state.swingStructure.bearishBOS,
+
+      structureBreakStrength:
+        state.swingStructure.structureBreakStrength,
+
+      lastBreakDirection:
+        state.swingStructure.lastBreakDirection,  
     });
 
     console.log("[SETUP BUILD]", {
@@ -1375,10 +2465,6 @@ function strategyEngine(ctx) {
       minPullback += 1;
     }
 
-    if (staleSetup) {
-      minPullback += 1;
-    }
-
     if (decayingSetup) {
       minPullback += 2;
     }
@@ -1431,6 +2517,92 @@ function strategyEngine(ctx) {
       pullbackCount >= minPullback &&
       resuming &&
       hasDepth;
+      
+    console.log("[CONTINUATION STATE]", {
+
+      healthyStructure:
+        continuationState.healthyStructure,
+
+      continuationConfidence:
+        continuationState.continuationConfidence.toFixed(2),
+
+      contradictionRisk:
+        continuationState.contradictionRisk.toFixed(2),
+
+      reclaimQuality:
+        continuationState.reclaimQuality.toFixed(2),
+
+      stabilizationStrength:
+        continuationState.stabilizationStrength.toFixed(2),
+
+      weakeningOpposition:
+        continuationState.weakeningOpposition,
+
+      constructiveCompression:
+        compressionState.constructiveCompression,
+
+      compressionQuality:
+        compressionState.compressionQuality.toFixed(2),
+
+      compressionBias:
+        compressionState.compressionBias.toFixed(2),
+
+      volatilityCompression:
+        compressionState.volatilityCompression,
+
+      directionalCompression:
+        compressionState.directionalCompression,
+
+      dynamicDecayRisk:
+        dynamicDecayState.dynamicDecayRisk.toFixed(2),
+
+      lastSwingHigh:
+        state.swingStructure.lastHigh,
+
+      lastSwingLow:
+        state.swingStructure.lastLow,
+
+      detectedSwingHigh:
+        swingState.detectedHigh,
+
+      detectedSwingLow:
+        swingState.detectedLow,  
+
+      marketStructure:
+        state.swingStructure.marketStructure,  
+
+      bullishBOS:
+        state.swingStructure.bullishBOS,
+
+      bearishBOS:
+        state.swingStructure.bearishBOS,
+
+      expansionReadiness:
+        state.validation.expansionReadiness.toFixed(2),
+
+      expansionPressure:
+        state.validation.expansionPressure.toFixed(2),
+
+      expansionBias:
+        state.validation.expansionBias, 
+        
+      expansionTriggerActive:
+        state.validation.expansionTriggerActive,
+
+      expansionTriggerStrength:
+        state.validation.expansionTriggerStrength.toFixed(2),
+
+      displacementDetected:
+        state.validation.displacementDetected,
+
+      volatilityReleaseDetected:
+        state.validation.volatilityReleaseDetected,
+
+      accelerationDetected:
+        state.validation.accelerationDetected,  
+
+    });
+
 
     console.log("[SETUP CHECK]", {
       pullbackCount,
@@ -1475,8 +2647,44 @@ function strategyEngine(ctx) {
       failedStructure,
       heavyChop,
       moderateChop,
+      continuationConfidence:
+        continuationState.continuationConfidence.toFixed(2),
+
+      contradictionRisk:
+        continuationState.contradictionRisk.toFixed(2),
+
+      reclaimQuality:
+        continuationState.reclaimQuality.toFixed(2),
+
+      healthyStructure:
+        continuationState.healthyStructure,
+      constructiveCompression:
+        compressionState.constructiveCompression,
+
+      compressionQuality:
+        compressionState.compressionQuality.toFixed(2),
+      
+      dynamicDecayRisk:
+        dynamicDecayState.dynamicDecayRisk.toFixed(2),  
+
+      expansionReadiness:
+        state.validation.expansionReadiness.toFixed(2),
+
+      expansionPressure:
+        state.validation.expansionPressure.toFixed(2),
+
+      expansionBias:
+        state.validation.expansionBias,
+
+      expansionTriggerActive:
+        state.validation.expansionTriggerActive,
+
+      expansionTriggerStrength:
+        state.validation.expansionTriggerStrength.toFixed(2),  
+
       valid: isValidSetup
     });
+
 
     // ==============================
     // IF VALID → SCORE
@@ -1515,136 +2723,114 @@ function strategyEngine(ctx) {
       }
 
       state.memory.setup = decayWeights(state.memory.setup);
-      const previousPhase = state.phase;
-      state.phase = "SCORING";
-      state.scoringStartTime = Date.now();
+      const setupScore =
+        computeSetupScore(
+          state.memory.setup,
+          {
+            signal: state.signal,
+            price,
+            ema50,
+            atr
+          }
+        );
 
-      console.log("[SETUP] Locked Setup Score:", state.lockedScores.setup.toFixed(2));
-      console.log("[Phase] → SCORING");
+      const momentumScore =
+        computeMomentumScore(
+          state.memory.setup,
+          {
+            signal: state.signal,
+            atr
+          }
+        );
 
-      sendPhaseAlert({
-        from: previousPhase,
-        to: state.phase,
-        signal: state.signal,
-        price,
-        scores: {
-          trend: state.lockedScores.trend,
-          setup: state.lockedScores.setup
-        },
-        extra: {
-          reason: "Valid setup confirmed"
-        }
+      state.lockedScores.setup =
+        setupScore;
+
+      state.liveScore.momentum =
+        momentumScore;
+
+      const totalScore =
+        state.lockedScores.trend +
+        setupScore +
+        momentumScore;
+
+      const scoreQualified =
+        totalScore >= CONFIG.THRESHOLD;
+
+      const behavioralQualified =
+        state.validation
+          .behavioralEntryEligible;
+
+      console.log("[ENTRY AUTHORITY]", {
+        totalScore:
+          totalScore.toFixed(2),
+
+        scoreQualified,
+
+        behavioralQualified,
+
+        behavioralConfidence:
+          state.validation
+            .behavioralConfidence
+            .toFixed(2),
+
+        expansionReadiness:
+          state.validation
+            .expansionReadiness
+            .toFixed(2),
+
+        expansionTrigger:
+          state.validation
+            .expansionTriggerActive,
+
+        marketStructure:
+          state.swingStructure
+            .marketStructure
       });
 
-      return { action: null };
-    }
-  }
+      if (
+        scoreQualified ||
+        behavioralQualified
+      ) {
 
-  // ==============================
-  // SCORING 
-  // ==============================
-  if (state.phase === "SCORING") {
+        console.log(
+          "[DIRECT ENTRY] Behavioral execution validated"
+        );
 
-    // Collect momentum
-    state.priceHistory.push(price);
+        sendPhaseAlert({
+          from: state.phase,
+          to: "ENTRY",
+          signal: state.signal,
+          price,
+          scores: {
+            trend:
+              state.lockedScores.trend,
 
-    trim(state.priceHistory);
+            setup:
+              setupScore,
 
-    const delta = computeSmoothedDelta(
-      price,
-      state.priceHistory,
-      4
-    );
+            momentum:
+              momentumScore,
 
-    state.memory.momentum.push({
-      delta,
-      weight: 1
-    });
+            final:
+              totalScore
+          },
+          extra: {
+            reason:
+              behavioralQualified
+                ? "Behavioral validation entry"
+                : "Score-qualified entry"
+          }
+        });
+        
+        reset();
 
-    trim(state.memory.momentum);
-
-    state.liveScore.momentum = computeMomentumScore(
-      state.memory.momentum,
-      {
-        signal: state.signal,
-        atr
+        return {
+          action:
+            state.signal.toLowerCase()
+        };
       }
-    );
 
-    const finalScore =
-      state.lockedScores.trend +
-      state.lockedScores.setup +
-      state.liveScore.momentum;
-
-      state.bestScore = Math.max(state.bestScore, finalScore);
-
-    console.log("[SCORING DETAIL]", {
-      trend: state.lockedScores.trend,
-      setup: state.lockedScores.setup,
-      momentum: state.liveScore.momentum,
-      finalScore,
-      bestScore: state.bestScore,
-      threshold: CONFIG.THRESHOLD,
-      delta: state.memory.momentum.at(-1)?.delta,
-      rsi
-    });
-
-    console.log("[ENTRY CHECK]", {
-      finalScore,
-      threshold: CONFIG.THRESHOLD,
-      decision: state.bestScore >= CONFIG.THRESHOLD
-    });
-
-    // ENTRY
-    if (state.bestScore >= CONFIG.THRESHOLD) {
-      const result = {
-        action: "ENTER",
-        signal: state.signal,
-        score: state.bestScore
-      };
-
-      sendPhaseAlert({
-        from: "SCORING",
-        to: "ENTRY",
-        signal: state.signal,
-        price,
-        scores: {
-          trend: state.lockedScores.trend,
-          setup: state.lockedScores.setup,
-          momentum: state.liveScore.momentum,
-          final: state.bestScore
-        },
-        extra: {
-          reason: "Threshold reached"
-        }
-      });
-
-      reset();
-      console.log("[SCORING] Final Score:", state.bestScore.toFixed(2));
-      return result;
-    }
-
-    // TIMEOUT EXIT
-    if (Date.now() - state.scoringStartTime > CONFIG.SCORING_TIMEOUT) {
-      sendPhaseAlert({
-        from: state.phase,
-        to: "IDLE",
-        signal: state.signal,
-        price,
-        scores: {
-          trend: state.lockedScores.trend,
-          setup: state.lockedScores.setup,
-          momentum: state.liveScore.momentum,
-          final: state.bestScore
-        },
-        extra: {
-          reason: "SCORING TIMEOUT"
-        }
-      });
-
-      reset();
-
-      console.log("[RESET] Reason: SCORING TIMEOUT");
       return { action: null };
     }
   }
