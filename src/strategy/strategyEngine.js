@@ -145,6 +145,61 @@ function computeAlternationRatio(memory) {
   return alternations / (memory.length - 1);
 }
 
+function analyzeDirectionalDrift(memory, signal) {
+
+  if (memory.length < 6) {
+    return {
+      directionalDrift: false,
+      driftStrength: 0,
+      staircaseTrend: false
+    };
+  }
+
+  const recent = memory.slice(-6);
+
+  const netMove =
+    Math.abs(
+      recent.at(-1).price -
+      recent[0].price
+    );
+
+  const avgNoise =
+    recent.reduce(
+      (sum, c) => sum + Math.abs(c.delta),
+      0
+    ) / recent.length;
+
+  const alignedCandles =
+    recent.filter(c =>
+      signal === "BUY"
+        ? c.delta > 0
+        : c.delta < 0
+    ).length;
+
+  const directionalDrift =
+    netMove > avgNoise * 2.0;
+
+  const staircaseTrend =
+    alignedCandles >= 4;
+
+  let driftStrength = 0;
+
+  if (directionalDrift)
+    driftStrength += 60;
+
+  if (staircaseTrend)
+    driftStrength += 40;
+
+  driftStrength =
+    Math.min(100, driftStrength);
+
+  return {
+    directionalDrift,
+    driftStrength,
+    staircaseTrend
+  };
+}
+
 function computeSmoothedDelta(price, history = [], period = 4) {
 
   if (!history.length) return 0;
@@ -1062,7 +1117,8 @@ function analyzeExpansionTrigger({
   setupMemory,
   compressionState,
   swingStructure,
-  impulseAnalysis
+  impulseAnalysis,
+  atr
 }) {
 
   if (setupMemory.length < 5) {
@@ -1097,7 +1153,7 @@ function analyzeExpansionTrigger({
     Math.abs(latest.delta) >
     Math.max(
       avgDelta * 1.8,
-      atr * 0.25
+      (atr || 1) * 0.25
     );
 
   // ==============================
@@ -2082,13 +2138,21 @@ function strategyEngine(ctx) {
     const alternation =
       computeAlternationRatio(state.memory.setup);
 
+    const driftState =
+      analyzeDirectionalDrift(
+        state.memory.setup,
+        state.signal
+      );  
+
     const heavyChop =
-      efficiency < 0.25 &&
-      alternation > 0.65;
+      efficiency < 0.22 &&
+      alternation > 0.72 &&
+      !driftState.directionalDrift;
 
     const moderateChop =
-      efficiency < 0.40 &&
-      alternation > 0.50;  
+      efficiency < 0.35 &&
+      alternation > 0.58 &&
+      !driftState.directionalDrift; 
 
     const directionBias =
       computeDirectionalBias(
@@ -2254,6 +2318,8 @@ function strategyEngine(ctx) {
           state.swingStructure,
 
         impulseAnalysis,
+
+        atr
       });
 
     state.validation = {
@@ -2438,6 +2504,51 @@ function strategyEngine(ctx) {
     }
 
     // ==============================
+    // CONTINUATION DETERIORATION
+    // ==============================
+    const deterioratingContinuation =
+      continuationState.continuationConfidence < 35 &&
+      continuationState.reclaimQuality < 25 &&
+      continuationState.contradictionRisk > 40 &&
+      !state.validation.expansionTriggerActive &&
+      agingAnalysis.ageMinutes > 6;
+
+    if (
+      deterioratingContinuation &&
+      !driftState.directionalDrift
+    ) {
+
+      console.log(
+        "[SETUP INVALIDATED] Continuation deterioration",
+        {
+          continuationConfidence:
+            continuationState.continuationConfidence.toFixed(2),
+
+          reclaimQuality:
+            continuationState.reclaimQuality.toFixed(2),
+
+          ageMinutes:
+            agingAnalysis.ageMinutes.toFixed(2)
+        }
+      );
+
+      sendPhaseAlert({
+        from: state.phase,
+        to: "INVALIDATED",
+        signal: state.signal,
+        price,
+        extra: {
+          reason:
+            "Continuation deterioration"
+        }
+      });
+
+      reset();
+
+      return { action: null };
+    }
+
+    // ==============================
     // PULLBACK DETECTION
     // ==============================
     const pullbackMoves = state.memory.setup.filter(c =>
@@ -2448,37 +2559,40 @@ function strategyEngine(ctx) {
 
     const pullbackCount = pullbackMoves.length;
 
-    // adaptive threshold (important)
     let minPullback =
       state.lockedScores.trend > 30 ? 2 : 3;
 
-    // Require stronger structure during chop
-    if (moderateChop) {
-      minPullback += 2;
+    // Only ONE structural penalty allowed
+    let penalty = 0;
+
+    if (moderateChop)
+      penalty = Math.max(penalty, 1);
+
+    if (weakStructure)
+      penalty = Math.max(penalty, 1);
+
+    if (impulseWeak)
+      penalty = Math.max(penalty, 1);
+
+    if (decayingSetup)
+      penalty = Math.max(penalty, 1);
+
+    // Slow compression trends should not inflate aggressively
+    if (
+      driftState.directionalDrift &&
+      driftState.staircaseTrend
+    ) {
+      penalty = Math.max(0, penalty - 1);
     }
 
-    if (weakStructure) {
-      minPullback += 2;
-    }
+    minPullback += penalty;
 
-    if (impulseWeak) {
-      minPullback += 1;
-    }
+    // Hard cap prevents confirmation paralysis
+    minPullback =
+      Math.min(minPullback, 4);
 
-    if (decayingSetup) {
-      minPullback += 2;
-    }
-
-    // Explosive markets can tolerate
-    // slightly messier pullbacks
     if (regimeAnalysis.explosiveRegime) {
       minPullback -= 1;
-    }
-
-    // Slow markets require
-    // stronger confirmation
-    if (regimeAnalysis.slowRegime) {
-      minPullback += 1;
     }
 
     
@@ -2494,12 +2608,35 @@ function strategyEngine(ctx) {
       state.memory.setup.length;
 
     const strongMove =
-      Math.abs(last.delta) > avgDelta * 1.0;
+      Math.abs(last.delta) > avgDelta * 0.9;
+
+    const directionalContinuation =
+      state.signal === "BUY"
+        ? last.delta > 0
+        : last.delta < 0;
+
+    const progressiveContinuation =
+      continuationState.continuationConfidence > 45 &&
+      continuationState.reclaimQuality > 30;
+
+    const expansionContinuation =
+      state.validation.expansionTriggerActive;
+
+    const structuralContinuation =
+      driftState.directionalDrift &&
+      driftState.staircaseTrend;
 
     const resuming =
-      state.signal === "BUY"
-        ? (last.delta > 0 && prev.delta <= 0 && strongMove)
-        : (last.delta < 0 && prev.delta >= 0 && strongMove);
+      (
+        directionalContinuation &&
+        strongMove
+      ) ||
+      progressiveContinuation ||
+      expansionContinuation ||
+      (
+        structuralContinuation &&
+        continuationState.reclaimQuality > 20
+      );
 
     // ==============================
     // DEPTH CHECK (ATR BASED)
@@ -2681,6 +2818,15 @@ function strategyEngine(ctx) {
 
       expansionTriggerStrength:
         state.validation.expansionTriggerStrength.toFixed(2),  
+
+      directionalDrift:
+        driftState.directionalDrift,
+
+      driftStrength:
+        driftState.driftStrength,
+
+      staircaseTrend:
+        driftState.staircaseTrend,  
 
       valid: isValidSetup
     });
