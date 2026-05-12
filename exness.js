@@ -70,6 +70,34 @@ const lastEntryTime = { BUY: 0, SELL: 0 };
 const FALLBACK_SL_DISTANCE = 4;   // XAUUSD dollars
 const FALLBACK_TP_DISTANCE = 8;   // XAUUSD dollars
 
+// ========================
+// CONNECTION LIFECYCLE STATE
+// ========================
+
+const CONNECTION_STATE = {
+  initialized: false,
+  connecting: false,
+  synchronizing: false,
+  reconnecting: false,
+  shuttingDown: false,
+  watchdogsStarted: false,
+  listenerAttached: false,
+  streamReconnectCooldown: false
+};
+
+let streamListener = null;
+
+let CONNECTION_MUTEX = false;
+
+// store intervals so they NEVER duplicate
+const WATCHDOG_INTERVALS = {
+  coldStart: null,
+  sync: null,
+  freeze: null,
+  reconnect: null,
+  health: null
+};
+
 
 
 
@@ -1819,12 +1847,37 @@ async function syncOpenPairsWithPositions(positions) {
   }
 }
 
+async function withConnectionLock(fn) {
+
+  if (CONNECTION_MUTEX) {
+    console.warn('[CONNECTION] Operation skipped — mutex active');
+    return false;
+  }
+
+  CONNECTION_MUTEX = true;
+
+  try {
+    return await fn();
+  } finally {
+    CONNECTION_MUTEX = false;
+  }
+}
+
 function attachStreamListener(connection) {
+
+  // prevent duplicate listener attachment
+  if (CONNECTION_STATE.listenerAttached) {
+    console.log('[STREAM] Listener already attached');
+    return;
+  }
+
   let lastStreamPrice = null;
 
-  const listener = new Proxy({
+  streamListener = new Proxy({
     onSymbolPriceUpdated: async (instanceIndex, price) => {
+
       try {
+
         if (!price || price.symbol !== SYMBOL) return;
 
         const bid = price.bid;
@@ -1835,17 +1888,13 @@ function attachStreamListener(connection) {
 
         lastStreamPrice = bid;
 
-        // ✅ ALWAYS update tick time immediately
         lastTickTime = Date.now();
 
-        // ✅ Resume detection
         if (marketFrozen) {
           marketFrozen = false;
-
           console.log('[MARKET] ✅ Price feed resumed');
         }
 
-        // ❗ DO NOT BLOCK STREAM
         setImmediate(() => {
           handleTick({
             bid,
@@ -1867,11 +1916,115 @@ function attachStreamListener(connection) {
     }
   });
 
-  connection.addSynchronizationListener(listener);
+  connection.addSynchronizationListener(streamListener);
 
-  console.log('[STREAM] Listener attached (safe mode)');
+  CONNECTION_STATE.listenerAttached = true;
+
+  console.log('[STREAM] Listener attached safely');
 }
 
+async function cleanupConnection() {
+
+  try {
+
+    if (connection && streamListener) {
+
+      try {
+        connection.removeSynchronizationListener(streamListener);
+      } catch (_) {}
+
+      streamListener = null;
+    }
+
+    CONNECTION_STATE.listenerAttached = false;
+
+    if (connection) {
+
+      try {
+        await connection.close();
+      } catch (_) {}
+
+      connection = null;
+    }
+
+  } catch (err) {
+    console.error('[CLEANUP] Error:', err.message);
+  }
+}
+
+async function recoverConnection(reason = 'unknown') {
+
+  await withConnectionLock(async () => {
+
+    if (CONNECTION_STATE.reconnecting) {
+      console.warn(`[RECOVERY] Skipped (${reason}) — already reconnecting`);
+      return;
+    }
+
+    CONNECTION_STATE.reconnecting = true;
+
+    try {
+
+      console.warn(`[RECOVERY] Starting recovery → ${reason}`);
+
+      await cleanupConnection();
+
+      account = await api.metatraderAccountApi.getAccount(
+        process.env.METAAPI_ACCOUNT_ID
+      );
+
+      if (account.state !== 'DEPLOYED') {
+        await account.deploy();
+      }
+
+      if (account.connectionStatus !== 'CONNECTED') {
+
+        console.warn('[RECOVERY] Waiting broker reconnect...');
+
+        await account.waitConnected({
+          timeoutInSeconds: 60
+        });
+      }
+
+      connection = account.getStreamingConnection();
+
+      console.log('[RECOVERY] Connecting stream...');
+
+      await connection.connect();
+
+      CONNECTION_STATE.synchronizing = true;
+
+      await connection.waitSynchronized({
+        timeoutInSeconds: 60
+      });
+
+      CONNECTION_STATE.synchronizing = false;
+
+      attachStreamListener(connection);
+
+      if (typeof connection.subscribeToMarketData === 'function') {
+
+        await connection.subscribeToMarketData(SYMBOL);
+      }
+
+      lastTickTime = Date.now();
+
+      console.log(`[RECOVERY] Success → ${reason}`);
+
+    } catch (err) {
+
+      console.error(
+        `[RECOVERY FAILED] ${reason}:`,
+        err.message || err
+      );
+
+    } finally {
+
+      CONNECTION_STATE.reconnecting = false;
+      CONNECTION_STATE.synchronizing = false;
+    }
+  });
+}
 
 
 
@@ -1895,7 +2048,7 @@ async function startBot() {
   const MAX_DELAY = 20 * 60 * 1000;
   const MAINTENANCE_ALERT_THRESHOLD = 30 * 60 * 1000; // 30min
 
-  let reconnecting = false;
+  CONNECTION_STATE.reconnecting
   let lastDisconnectTime = null;
   let maintenanceAlertSent = false;
 
@@ -1932,11 +2085,22 @@ async function startBot() {
 
     // waitConnected will wait until broker connection established on MetaApi side
     if (account.connectionStatus !== 'CONNECTED') {
-      console.log('[METAAPI] Waiting for account to connect to broker (waitConnected)...');
+
+      console.log('[METAAPI] Waiting for broker connection...');
+
       try {
-        await account.waitConnected({ timeoutInSeconds: 120 });
+
+        await account.waitConnected({
+          timeoutInSeconds: 120
+        });
+
       } catch (err) {
-        console.warn('[METAAPI] waitConnected() timed out or failed:', err.message || err);
+
+        console.warn(
+          '[METAAPI] waitConnected() failed:',
+          err.message || err
+        );
+
         throw err;
       }
     }
@@ -1955,7 +2119,14 @@ async function startBot() {
 
 
     // ------------- create streaming connection and wait for synchronization
-    connection = account.getStreamingConnection();
+    if (connection?.synchronized) {
+
+      console.log('[METAAPI] Existing synchronized connection detected');
+
+    } else {
+
+      connection = account.getStreamingConnection();
+    }
 
 
     // ---- SYNC GUARD (ADD HERE) ----
@@ -2033,9 +2204,13 @@ async function startBot() {
     retryDelay = 2 * 60 * 1000;
     lastDisconnectTime = null;
     maintenanceAlertSent = false;
-    reconnecting = false;
+    CONNECTION_STATE.reconnecting = false;
 
-    setInterval(async () => {
+    if (!CONNECTION_STATE.watchdogsStarted) {
+
+    CONNECTION_STATE.watchdogsStarted = true;
+
+    WATCHDOG_INTERVALS.coldStart = setInterval(async () => {
       if (coldStartMode && Date.now() - coldStartStartedAt >= COLD_START_DURATION) {
         console.log("[COLD START] 1hr completed → Fetching historical backfill");
 
@@ -2046,22 +2221,23 @@ async function startBot() {
       }
     }, 10_000);
 
-    setInterval(async () => {
+    WATCHDOG_INTERVALS.sync = setInterval(async () => {
       try {
         const positions = await safeGetPositions();
 
         await syncOpenPairsWithPositions(positions);
 
         checkEntryTimeouts(); // ✅ CALL IT HERE
-
+        
       } catch (e) {
         console.error('[WATCHDOG] Error:', e.message);
       }
-    }, 3000); // every 3 seconds
-
+      
+    }, 3000);
+    
     let freezeState = "NONE";
 
-    setInterval(() => {
+    WATCHDOG_INTERVALS.freeze = setInterval(() => {
       const now = Date.now();
       const gap = now - lastTickTime;
 
@@ -2084,116 +2260,57 @@ async function startBot() {
         freezeState = "NONE";
       }
     }, 5000);
-
+    
     let lastReconnectAttempt = 0;
     const RECONNECT_COOLDOWN = 2 * 60 * 1000;
 
-    setInterval(async () => {
-      try {
-        const gap = Date.now() - lastTickTime;
+    WATCHDOG_INTERVALS.reconnect = setInterval(async () => {
 
-        if (gap < 30000) return;
+      const gap = Date.now() - lastTickTime;
 
+      if (gap < 30000) return;
 
-        if (Date.now() - lastReconnectAttempt < RECONNECT_COOLDOWN) {
-          console.warn('[WATCHDOG] Cooldown active');
-          return;
-        }
-
-        lastReconnectAttempt = Date.now();
-
-        console.error('[STREAM STALLED] Reconnecting...');
-
-        await connection.close();
-        await connection.connect();
-        await connection.waitSynchronized();
-
-        console.log('[STREAM RECOVERED]');
-
-      } catch (err) {
-        console.error('[RECONNECT FAILED]', err.message);
+      if (Date.now() - lastReconnectAttempt < RECONNECT_COOLDOWN) {
+        console.warn('[WATCHDOG] Cooldown active');
+        return;
       }
+
+      await recoverConnection('stream-stalled');
+
+      lastReconnectAttempt = Date.now();
+
     }, 15000);
 
-
     // --- unified watchdog (non-overlapping)
-    setInterval(async () => {
-      if (reconnecting) return;
+    WATCHDOG_INTERVALS.health = setInterval(async () => {
+
+      if (CONNECTION_STATE.reconnecting) return;
+
       try {
+
         const price = connection?.terminalState?.price?.(SYMBOL);
         const synced = !!connection?.synchronized;
+
         if (!price || price.bid == null || price.ask == null || !synced) {
-          reconnecting = true;
-          console.warn('[WATCHDOG] Feed lost or not synchronized. Running ensureConnection()');
-          await ensureConnectionWithRefresh();
-          reconnecting = false;
+
+          console.warn(
+            '[WATCHDOG] Feed lost or not synchronized'
+          );
+
+          await recoverConnection('health-check');
         }
+
       } catch (e) {
-        reconnecting = false;
-        console.error('[WATCHDOG] unexpected error:', e.message || e);
+
+        console.error(
+          '[WATCHDOG] unexpected error:',
+          e.message || e
+        );
       }
-    }, 15_000);
 
+    }, 15000);
 
-
-
-    // ---------- helper: ensureConnectionWithRefresh (re-reads account)
-    async function ensureConnectionWithRefresh() {
-      try {
-        // re-get account (fresh server-side state) — important
-        console.log('[METAAPI] Re-fetching account for validation...');
-        account = await api.metatraderAccountApi.getAccount(process.env.METAAPI_ACCOUNT_ID);
-        console.log('[METAAPI] account state:', account.state, 'connectionStatus:', account.connectionStatus);
-
-        if (account.state !== 'DEPLOYED') {
-          console.log('[METAAPI] account not DEPLOYED; calling deploy()');
-          await account.deploy();
-        }
-
-        if (account.connectionStatus !== 'CONNECTED') {
-          console.log('[METAAPI] account not CONNECTED to broker; waiting waitConnected() (60s)...');
-          try {
-            await account.waitConnected({ timeoutInSeconds: 60 });
-          } catch (err) {
-            console.warn('[METAAPI] waitConnected() failed during ensureConnection:', err.message || err);
-            throw err;
-          }
-        }
-
-        // safe recreate connection object and wait sync
-        connection = account.getStreamingConnection();
-        // ---- SYNC GUARD (ADD HERE TOO) ----
-        if (connection.synchronizing || connection.synchronized) {
-          console.warn('[METAAPI] Reconnect skipped — already synchronizing/synchronized');
-          return;
-        }
-
-        console.log('[METAAPI] reconnecting streaming connection...');
-        await connection.connect();
-        await connection.waitSynchronized({ timeoutInSeconds: 60 });
-        attachStreamListener(connection);
-        console.log('[METAAPI] re-synchronized.');
-
-        if (typeof connection.subscribeToMarketData === 'function') {
-          try {
-            await connection.subscribeToMarketData(SYMBOL);
-            console.log('[METAAPI] re-subscribed to market data for', SYMBOL);
-          } catch (e) {
-            console.warn('[METAAPI] subscribeToMarketData failed on reconnect:', e.message || e);
-          }
-        }
-        lastTickTime = Date.now();
-      } catch (err) {
-        console.error('[METAAPI] ensureConnectionWithRefresh failed:', err.message || err);
-        // set disconnect time for maintenance alert
-        if (!lastDisconnectTime) lastDisconnectTime = Date.now();
-        const disconnectedFor = Date.now() - (lastDisconnectTime || Date.now());
-        if (disconnectedFor >= MAINTENANCE_ALERT_THRESHOLD && !maintenanceAlertSent) {
-          maintenanceAlertSent = true;
-          await sendTelegram(`⚠️ BROKER CONNECTION ALERT — disconnected >30m`, { parse_mode: 'MarkdownV2' });
-        }
-      }
-    }
+  }
 
   } catch (err) {
     console.error(`[BOT] Fatal connection error: ${err.message || err}`);
@@ -2208,10 +2325,22 @@ async function startBot() {
 
     // backoff and restart (non-blocking)
     console.log(`[BOT] Restarting in ${(retryDelay / 60000).toFixed(1)} min...`);
-    setTimeout(() => {
-      retryDelay = Math.min(retryDelay * 1.5, MAX_DELAY);
-      startBot().catch(e => console.error('startBot restart failed:', e));
-    }, retryDelay);
+    retryDelay = Math.min(retryDelay * 1.5, MAX_DELAY);
+
+    console.log(`[BOT] Cooldown for ${(retryDelay / 60000).toFixed(1)} min`);
+
+    await delay(retryDelay);
+
+    CONNECTION_STATE.connecting = false;
+    CONNECTION_STATE.synchronizing = false;
+    CONNECTION_STATE.reconnecting = false;
+
+    setImmediate(() => {
+      startBot().catch(err =>
+        console.error('BOT restart failed:', err)
+      );
+    });
+
 
     return;
   }
