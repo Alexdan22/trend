@@ -89,6 +89,14 @@ let streamListener = null;
 
 let CONNECTION_MUTEX = false;
 
+const RECOVERY_STATE = {
+  level: 0,
+  lastRecoveryAt: 0,
+  lastSuccessfulTick: Date.now(),
+  consecutiveFreezes: 0,
+  recovering: false
+};
+
 // store intervals so they NEVER duplicate
 const WATCHDOG_INTERVALS = {
   coldStart: null,
@@ -1890,6 +1898,10 @@ function attachStreamListener(connection) {
 
         lastTickTime = Date.now();
 
+        RECOVERY_STATE.lastSuccessfulTick = Date.now();
+        RECOVERY_STATE.consecutiveFreezes = 0;
+        RECOVERY_STATE.level = 0;
+
         if (marketFrozen) {
           marketFrozen = false;
           console.log('[MARKET] ✅ Price feed resumed');
@@ -1981,9 +1993,12 @@ async function recoverConnection(reason = 'unknown') {
 
         console.warn('[RECOVERY] Waiting broker reconnect...');
 
-        await account.waitConnected({
-          timeoutInSeconds: 60
-        });
+        if (!connection.synchronized) {
+
+          await connection.waitSynchronized({
+            timeoutInSeconds: 60
+          });
+        }
       }
 
       connection = account.getStreamingConnection();
@@ -2013,10 +2028,24 @@ async function recoverConnection(reason = 'unknown') {
 
     } catch (err) {
 
-      console.error(
-        `[RECOVERY FAILED] ${reason}:`,
-        err.message || err
-      );
+        if (
+          err.message?.includes('TooManyRequestsError') ||
+          err.message?.includes('LIMIT_ACCOUNT_SYNCHRONIZATIONS')
+        ) {
+
+          console.warn(
+            '[RECOVERY] MetaApi sync limit hit — backing off'
+          );
+
+          RECOVERY_STATE.lastRecoveryAt = Date.now();
+
+          return;
+        }
+
+        console.error(
+          `[RECOVERY FAILED] ${reason}:`,
+          err.message || err
+        );
 
     } finally {
 
@@ -2024,6 +2053,104 @@ async function recoverConnection(reason = 'unknown') {
       CONNECTION_STATE.synchronizing = false;
     }
   });
+}
+
+async function stagedRecovery() {
+
+  if (RECOVERY_STATE.recovering) {
+    console.warn('[RECOVERY] Already active');
+    return;
+  }
+
+  RECOVERY_STATE.recovering = true;
+
+  try {
+
+    const gap = Date.now() - lastTickTime;
+
+    // ---------------------------------------------------
+    // LEVEL 1 — passive wait
+    // ---------------------------------------------------
+    if (gap < 45000) {
+
+      console.warn(
+        `[RECOVERY-L1] Passive wait (${Math.floor(gap / 1000)}s gap)`
+      );
+
+      return;
+    }
+
+    // ---------------------------------------------------
+    // LEVEL 2 — lightweight validation
+    // ---------------------------------------------------
+    if (gap >= 45000 && gap < 90000) {
+
+      console.warn('[RECOVERY-L2] Soft validation');
+
+      try {
+
+        // fresh account validation
+        account = await api.metatraderAccountApi.getAccount(
+          process.env.METAAPI_ACCOUNT_ID
+        );
+
+        console.log(
+          '[RECOVERY-L2] account:',
+          account.state,
+          account.connectionStatus
+        );
+
+        // lightweight market resubscribe only
+        if (connection?.subscribeToMarketData) {
+
+          await connection.subscribeToMarketData(SYMBOL);
+
+          console.log('[RECOVERY-L2] Market resubscribe sent');
+        }
+
+      } catch (err) {
+
+        console.warn(
+          '[RECOVERY-L2] Failed:',
+          err.message || err
+        );
+      }
+
+      return;
+    }
+
+    // ---------------------------------------------------
+    // LEVEL 3 — HARD RECOVERY
+    // ---------------------------------------------------
+    if (gap >= 90000) {
+
+      console.warn(
+        `[RECOVERY-L3] Hard recovery (${Math.floor(gap / 1000)}s)`
+      );
+
+      // IMPORTANT:
+      // avoid synchronization spam loops
+      const sinceLastRecovery =
+        Date.now() - RECOVERY_STATE.lastRecoveryAt;
+
+      if (sinceLastRecovery < 180000) {
+
+        console.warn(
+          '[RECOVERY-L3] Blocked by recovery cooldown'
+        );
+
+        return;
+      }
+
+      RECOVERY_STATE.lastRecoveryAt = Date.now();
+
+      await recoverConnection('hard-recovery');
+    }
+
+  } finally {
+
+    RECOVERY_STATE.recovering = false;
+  }
 }
 
 
@@ -2260,26 +2387,6 @@ async function startBot() {
         freezeState = "NONE";
       }
     }, 5000);
-    
-    let lastReconnectAttempt = 0;
-    const RECONNECT_COOLDOWN = 2 * 60 * 1000;
-
-    WATCHDOG_INTERVALS.reconnect = setInterval(async () => {
-
-      const gap = Date.now() - lastTickTime;
-
-      if (gap < 30000) return;
-
-      if (Date.now() - lastReconnectAttempt < RECONNECT_COOLDOWN) {
-        console.warn('[WATCHDOG] Cooldown active');
-        return;
-      }
-
-      await recoverConnection('stream-stalled');
-
-      lastReconnectAttempt = Date.now();
-
-    }, 15000);
 
     // --- unified watchdog (non-overlapping)
     WATCHDOG_INTERVALS.health = setInterval(async () => {
@@ -2288,16 +2395,15 @@ async function startBot() {
 
       try {
 
-        const price = connection?.terminalState?.price?.(SYMBOL);
-        const synced = !!connection?.synchronized;
+        const gap = Date.now() - lastTickTime;
 
-        if (!price || price.bid == null || price.ask == null || !synced) {
+        if (gap > 30000) {
 
           console.warn(
-            '[WATCHDOG] Feed lost or not synchronized'
+            `[WATCHDOG] Tick gap detected (${Math.floor(gap / 1000)}s)`
           );
 
-          await recoverConnection('health-check');
+          await stagedRecovery();
         }
 
       } catch (e) {
