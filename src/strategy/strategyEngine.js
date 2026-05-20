@@ -1,3 +1,17 @@
+const ENGINE_MODE =
+  process.env.ENGINE_MODE || "LIVE";
+
+const IS_BACKTEST =
+  ENGINE_MODE === "BACKTEST";
+
+const VERBOSE_LOGS =
+  !IS_BACKTEST;
+
+
+if (IS_BACKTEST) {
+  console.log = () => {};
+}
+
 const CONFIG = {
   THRESHOLD: 60,          // ↓ lowered from 75
   MEMORY_LIMIT: 15,       // ↓ more reactive
@@ -139,7 +153,15 @@ const state = {
 // ==============================
 // HELPERS
 // ==============================
+function getTimestamp(ctx) {
+  return ctx?.timestamp || Date.now();
+}
 
+function debugLog(...args) {
+  if (VERBOSE_LOGS) {
+    console.log(...args);
+  }
+}
 
 function trim(arr, limit = CONFIG.MEMORY_LIMIT) {
 
@@ -2598,69 +2620,89 @@ async function sendPhaseAlert({
   extra = {}
 }) {
 
-  try {
+  const now = Date.now();
 
-    const now = Date.now();
-    const key = `${symbol}_${to}`;
+  if (IS_BACKTEST) {
 
-    // Anti-spam cooldown
-    if (
-      phaseAlertState.lastAlert[key] &&
-      now - phaseAlertState.lastAlert[key] < PHASE_ALERT_COOLDOWN
-    ) {
-      return;
-    }
+   global.backtestLogger?.write({
+      timestamp: now,
+      symbol,
+      from,
+      to,
+      signal,
+      price,
+      scores,
+      extra
+   });
 
-    phaseAlertState.lastAlert[key] = now;
+  } else {
 
-    const emojiMap = {
-      IDLE: "⚪",
-      TREND: "🔵",
-      SETUP: "🟡",
-      SCORING: "🟣",
-      ENTRY: "🟢",
-      INVALIDATED: "🔴"
-    };
+    
+    try {
 
-    const msg = `
-${emojiMap[to] || "⚪"} STRATEGY PHASE CHANGE
+      const key = `${symbol}_${to}`;
 
-Pair: ${symbol}
+      // Anti-spam cooldown
+      if (
+        phaseAlertState.lastAlert[key] &&
+        now - phaseAlertState.lastAlert[key] < PHASE_ALERT_COOLDOWN
+      ) {
+        return;
+      }
 
-${from} ➜ ${to}
+      phaseAlertState.lastAlert[key] = now;
 
-Signal: ${signal || "N/A"}
-Price: ${price || "N/A"}
+      const emojiMap = {
+        IDLE: "⚪",
+        TREND: "🔵",
+        SETUP: "🟡",
+        SCORING: "🟣",
+        ENTRY: "🟢",
+        INVALIDATED: "🔴"
+      };
 
-Trend Score: ${scores.trend ?? "-"}
-Setup Score: ${scores.setup ?? "-"}
-Momentum Score: ${scores.momentum ?? "-"}
-Final Score: ${scores.final ?? "-"}
+      const msg = `
+  ${emojiMap[to] || "⚪"} STRATEGY PHASE CHANGE
 
-${extra.reason ? `Reason: ${extra.reason}` : ""}
-${extra.details ? `Details: ${extra.details}` : ""}
-`;
+  Pair: ${symbol}
 
-    console.log("[PHASE ALERT]", msg);
+  ${from} ➜ ${to}
 
-    // ==========================
-    // TELEGRAM SEND
-    // ==========================
+  Signal: ${signal || "N/A"}
+  Price: ${price || "N/A"}
 
-    if (global.sendTelegram) {
-      
-      setImmediate(() => {
+  Trend Score: ${scores.trend ?? "-"}
+  Setup Score: ${scores.setup ?? "-"}
+  Momentum Score: ${scores.momentum ?? "-"}
+  Final Score: ${scores.final ?? "-"}
 
-        global.sendTelegram(msg, {
-          parse_mode: 'MarkdownV2'
+  ${extra.reason ? `Reason: ${extra.reason}` : ""}
+  ${extra.details ? `Details: ${extra.details}` : ""}
+  `;
+
+      console.log("[PHASE ALERT]", msg);
+
+      // ==========================
+      // TELEGRAM SEND
+      // ==========================
+
+      if (global.sendTelegram) {
+        
+        setImmediate(() => {
+
+          global.sendTelegram(msg, {
+            parse_mode: 'MarkdownV2'
+          });
+
         });
+      }
 
-      });
+    } catch (err) {
+      console.log("[PHASE ALERT ERROR]", err.message);
     }
 
-  } catch (err) {
-    console.log("[PHASE ALERT ERROR]", err.message);
   }
+
 }
 
 // ==============================
@@ -3093,6 +3135,8 @@ function computeMomentumScore(memory, context) {
 function strategyEngine(ctx) {
   const { indicators } = ctx;
   const price = ctx.price?.bid || ctx.price?.ask;
+  ctx.timestamp =
+  ctx.timestamp || Date.now();
 
   const {
     ema50,
@@ -3321,7 +3365,7 @@ function strategyEngine(ctx) {
       ema50,
       delta,
       weight: 1,
-      timestamp: Date.now()
+      timestamp: getTimestamp(ctx)
     });
 
 
@@ -3495,7 +3539,7 @@ function strategyEngine(ctx) {
 
       state.swingStructure.highs.push({
         price: swingState.swingHigh,
-        timestamp: Date.now()
+        timestamp: getTimestamp(ctx)
       });
 
       trim(
@@ -3511,7 +3555,7 @@ function strategyEngine(ctx) {
 
       state.swingStructure.lows.push({
         price: swingState.swingLow,
-        timestamp: Date.now()
+        timestamp: getTimestamp(ctx)
       });
 
       trim(
@@ -4697,12 +4741,12 @@ function strategyEngine(ctx) {
           }
         });
         
-        const action =
-          state.signal.toLowerCase();
 
-        reset();
-
-        return { action };
+        return {
+          action: "ENTER",
+          score: totalScore,
+          signal: state.signal.toLowerCase()
+        };
       }
 
       return { action: null };
@@ -4712,4 +4756,7 @@ function strategyEngine(ctx) {
   return { action: null };
 }
 
-module.exports = { strategyEngine };
+module.exports = {
+  strategyEngine,
+  resetStrategyEngine: reset
+};

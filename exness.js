@@ -53,7 +53,7 @@ const { initTelegramBot, getBot } = require("./telegram");
 const { initSymbol } = require('./src/core/symbolRegistry');
 const { updatePrice } = require('./src/core/symbolRegistry');
 const { getContext } = require('./src/core/symbolRegistry');
-const { strategyEngine } = require('./src/strategy/strategyEngine');
+const { strategyEngine, resetStrategyEngine } = require('./src/strategy/strategyEngine');
 
 
 
@@ -1532,6 +1532,8 @@ async function handleTick(tick) {
 
             if (result?.action === "ENTER") {
               await processStrategyEntry(result.signal, result.score);
+
+              resetStrategyEngine();
             }
           }
         }
