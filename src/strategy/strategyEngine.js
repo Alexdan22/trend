@@ -1,23 +1,19 @@
-const ENGINE_MODE =
-  process.env.ENGINE_MODE || "LIVE";
+const ENGINE_MODE = process.env.ENGINE_MODE || "LIVE";
 
-const IS_BACKTEST =
-  ENGINE_MODE === "BACKTEST";
+const IS_BACKTEST = ENGINE_MODE === "BACKTEST";
 
-const VERBOSE_LOGS =
-  !IS_BACKTEST;
-
+const VERBOSE_LOGS = !IS_BACKTEST;
 
 if (IS_BACKTEST) {
   console.log = () => {};
 }
 
 const CONFIG = {
-  THRESHOLD: 60,          // ↓ lowered from 75
-  MEMORY_LIMIT: 15,       // ↓ more reactive
+  THRESHOLD: 60, // ↓ lowered from 75
+  MEMORY_LIMIT: 15, // ↓ more reactive
   DECAY: 0.8,
   SWING_MEMORY_LIMIT: 30,
-  SCORING_TIMEOUT: 15 * 60 * 1000 // 15 min
+  SCORING_TIMEOUT: 15 * 60 * 1000, // 15 min
 };
 
 // ==============================
@@ -32,18 +28,18 @@ const state = {
   memory: {
     trend: [],
     setup: [],
-    momentum: []
+    momentum: [],
   },
 
   // 🔒 LOCKED SCORES
   lockedScores: {
     trend: 0,
-    setup: 0
+    setup: 0,
   },
 
   // LIVE
   liveScore: {
-    momentum: 0
+    momentum: 0,
   },
 
   validation: {
@@ -138,16 +134,16 @@ const state = {
 
     structureBreakStrength: 0,
 
-    lastBreakDirection: null
+    lastBreakDirection: null,
   },
 
   bestScore: 0,
 
   priceHistory: [],
-  
+
   trendPriceHistory: [],
 
-  scoringStartTime: null
+  scoringStartTime: null,
 };
 
 // ==============================
@@ -164,29 +160,26 @@ function debugLog(...args) {
 }
 
 function trim(arr, limit = CONFIG.MEMORY_LIMIT) {
-
   if (arr.length > limit) {
     arr.splice(0, arr.length - limit);
   }
 }
 
 function decayWeights(arr) {
-  return arr.map(item => ({
+  return arr.map((item) => ({
     ...item,
-    weight: (item.weight || 1) * CONFIG.DECAY
+    weight: (item.weight || 1) * CONFIG.DECAY,
   }));
 }
 
 function computeDirectionalEfficiency(memory) {
   if (memory.length < 2) return 0;
 
-  const deltas = memory.map(m => m.delta || 0);
+  const deltas = memory.map((m) => m.delta || 0);
 
-  const netMovement =
-    Math.abs(deltas.reduce((sum, d) => sum + d, 0));
+  const netMovement = Math.abs(deltas.reduce((sum, d) => sum + d, 0));
 
-  const totalMovement =
-    deltas.reduce((sum, d) => sum + Math.abs(d), 0);
+  const totalMovement = deltas.reduce((sum, d) => sum + Math.abs(d), 0);
 
   if (totalMovement === 0) return 0;
 
@@ -199,13 +192,10 @@ function computeAlternationRatio(memory) {
   let alternations = 0;
 
   for (let i = 1; i < memory.length; i++) {
-
     const prev = memory[i - 1].delta;
     const curr = memory[i].delta;
 
-    const flipped =
-      (prev > 0 && curr < 0) ||
-      (prev < 0 && curr > 0);
+    const flipped = (prev > 0 && curr < 0) || (prev < 0 && curr > 0);
 
     if (flipped) alternations++;
   }
@@ -214,79 +204,60 @@ function computeAlternationRatio(memory) {
 }
 
 function analyzeDirectionalDrift(memory, signal) {
-
   if (memory.length < 6) {
     return {
       directionalDrift: false,
       driftStrength: 0,
-      staircaseTrend: false
+      staircaseTrend: false,
     };
   }
 
   const recent = memory.slice(-6);
 
-  const netMove =
-    Math.abs(
-      recent.at(-1).price -
-      recent[0].price
-    );
+  const netMove = Math.abs(recent.at(-1).price - recent[0].price);
 
   const avgNoise =
-    recent.reduce(
-      (sum, c) => sum + Math.abs(c.delta),
-      0
-    ) / recent.length;
+    recent.reduce((sum, c) => sum + Math.abs(c.delta), 0) / recent.length;
 
-  const alignedCandles =
-    recent.filter(c =>
-      signal === "BUY"
-        ? c.delta > 0
-        : c.delta < 0
-    ).length;
+  const alignedCandles = recent.filter((c) =>
+    signal === "BUY" ? c.delta > 0 : c.delta < 0,
+  ).length;
 
-  const directionalDrift =
-    netMove > avgNoise * 2.0;
+  const directionalDrift = netMove > avgNoise * 2.0;
 
-  const staircaseTrend =
-    alignedCandles >= 4;
+  const staircaseTrend = alignedCandles >= 4;
 
   let driftStrength = 0;
 
-  if (directionalDrift)
-    driftStrength += 60;
+  if (directionalDrift) driftStrength += 60;
 
-  if (staircaseTrend)
-    driftStrength += 40;
+  if (staircaseTrend) driftStrength += 40;
 
-  driftStrength =
-    Math.min(100, driftStrength);
+  driftStrength = Math.min(100, driftStrength);
 
   return {
     directionalDrift,
     driftStrength,
-    staircaseTrend
+    staircaseTrend,
   };
 }
 
 function computeSmoothedDelta(price, history = [], period = 4) {
-
   if (!history.length) return 0;
 
   const recent = history.slice(-period);
 
-  const avg =
-    recent.reduce((sum, p) => sum + p, 0) / recent.length;
+  const avg = recent.reduce((sum, p) => sum + p, 0) / recent.length;
 
   return price - avg;
 }
 
 function computeDirectionalBias(memory, signal) {
-
   if (memory.length < 3) {
     return {
       bullish: 0,
       bearish: 0,
-      dominance: 0
+      dominance: 0,
     };
   }
 
@@ -294,7 +265,6 @@ function computeDirectionalBias(memory, signal) {
   let bearish = 0;
 
   for (const item of memory) {
-
     if (item.delta > 0) bullish++;
     if (item.delta < 0) bearish++;
   }
@@ -312,223 +282,183 @@ function computeDirectionalBias(memory, signal) {
   return {
     bullish: bullishRatio,
     bearish: bearishRatio,
-    dominance
+    dominance,
   };
 }
 
 function analyzePullback(memory, signal) {
-
   if (memory.length < 4) {
     return {
       pullbackStrength: 0,
       reclaimStrength: 0,
-      reclaimFailure: false
+      reclaimFailure: false,
     };
   }
 
-  const opposing = memory.filter(c =>
-    signal === "BUY"
-      ? c.delta < 0
-      : c.delta > 0
+  const opposing = memory.filter((c) =>
+    signal === "BUY" ? c.delta < 0 : c.delta > 0,
   );
 
-  const continuation = memory.filter(c =>
-    signal === "BUY"
-      ? c.delta > 0
-      : c.delta < 0
+  const continuation = memory.filter((c) =>
+    signal === "BUY" ? c.delta > 0 : c.delta < 0,
   );
 
-  const pullbackStrength =
-    opposing.reduce((sum, c) => sum + Math.abs(c.delta), 0);
+  const pullbackStrength = opposing.reduce(
+    (sum, c) => sum + Math.abs(c.delta),
+    0,
+  );
 
-  const reclaimStrength =
-    continuation.reduce((sum, c) => sum + Math.abs(c.delta), 0);
+  const reclaimStrength = continuation.reduce(
+    (sum, c) => sum + Math.abs(c.delta),
+    0,
+  );
 
-  const reclaimFailure =
-    pullbackStrength > reclaimStrength * 1.2;
+  const reclaimFailure = pullbackStrength > reclaimStrength * 1.2;
 
   return {
     pullbackStrength,
     reclaimStrength,
-    reclaimFailure
+    reclaimFailure,
   };
 }
 
 function analyzeImpulse(memory, signal) {
-
   if (memory.length < 4) {
     return {
       impulseStrength: 0,
       expansionStrength: 0,
-      explosiveMove: false
+      explosiveMove: false,
     };
   }
 
-  const alignedMoves = memory.filter(c =>
-    signal === "BUY"
-      ? c.delta > 0
-      : c.delta < 0
+  const alignedMoves = memory.filter((c) =>
+    signal === "BUY" ? c.delta > 0 : c.delta < 0,
   );
 
   const avgMove =
-    memory.reduce((sum, c) => sum + Math.abs(c.delta), 0) /
-    memory.length;
+    memory.reduce((sum, c) => sum + Math.abs(c.delta), 0) / memory.length;
 
-  const impulseStrength =
-    alignedMoves.reduce((sum, c) => sum + Math.abs(c.delta), 0);
-
-  const strongestMove = Math.max(
-    ...alignedMoves.map(c => Math.abs(c.delta)),
-    0
+  const impulseStrength = alignedMoves.reduce(
+    (sum, c) => sum + Math.abs(c.delta),
+    0,
   );
 
-  const expansionStrength =
-    avgMove > 0
-      ? strongestMove / avgMove
-      : 0;
+  const strongestMove = Math.max(
+    ...alignedMoves.map((c) => Math.abs(c.delta)),
+    0,
+  );
 
-  const explosiveMove =
-    expansionStrength > 2.2;
+  const expansionStrength = avgMove > 0 ? strongestMove / avgMove : 0;
+
+  const explosiveMove = expansionStrength > 2.2;
 
   return {
     impulseStrength,
     expansionStrength,
-    explosiveMove
+    explosiveMove,
   };
 }
 
 function analyzeSetupAging(memory) {
-
   if (memory.length < 2) {
     return {
       ageMinutes: 0,
       staleStructure: false,
-      decayingStructure: false
+      decayingStructure: false,
     };
   }
 
   const first = memory[0];
   const last = memory.at(-1);
 
-  const ageMs =
-    (last.timestamp || 0) -
-    (first.timestamp || 0);
+  const ageMs = (last.timestamp || 0) - (first.timestamp || 0);
 
-  const ageMinutes =
-    ageMs / 60000;
+  const ageMinutes = ageMs / 60000;
 
   const recent = memory.slice(-4);
 
-  const recentEfficiency =
-    computeDirectionalEfficiency(recent);
+  const recentEfficiency = computeDirectionalEfficiency(recent);
 
-  const staleStructure =
-    ageMinutes > 8;
+  const staleStructure = ageMinutes > 8;
 
-  const decayingStructure =
-    recentEfficiency < 0.25;
+  const decayingStructure = recentEfficiency < 0.25;
 
   return {
     ageMinutes,
     staleStructure,
-    decayingStructure
+    decayingStructure,
   };
 }
 
 function analyzeTrendStructure(memory, signal) {
-
   if (memory.length < 4) {
     return {
       persistence: 0,
       trendStrength: 0,
-      strongTrend: false
+      strongTrend: false,
     };
   }
 
-  const aligned = memory.filter(c =>
-    signal === "BUY"
-      ? c.delta > 0
-      : c.delta < 0
+  const aligned = memory.filter((c) =>
+    signal === "BUY" ? c.delta > 0 : c.delta < 0,
   );
 
-  const persistence =
-    aligned.length / memory.length;
+  const persistence = aligned.length / memory.length;
 
-  const trendStrength =
-    aligned.reduce((sum, c) =>
-      sum + Math.abs(c.delta), 0
-    );
+  const trendStrength = aligned.reduce((sum, c) => sum + Math.abs(c.delta), 0);
 
   const avgStrength =
-    memory.reduce((sum, c) =>
-      sum + Math.abs(c.delta), 0
-    ) / memory.length;
+    memory.reduce((sum, c) => sum + Math.abs(c.delta), 0) / memory.length;
 
-  const strongTrend =
-    persistence > 0.7 &&
-    avgStrength > 0;
+  const strongTrend = persistence > 0.7 && avgStrength > 0;
 
   return {
     persistence,
     trendStrength,
-    strongTrend
+    strongTrend,
   };
 }
 
 function analyzeMarketRegime(memory, atr) {
-
   if (memory.length < 4) {
     return {
       volatilityFactor: 1,
       explosiveRegime: false,
-      slowRegime: false
+      slowRegime: false,
     };
   }
 
   const avgDelta =
-    memory.reduce((sum, c) =>
-      sum + Math.abs(c.delta), 0
-    ) / memory.length;
+    memory.reduce((sum, c) => sum + Math.abs(c.delta), 0) / memory.length;
 
-  const volatilityFactor =
-    atr > 0
-      ? avgDelta / atr
-      : 1;
+  const volatilityFactor = atr > 0 ? avgDelta / atr : 1;
 
-  const explosiveRegime =
-    volatilityFactor > 1.2;
+  const explosiveRegime = volatilityFactor > 1.2;
 
-  const slowRegime =
-    volatilityFactor < 0.5;
+  const slowRegime = volatilityFactor < 0.5;
 
   return {
     volatilityFactor,
     explosiveRegime,
-    slowRegime
+    slowRegime,
   };
 }
 
 function analyzeMomentumProgression(memory, signal) {
-
   if (memory.length < 5) {
     return {
       acceleration: 0,
       persistence: 0,
       fadingMomentum: false,
-      strengtheningMomentum: false
+      strengtheningMomentum: false,
     };
   }
 
-  const aligned = memory.map(c =>
-    signal === "BUY"
-      ? c.delta
-      : -c.delta
-  );
+  const aligned = memory.map((c) => (signal === "BUY" ? c.delta : -c.delta));
 
   const recent = aligned.slice(-3);
 
-  const acceleration =
-    recent[2] - recent[0];
+  const acceleration = recent[2] - recent[0];
 
   let persistenceCount = 0;
 
@@ -536,27 +466,21 @@ function analyzeMomentumProgression(memory, signal) {
     if (move > 0) persistenceCount++;
   }
 
-  const persistence =
-    persistenceCount / recent.length;
+  const persistence = persistenceCount / recent.length;
 
-  const fadingMomentum =
-    recent[2] < recent[1] &&
-    recent[1] < recent[0];
+  const fadingMomentum = recent[2] < recent[1] && recent[1] < recent[0];
 
-  const strengtheningMomentum =
-    recent[2] > recent[1] &&
-    recent[1] > recent[0];
+  const strengtheningMomentum = recent[2] > recent[1] && recent[1] > recent[0];
 
   return {
     acceleration,
     persistence,
     fadingMomentum,
-    strengtheningMomentum
+    strengtheningMomentum,
   };
 }
 
 function analyzeContinuationState(memory, signal) {
-
   if (memory.length < 10) {
     return {
       healthyStructure: false,
@@ -564,78 +488,58 @@ function analyzeContinuationState(memory, signal) {
       contradictionRisk: 100,
       reclaimQuality: 0,
       stabilizationStrength: 0,
-      weakeningOpposition: false
+      weakeningOpposition: false,
     };
   }
 
   const recent = memory.slice(-5);
   const older = memory.slice(-10, -5);
 
-  const efficiency =
-    computeDirectionalEfficiency(recent);
+  const efficiency = computeDirectionalEfficiency(recent);
 
-  const alternation =
-    computeAlternationRatio(recent);
+  const alternation = computeAlternationRatio(recent);
 
-  const bias =
-    computeDirectionalBias(
-      recent,
-      signal
-    );
+  const bias = computeDirectionalBias(recent, signal);
 
   // ==============================
   // OPPOSITION ANALYSIS
   // ==============================
-  const opposingRecent = recent.filter(c =>
-    signal === "BUY"
-      ? c.delta < 0
-      : c.delta > 0
+  const opposingRecent = recent.filter((c) =>
+    signal === "BUY" ? c.delta < 0 : c.delta > 0,
   );
 
-  const opposingOlder = older.filter(c =>
-    signal === "BUY"
-      ? c.delta < 0
-      : c.delta > 0
+  const opposingOlder = older.filter((c) =>
+    signal === "BUY" ? c.delta < 0 : c.delta > 0,
   );
 
-  const recentOpposition =
-    opposingRecent.reduce((sum, c) =>
-      sum + Math.abs(c.delta), 0);
+  const recentOpposition = opposingRecent.reduce(
+    (sum, c) => sum + Math.abs(c.delta),
+    0,
+  );
 
-  const olderOpposition =
-    opposingOlder.reduce((sum, c) =>
-      sum + Math.abs(c.delta), 0);
+  const olderOpposition = opposingOlder.reduce(
+    (sum, c) => sum + Math.abs(c.delta),
+    0,
+  );
 
   const weakeningOpposition =
-    olderOpposition > 0
-      ? recentOpposition < olderOpposition * 0.75
-      : false;
+    olderOpposition > 0 ? recentOpposition < olderOpposition * 0.75 : false;
 
   // ==============================
   // STABILIZATION ANALYSIS
   // ==============================
   let stabilizationStrength = 0;
 
-  if (efficiency > 0.55)
-    stabilizationStrength += 30;
+  if (efficiency > 0.55) stabilizationStrength += 30;
+  else if (efficiency > 0.4) stabilizationStrength += 15;
 
-  else if (efficiency > 0.40)
-    stabilizationStrength += 15;
+  if (alternation < 0.35) stabilizationStrength += 25;
+  else if (alternation < 0.5) stabilizationStrength += 10;
 
-  if (alternation < 0.35)
-    stabilizationStrength += 25;
+  if (bias.dominance > 0.5) stabilizationStrength += 30;
+  else if (bias.dominance > 0.2) stabilizationStrength += 15;
 
-  else if (alternation < 0.50)
-    stabilizationStrength += 10;
-
-  if (bias.dominance > 0.5)
-    stabilizationStrength += 30;
-
-  else if (bias.dominance > 0.2)
-    stabilizationStrength += 15;
-
-  if (weakeningOpposition)
-    stabilizationStrength += 15;
+  if (weakeningOpposition) stabilizationStrength += 15;
 
   // ==============================
   // CONTINUATION CONFIDENCE
@@ -648,40 +552,30 @@ function analyzeContinuationState(memory, signal) {
   // HEALTHY STRUCTURE
   // ==============================
   const healthyStructure =
-    efficiency > 0.35 &&
-    alternation < 0.65 &&
-    bias.dominance > 0;
+    efficiency > 0.35 && alternation < 0.65 && bias.dominance > 0;
 
   // ==============================
   // CONTRADICTION RISK
   // ==============================
   let contradictionRisk = 0;
 
-  if (bias.dominance < 0)
-    contradictionRisk += 50;
+  if (bias.dominance < 0) contradictionRisk += 50;
 
-  if (alternation > 0.70)
-    contradictionRisk += 25;
+  if (alternation > 0.7) contradictionRisk += 25;
 
-  if (efficiency < 0.20)
-    contradictionRisk += 25;
+  if (efficiency < 0.2) contradictionRisk += 25;
 
   // ==============================
   // RECLAIM QUALITY
   // ==============================
   let reclaimQuality = 0;
 
-  if (bias.dominance > 0.60)
-    reclaimQuality += 35;
+  if (bias.dominance > 0.6) reclaimQuality += 35;
+  else if (bias.dominance > 0.3) reclaimQuality += 20;
 
-  else if (bias.dominance > 0.30)
-    reclaimQuality += 20;
+  if (weakeningOpposition) reclaimQuality += 20;
 
-  if (weakeningOpposition)
-    reclaimQuality += 20;
-
-  if (efficiency > 0.50)
-    reclaimQuality += 25;
+  if (efficiency > 0.5) reclaimQuality += 25;
 
   return {
     healthyStructure,
@@ -689,214 +583,136 @@ function analyzeContinuationState(memory, signal) {
     contradictionRisk,
     reclaimQuality,
     stabilizationStrength,
-    weakeningOpposition
+    weakeningOpposition,
   };
 }
 
 function analyzeContinuationPersistence({
-
   previousValidation,
   continuationState,
   compressionState,
   driftState,
   directionBias,
   efficiency,
-  alternation
-
+  alternation,
 }) {
-
   // ==============================
   // PREVIOUS MEMORY
   // ==============================
-  const previousPersistence =
-    previousValidation
-      ?.continuationPersistence || 0;
+  const previousPersistence = previousValidation?.continuationPersistence || 0;
 
   // ==============================
   // DIRECTIONAL COMMITMENT
   // ==============================
   let directionalCommitment = 0;
 
-  directionalCommitment +=
-    continuationState.continuationConfidence * 0.35;
+  directionalCommitment += continuationState.continuationConfidence * 0.35;
 
-  directionalCommitment +=
-    continuationState.reclaimQuality * 0.25;
+  directionalCommitment += continuationState.reclaimQuality * 0.25;
 
-  directionalCommitment +=
-    compressionState.compressionQuality * 0.20;
+  directionalCommitment += compressionState.compressionQuality * 0.2;
 
-  directionalCommitment +=
-    driftState.driftStrength * 0.20;
+  directionalCommitment += driftState.driftStrength * 0.2;
 
-  directionalCommitment =
-    Math.max(
-      0,
-      Math.min(100, directionalCommitment)
-    );
+  directionalCommitment = Math.max(0, Math.min(100, directionalCommitment));
 
   // ==============================
   // DETERIORATION PRESSURE
   // ==============================
   let behavioralDeterioration = 0;
 
-  if (alternation > 0.70)
-    behavioralDeterioration += 20;
+  if (alternation > 0.7) behavioralDeterioration += 20;
+  else if (alternation > 0.55) behavioralDeterioration += 10;
 
-  else if (alternation > 0.55)
-    behavioralDeterioration += 10;
+  if (efficiency < 0.2) behavioralDeterioration += 25;
+  else if (efficiency < 0.35) behavioralDeterioration += 10;
 
-  if (efficiency < 0.20)
-    behavioralDeterioration += 25;
+  if (directionBias.dominance < 0) behavioralDeterioration += 30;
+  else if (directionBias.dominance < 0.1) behavioralDeterioration += 10;
 
-  else if (efficiency < 0.35)
-    behavioralDeterioration += 10;
-
-  if (directionBias.dominance < 0)
-    behavioralDeterioration += 30;
-
-  else if (directionBias.dominance < 0.10)
-    behavioralDeterioration += 10;
-
-  if (
-    compressionState.compressionClassification ===
-    "DEAD_CHOP"
-  ) {
+  if (compressionState.compressionClassification === "DEAD_CHOP") {
     behavioralDeterioration += 35;
-  }
-
-  else if (
-    compressionState.compressionClassification ===
-    "ROTATIONAL"
-  ) {
+  } else if (compressionState.compressionClassification === "ROTATIONAL") {
     behavioralDeterioration += 15;
   }
 
   // Clamp
-  behavioralDeterioration =
-    Math.max(
-      0,
-      Math.min(100, behavioralDeterioration)
-    );
+  behavioralDeterioration = Math.max(0, Math.min(100, behavioralDeterioration));
 
   // ==============================
   // RECOVERY PRESSURE
   // ==============================
   let continuationPersistenceRecovery = 0;
 
-  if (continuationState.healthyStructure)
-    continuationPersistenceRecovery += 20;
+  if (continuationState.healthyStructure) continuationPersistenceRecovery += 20;
 
-  if (driftState.directionalDrift)
-    continuationPersistenceRecovery += 20;
+  if (driftState.directionalDrift) continuationPersistenceRecovery += 20;
 
-  if (driftState.staircaseTrend)
-    continuationPersistenceRecovery += 15;
+  if (driftState.staircaseTrend) continuationPersistenceRecovery += 15;
 
-  if (
-    compressionState.compressionClassification ===
-    "TREND_DRIFT"
-  ) {
+  if (compressionState.compressionClassification === "TREND_DRIFT") {
     continuationPersistenceRecovery += 20;
   }
 
-  if (
-    compressionState.compressionClassification ===
-    "EXPANSION_LOADING"
-  ) {
+  if (compressionState.compressionClassification === "EXPANSION_LOADING") {
     continuationPersistenceRecovery += 15;
   }
 
-  if (directionBias.dominance > 0.30)
-    continuationPersistenceRecovery += 10;
+  if (directionBias.dominance > 0.3) continuationPersistenceRecovery += 10;
 
   // Clamp
-  continuationPersistenceRecovery =
-    Math.max(
-      0,
-      Math.min(
-        100,
-        continuationPersistenceRecovery
-      )
-    );
+  continuationPersistenceRecovery = Math.max(
+    0,
+    Math.min(100, continuationPersistenceRecovery),
+  );
 
   // ==============================
   // PERSISTENCE DECAY
   // ==============================
-  let continuationPersistenceDecay =
-    behavioralDeterioration * 0.35;
+  let continuationPersistenceDecay = behavioralDeterioration * 0.35;
 
   // Strong continuation resists decay
-  if (directionalCommitment > 70)
-    continuationPersistenceDecay *= 0.6;
-
-  else if (directionalCommitment > 55)
-    continuationPersistenceDecay *= 0.8;
+  if (directionalCommitment > 70) continuationPersistenceDecay *= 0.6;
+  else if (directionalCommitment > 55) continuationPersistenceDecay *= 0.8;
 
   // Drift continuation survives noise better
-  if (
-    compressionState.compressionClassification ===
-    "TREND_DRIFT"
-  ) {
+  if (compressionState.compressionClassification === "TREND_DRIFT") {
     continuationPersistenceDecay *= 0.65;
   }
 
   // ==============================
   // FINAL PERSISTENCE
   // ==============================
-  let continuationPersistence =
-    previousPersistence;
+  let continuationPersistence = previousPersistence;
 
-  continuationPersistence +=
-    continuationPersistenceRecovery * 0.35;
+  continuationPersistence += continuationPersistenceRecovery * 0.35;
 
-  continuationPersistence -=
-    continuationPersistenceDecay * 0.40;
+  continuationPersistence -= continuationPersistenceDecay * 0.4;
 
   // Initial bootstrap
-  if (
-    continuationPersistence < 20 &&
-    directionalCommitment > 50
-  ) {
-    continuationPersistence =
-      directionalCommitment * 0.8;
+  if (continuationPersistence < 20 && directionalCommitment > 50) {
+    continuationPersistence = directionalCommitment * 0.8;
   }
 
   // Clamp
-  continuationPersistence =
-    Math.max(
-      0,
-      Math.min(
-        100,
-        continuationPersistence
-      )
-    );
+  continuationPersistence = Math.max(0, Math.min(100, continuationPersistence));
 
   // ==============================
   // SURVIVAL SCORE
   // ==============================
   let behavioralSurvival = 0;
 
-  behavioralSurvival +=
-    continuationPersistence * 0.5;
+  behavioralSurvival += continuationPersistence * 0.5;
 
-  behavioralSurvival +=
-    directionalCommitment * 0.3;
+  behavioralSurvival += directionalCommitment * 0.3;
 
-  behavioralSurvival +=
-    continuationPersistenceRecovery * 0.2;
+  behavioralSurvival += continuationPersistenceRecovery * 0.2;
 
-  behavioralSurvival -=
-    behavioralDeterioration * 0.25;
+  behavioralSurvival -= behavioralDeterioration * 0.25;
 
-  behavioralSurvival =
-    Math.max(
-      0,
-      Math.min(100, behavioralSurvival)
-    );
+  behavioralSurvival = Math.max(0, Math.min(100, behavioralSurvival));
 
   return {
-
     continuationPersistence,
 
     continuationPersistenceDecay,
@@ -907,12 +723,11 @@ function analyzeContinuationPersistence({
 
     behavioralDeterioration,
 
-    directionalCommitment
+    directionalCommitment,
   };
 }
 
 function analyzeSetupHealth({
-
   previousValidation,
 
   continuationState,
@@ -928,16 +743,12 @@ function analyzeSetupHealth({
   dangerousPullback,
 
   efficiency,
-  alternation
-
+  alternation,
 }) {
-
   // ==============================
   // PREVIOUS HEALTH
   // ==============================
-  let setupHealth =
-    previousValidation
-      ?.setupHealth ?? 100;
+  let setupHealth = previousValidation?.setupHealth ?? 100;
 
   // ==============================
   // DECAY PRESSURE
@@ -945,51 +756,31 @@ function analyzeSetupHealth({
   let setupDecay = 0;
 
   // Structural deterioration
-  if (failedStructure)
-    setupDecay += 35;
-
-  else if (weakStructure)
-    setupDecay += 15;
+  if (failedStructure) setupDecay += 35;
+  else if (weakStructure) setupDecay += 15;
 
   // Dangerous pullback
-  if (dangerousPullback)
-    setupDecay += 25;
+  if (dangerousPullback) setupDecay += 25;
 
   // Efficiency deterioration
-  if (efficiency < 0.20)
-    setupDecay += 25;
-
-  else if (efficiency < 0.35)
-    setupDecay += 10;
+  if (efficiency < 0.2) setupDecay += 25;
+  else if (efficiency < 0.35) setupDecay += 10;
 
   // Alternation pressure
-  if (alternation > 0.75)
-    setupDecay += 25;
-
-  else if (alternation > 0.60)
-    setupDecay += 10;
+  if (alternation > 0.75) setupDecay += 25;
+  else if (alternation > 0.6) setupDecay += 10;
 
   // Compression deterioration
-  if (
-    compressionState.compressionClassification ===
-    "DEAD_CHOP"
-  ) {
+  if (compressionState.compressionClassification === "DEAD_CHOP") {
     setupDecay += 40;
-  }
-
-  else if (
-    compressionState.compressionClassification ===
-    "ROTATIONAL"
-  ) {
+  } else if (compressionState.compressionClassification === "ROTATIONAL") {
     setupDecay += 15;
   }
 
   // Aging deterioration
-  if (agingAnalysis.ageMinutes > 8)
-    setupDecay += 15;
+  if (agingAnalysis.ageMinutes > 8) setupDecay += 15;
 
-  if (agingAnalysis.ageMinutes > 12)
-    setupDecay += 20;
+  if (agingAnalysis.ageMinutes > 12) setupDecay += 20;
 
   // ==============================
   // RECOVERY PRESSURE
@@ -997,49 +788,31 @@ function analyzeSetupHealth({
   let setupRecovery = 0;
 
   // Continuation persistence
-  if (
-    persistenceState.continuationPersistence > 70
-  ) {
+  if (persistenceState.continuationPersistence > 70) {
     setupRecovery += 25;
-  }
-
-  else if (
-    persistenceState.continuationPersistence > 50
-  ) {
+  } else if (persistenceState.continuationPersistence > 50) {
     setupRecovery += 15;
   }
 
   // Healthy continuation
-  if (continuationState.healthyStructure)
-    setupRecovery += 15;
+  if (continuationState.healthyStructure) setupRecovery += 15;
 
   // Drift continuation
-  if (
-    driftState.directionalDrift &&
-    driftState.staircaseTrend
-  ) {
+  if (driftState.directionalDrift && driftState.staircaseTrend) {
     setupRecovery += 20;
   }
 
   // Compression continuation
-  if (
-    compressionState.compressionClassification ===
-    "TREND_DRIFT"
-  ) {
+  if (compressionState.compressionClassification === "TREND_DRIFT") {
     setupRecovery += 20;
-  }
-
-  else if (
-    compressionState.compressionClassification ===
-    "EXPANSION_LOADING"
+  } else if (
+    compressionState.compressionClassification === "EXPANSION_LOADING"
   ) {
     setupRecovery += 15;
   }
 
   // Behavioral survival
-  if (
-    persistenceState.behavioralSurvival > 65
-  ) {
+  if (persistenceState.behavioralSurvival > 65) {
     setupRecovery += 15;
   }
 
@@ -1048,82 +821,56 @@ function analyzeSetupHealth({
   // ==============================
   let setupPressure = 0;
 
-  setupPressure +=
-    setupDecay * 0.65;
+  setupPressure += setupDecay * 0.65;
 
-  setupPressure -=
-    setupRecovery * 0.35;
+  setupPressure -= setupRecovery * 0.35;
 
-  setupPressure =
-    Math.max(
-      0,
-      Math.min(100, setupPressure)
-    );
+  setupPressure = Math.max(0, Math.min(100, setupPressure));
 
   // ==============================
   // HEALTH UPDATE
   // ==============================
-  setupHealth -=
-    setupDecay * 0.10;
+  setupHealth -= setupDecay * 0.1;
 
-  setupHealth +=
-    setupRecovery * 0.08;
+  setupHealth += setupRecovery * 0.08;
 
   // Drift continuation resists collapse
-  if (
-    compressionState.compressionClassification ===
-    "TREND_DRIFT"
-  ) {
+  if (compressionState.compressionClassification === "TREND_DRIFT") {
     setupHealth += 5;
   }
 
   // Clamp
-  setupHealth =
-    Math.max(
-      0,
-      Math.min(100, setupHealth)
-    );
+  setupHealth = Math.max(0, Math.min(100, setupHealth));
 
   // ==============================
   // INVALIDATION RISK
   // ==============================
   let setupInvalidationRisk = 0;
 
-  if (setupHealth < 60)
-    setupInvalidationRisk += 20;
+  if (setupHealth < 60) setupInvalidationRisk += 20;
 
-  if (setupHealth < 45)
-    setupInvalidationRisk += 25;
+  if (setupHealth < 45) setupInvalidationRisk += 25;
 
-  if (setupHealth < 30)
-    setupInvalidationRisk += 35;
+  if (setupHealth < 30) setupInvalidationRisk += 35;
 
-  if (setupPressure > 60)
-    setupInvalidationRisk += 20;
+  if (setupPressure > 60) setupInvalidationRisk += 20;
 
-  if (setupPressure > 75)
-    setupInvalidationRisk += 20;
+  if (setupPressure > 75) setupInvalidationRisk += 20;
 
-  setupInvalidationRisk =
-    Math.max(
-      0,
-      Math.min(100, setupInvalidationRisk)
-    );
+  setupInvalidationRisk = Math.max(0, Math.min(100, setupInvalidationRisk));
 
   return {
-
     setupHealth,
 
     setupRecovery,
     setupDecay,
     setupPressure,
 
-    setupInvalidationRisk
+    setupInvalidationRisk,
   };
 }
 
 function analyzeBehavioralArbitration({
-
   continuationState,
   compressionState,
   persistenceState,
@@ -1135,39 +882,27 @@ function analyzeBehavioralArbitration({
 
   structureAligned,
   progressiveContinuation,
-  structuralContinuation
-
+  structuralContinuation,
 }) {
-
   // ==============================
   // PRIMARY AUTHORITY
   // ==============================
   let primaryAuthority = 0;
 
   // Persistence
-  primaryAuthority +=
-    persistenceState
-      .continuationPersistence * 0.30;
+  primaryAuthority += persistenceState.continuationPersistence * 0.3;
 
   // Behavioral survival
-  primaryAuthority +=
-    persistenceState
-      .behavioralSurvival * 0.20;
+  primaryAuthority += persistenceState.behavioralSurvival * 0.2;
 
   // Directional commitment
-  primaryAuthority +=
-    persistenceState
-      .directionalCommitment * 0.15;
+  primaryAuthority += persistenceState.directionalCommitment * 0.15;
 
   // Setup health
-  primaryAuthority +=
-    setupHealthState
-      .setupHealth * 0.15;
+  primaryAuthority += setupHealthState.setupHealth * 0.15;
 
   // Continuation confidence
-  primaryAuthority +=
-    continuationState
-      .continuationConfidence * 0.20;
+  primaryAuthority += continuationState.continuationConfidence * 0.2;
 
   // ==============================
   // SECONDARY AUTHORITY
@@ -1175,90 +910,57 @@ function analyzeBehavioralArbitration({
   let secondaryAuthority = 0;
 
   // Compression quality
-  secondaryAuthority +=
-    compressionState
-      .compressionQuality * 0.30;
+  secondaryAuthority += compressionState.compressionQuality * 0.3;
 
   // Expansion readiness
-  secondaryAuthority +=
-    validation
-      .expansionReadiness * 0.25;
+  secondaryAuthority += validation.expansionReadiness * 0.25;
 
-  secondaryAuthority +=
-    validation
-      .ignitionPressure * 0.15;
+  secondaryAuthority += validation.ignitionPressure * 0.15;
 
-  secondaryAuthority +=
-    validation
-      .ignitionConfidence * 0.10;
+  secondaryAuthority += validation.ignitionConfidence * 0.1;
 
   // Reclaim quality
-  secondaryAuthority +=
-    continuationState
-      .reclaimQuality * 0.20;
+  secondaryAuthority += continuationState.reclaimQuality * 0.2;
 
   // Structure quality
-  secondaryAuthority +=
-    validation
-      .structureQuality * 0.20;    
+  secondaryAuthority += validation.structureQuality * 0.2;
 
   // Structural alignment
-  if (structureAligned)
-    secondaryAuthority += 15;
+  if (structureAligned) secondaryAuthority += 15;
 
   // Progressive continuation
-  if (progressiveContinuation)
-    secondaryAuthority += 10;
+  if (progressiveContinuation) secondaryAuthority += 10;
 
   // Structural continuation
-  if (structuralContinuation)
-    secondaryAuthority += 10;
+  if (structuralContinuation) secondaryAuthority += 10;
 
-  secondaryAuthority =
-    Math.max(
-      0,
-      Math.min(100, secondaryAuthority)
-    );
+  secondaryAuthority = Math.max(0, Math.min(100, secondaryAuthority));
 
   // ==============================
   // TRIGGER AUTHORITY
   // ==============================
   let triggerAuthority = 0;
 
-  if (
-    validation.trappedContinuation
-  ) {
+  if (validation.trappedContinuation) {
     triggerAuthority -= 25;
   }
 
-  if (
-    validation.reclaimRejection
-  ) {
+  if (validation.reclaimRejection) {
     triggerAuthority -= 15;
   }
 
-  if (
-    validation.failedBullishBOS ||
-    validation.failedBearishBOS
-  ) {
+  if (validation.failedBullishBOS || validation.failedBearishBOS) {
     triggerAuthority -= 20;
   }
 
-  if (validation.expansionTriggerActive)
-    triggerAuthority += 50;
+  if (validation.expansionTriggerActive) triggerAuthority += 50;
 
-  triggerAuthority +=
-    validation
-      .expansionTriggerStrength * 0.50;
+  triggerAuthority += validation.expansionTriggerStrength * 0.5;
 
   // Drift continuation needs
   // less trigger dependency
-  if (
-    compressionState
-      .compressionClassification ===
-    "TREND_DRIFT"
-  ) {
-    triggerAuthority *= 0.70;
+  if (compressionState.compressionClassification === "TREND_DRIFT") {
+    triggerAuthority *= 0.7;
   }
 
   // ==============================
@@ -1266,53 +968,37 @@ function analyzeBehavioralArbitration({
   // ==============================
   let behavioralArbitrationScore = 0;
 
-  behavioralArbitrationScore +=
-    primaryAuthority * 0.55;
+  behavioralArbitrationScore += primaryAuthority * 0.55;
 
-  behavioralArbitrationScore +=
-    secondaryAuthority * 0.30;
+  behavioralArbitrationScore += secondaryAuthority * 0.3;
 
-  behavioralArbitrationScore +=
-    triggerAuthority * 0.15;
+  behavioralArbitrationScore += triggerAuthority * 0.15;
 
-  behavioralArbitrationScore =
-    Math.max(
-      0,
-      Math.min(
-        100,
-        behavioralArbitrationScore
-      )
-    );
+  behavioralArbitrationScore = Math.max(
+    0,
+    Math.min(100, behavioralArbitrationScore),
+  );
 
   // ==============================
   // VALIDATION
   // ==============================
   const behavioralValidation =
-
-    behavioralArbitrationScore >= 62
-
-    &&
-
-    primaryAuthority >= 45
-
-    &&
-
+    behavioralArbitrationScore >= 62 &&
+    primaryAuthority >= 45 &&
     setupHealthState.setupHealth >= 35;
 
   return {
-
     primaryAuthority,
     secondaryAuthority,
     triggerAuthority,
 
     behavioralArbitrationScore,
 
-    behavioralValidation
+    behavioralValidation,
   };
 }
 
 function analyzeCompression(memory, signal) {
-
   if (memory.length < 10) {
     return {
       constructiveCompression: false,
@@ -1325,7 +1011,7 @@ function analyzeCompression(memory, signal) {
 
       compressionClassification: "NEUTRAL",
       compressionPersistence: 0,
-      compressionTransition: null
+      compressionTransition: null,
     };
   }
 
@@ -1335,104 +1021,70 @@ function analyzeCompression(memory, signal) {
   // ==============================
   // VOLATILITY COMPRESSION
   // ==============================
-  const recentRange =
-    recent.reduce((sum, c) =>
-      sum + Math.abs(c.delta), 0);
+  const recentRange = recent.reduce((sum, c) => sum + Math.abs(c.delta), 0);
 
-  const olderRange =
-    older.reduce((sum, c) =>
-      sum + Math.abs(c.delta), 0);
+  const olderRange = older.reduce((sum, c) => sum + Math.abs(c.delta), 0);
 
-  const volatilityCompression =
-    recentRange < olderRange * 0.75;
+  const volatilityCompression = recentRange < olderRange * 0.75;
 
   // ==============================
   // STRUCTURE
   // ==============================
-  const recentEfficiency =
-    computeDirectionalEfficiency(recent);
+  const recentEfficiency = computeDirectionalEfficiency(recent);
 
-  const recentAlternation =
-    computeAlternationRatio(recent);
+  const recentAlternation = computeAlternationRatio(recent);
 
-  const driftState =
-    analyzeDirectionalDrift(
-      memory,
-      signal
-    );
+  const driftState = analyzeDirectionalDrift(memory, signal);
 
   // ==============================
   // BIAS
   // ==============================
-  const bias =
-    computeDirectionalBias(
-      recent,
-      signal
-    );
+  const bias = computeDirectionalBias(recent, signal);
 
   const directionalCompression =
-    bias.dominance > 0.20 &&
-    recentAlternation < 0.60;
+    bias.dominance > 0.2 && recentAlternation < 0.6;
 
   // ==============================
   // QUALITY
   // ==============================
   let compressionQuality = 0;
 
-  if (volatilityCompression)
-    compressionQuality += 25;
+  if (volatilityCompression) compressionQuality += 25;
 
-  if (recentEfficiency > 0.50)
-    compressionQuality += 25;
+  if (recentEfficiency > 0.5) compressionQuality += 25;
+  else if (recentEfficiency > 0.35) compressionQuality += 15;
 
-  else if (recentEfficiency > 0.35)
-    compressionQuality += 15;
+  if (recentAlternation < 0.35) compressionQuality += 20;
+  else if (recentAlternation < 0.55) compressionQuality += 10;
 
-  if (recentAlternation < 0.35)
-    compressionQuality += 20;
+  if (bias.dominance > 0.45) compressionQuality += 20;
+  else if (bias.dominance > 0.25) compressionQuality += 10;
 
-  else if (recentAlternation < 0.55)
-    compressionQuality += 10;
+  if (driftState.directionalDrift) compressionQuality += 10;
 
-  if (bias.dominance > 0.45)
-    compressionQuality += 20;
-
-  else if (bias.dominance > 0.25)
-    compressionQuality += 10;
-
-  if (driftState.directionalDrift)
-    compressionQuality += 10;
-
-  compressionQuality =
-    Math.max(
-      0,
-      Math.min(100, compressionQuality)
-    );
+  compressionQuality = Math.max(0, Math.min(100, compressionQuality));
 
   // ==============================
   // CLASSIFICATION ENGINE
   // ==============================
-  let compressionClassification =
-    "ROTATIONAL";
+  let compressionClassification = "ROTATIONAL";
 
   // DEAD CHOP
   if (
     recentEfficiency < 0.18 &&
     recentAlternation > 0.75 &&
-    bias.dominance < 0.10
+    bias.dominance < 0.1
   ) {
-    compressionClassification =
-      "DEAD_CHOP";
+    compressionClassification = "DEAD_CHOP";
   }
 
   // TREND DRIFT
   else if (
     driftState.directionalDrift &&
     driftState.staircaseTrend &&
-    bias.dominance > 0.20
+    bias.dominance > 0.2
   ) {
-    compressionClassification =
-      "TREND_DRIFT";
+    compressionClassification = "TREND_DRIFT";
   }
 
   // EXPANSION LOADING
@@ -1442,32 +1094,25 @@ function analyzeCompression(memory, signal) {
     recentAlternation < 0.45 &&
     bias.dominance > 0.35
   ) {
-    compressionClassification =
-      "EXPANSION_LOADING";
+    compressionClassification = "EXPANSION_LOADING";
   }
 
   // DIRECTIONAL COMPRESSION
   else if (
     directionalCompression &&
-    recentEfficiency > 0.30 &&
-    bias.dominance > 0.20
+    recentEfficiency > 0.3 &&
+    bias.dominance > 0.2
   ) {
-    compressionClassification =
-      "DIRECTIONAL_COMPRESSION";
+    compressionClassification = "DIRECTIONAL_COMPRESSION";
   }
 
   // ==============================
   // CONSTRUCTIVE LOGIC
   // ==============================
   const constructiveCompression =
-    compressionClassification ===
-      "TREND_DRIFT" ||
-
-    compressionClassification ===
-      "EXPANSION_LOADING" ||
-
-    compressionClassification ===
-      "DIRECTIONAL_COMPRESSION";
+    compressionClassification === "TREND_DRIFT" ||
+    compressionClassification === "EXPANSION_LOADING" ||
+    compressionClassification === "DIRECTIONAL_COMPRESSION";
 
   // ==============================
   // PERSISTENCE
@@ -1475,7 +1120,6 @@ function analyzeCompression(memory, signal) {
   let compressionPersistence = 0;
 
   switch (compressionClassification) {
-
     case "TREND_DRIFT":
       compressionPersistence = 90;
       break;
@@ -1503,21 +1147,14 @@ function analyzeCompression(memory, signal) {
   let compressionTransition = null;
 
   if (
-    compressionClassification ===
-      "EXPANSION_LOADING" &&
+    compressionClassification === "EXPANSION_LOADING" &&
     driftState.directionalDrift
   ) {
-    compressionTransition =
-      "DRIFT_TO_EXPANSION";
+    compressionTransition = "DRIFT_TO_EXPANSION";
   }
 
-  if (
-    compressionClassification ===
-      "ROTATIONAL" &&
-    recentAlternation > 0.70
-  ) {
-    compressionTransition =
-      "ROTATION_DETERIORATION";
+  if (compressionClassification === "ROTATIONAL" && recentAlternation > 0.7) {
+    compressionTransition = "ROTATION_DETERIORATION";
   }
 
   return {
@@ -1525,8 +1162,7 @@ function analyzeCompression(memory, signal) {
 
     compressionQuality,
 
-    compressionBias:
-      bias.dominance,
+    compressionBias: bias.dominance,
 
     volatilityCompression,
 
@@ -1536,7 +1172,7 @@ function analyzeCompression(memory, signal) {
 
     compressionPersistence,
 
-    compressionTransition
+    compressionTransition,
   };
 }
 
@@ -1545,83 +1181,66 @@ function analyzeDynamicDecay({
   continuationState,
   compressionState,
   efficiency,
-  alternation
+  alternation,
 }) {
-
   let dynamicDecayRisk = 0;
 
   // ==============================
   // BASE STALE PRESSURE
   // ==============================
-  if (agingAnalysis.ageMinutes > 8)
-    dynamicDecayRisk += 25;
+  if (agingAnalysis.ageMinutes > 8) dynamicDecayRisk += 25;
 
-  if (agingAnalysis.ageMinutes > 12)
-    dynamicDecayRisk += 20;
+  if (agingAnalysis.ageMinutes > 12) dynamicDecayRisk += 20;
 
   // ==============================
   // STRUCTURE DETERIORATION
   // ==============================
-  if (efficiency < 0.25)
-    dynamicDecayRisk += 20;
+  if (efficiency < 0.25) dynamicDecayRisk += 20;
 
-  if (alternation > 0.65)
-    dynamicDecayRisk += 20;
+  if (alternation > 0.65) dynamicDecayRisk += 20;
 
   // ==============================
   // CONTRADICTION
   // ==============================
-  dynamicDecayRisk +=
-    continuationState.contradictionRisk * 0.5;
+  dynamicDecayRisk += continuationState.contradictionRisk * 0.5;
 
   // ==============================
   // POSITIVE OFFSET
   // ==============================
-  if (continuationState.healthyStructure)
-    dynamicDecayRisk -= 15;
+  if (continuationState.healthyStructure) dynamicDecayRisk -= 15;
 
-  if (compressionState.constructiveCompression)
-    dynamicDecayRisk -= 20;
+  if (compressionState.constructiveCompression) dynamicDecayRisk -= 20;
 
-  if (continuationState.reclaimQuality > 50)
-    dynamicDecayRisk -= 15;
+  if (continuationState.reclaimQuality > 50) dynamicDecayRisk -= 15;
 
   // Clamp
-  dynamicDecayRisk =
-    Math.max(0, Math.min(100, dynamicDecayRisk));
+  dynamicDecayRisk = Math.max(0, Math.min(100, dynamicDecayRisk));
 
   return {
     dynamicDecayRisk,
-    decayingStructure:
-      dynamicDecayRisk >= 60
+    decayingStructure: dynamicDecayRisk >= 60,
   };
 }
 
 function detectSwings(memory) {
-
   if (memory.length < 5) {
     return {
       swingHigh: null,
       swingLow: null,
       detectedHigh: false,
-      detectedLow: false
+      detectedLow: false,
     };
   }
 
-  const mid =
-    memory[memory.length - 3];
+  const mid = memory[memory.length - 3];
 
-  const left1 =
-    memory[memory.length - 5];
+  const left1 = memory[memory.length - 5];
 
-  const left2 =
-    memory[memory.length - 4];
+  const left2 = memory[memory.length - 4];
 
-  const right1 =
-    memory[memory.length - 2];
+  const right1 = memory[memory.length - 2];
 
-  const right2 =
-    memory[memory.length - 1];
+  const right2 = memory[memory.length - 1];
 
   // ==============================
   // SWING HIGH
@@ -1642,29 +1261,21 @@ function detectSwings(memory) {
     mid.price < right2.price;
 
   return {
-    swingHigh:
-      detectedHigh ? mid.price : null,
+    swingHigh: detectedHigh ? mid.price : null,
 
-    swingLow:
-      detectedLow ? mid.price : null,
+    swingLow: detectedLow ? mid.price : null,
 
     detectedHigh,
-    detectedLow
+    detectedLow,
   };
 }
 
 function classifyMarketStructure(swingStructure) {
+  const highs = swingStructure.highs;
 
-  const highs =
-    swingStructure.highs;
+  const lows = swingStructure.lows;
 
-  const lows =
-    swingStructure.lows;
-
-  if (
-    highs.length < 2 ||
-    lows.length < 2
-  ) {
+  if (highs.length < 2 || lows.length < 2) {
     return {
       marketStructure: "UNKNOWN",
 
@@ -1672,47 +1283,31 @@ function classifyMarketStructure(swingStructure) {
       higherLows: 0,
 
       lowerHighs: 0,
-      lowerLows: 0
+      lowerLows: 0,
     };
   }
 
-  const lastHigh =
-    highs[highs.length - 1];
+  const lastHigh = highs[highs.length - 1];
 
-  const prevHigh =
-    highs[highs.length - 2];
+  const prevHigh = highs[highs.length - 2];
 
-  const lastLow =
-    lows[lows.length - 1];
+  const lastLow = lows[lows.length - 1];
 
-  const prevLow =
-    lows[lows.length - 2];
+  const prevLow = lows[lows.length - 2];
 
-  const higherHighs =
-    lastHigh.price > prevHigh.price ? 1 : 0;
+  const higherHighs = lastHigh.price > prevHigh.price ? 1 : 0;
 
-  const lowerHighs =
-    lastHigh.price < prevHigh.price ? 1 : 0;
+  const lowerHighs = lastHigh.price < prevHigh.price ? 1 : 0;
 
-  const higherLows =
-    lastLow.price > prevLow.price ? 1 : 0;
+  const higherLows = lastLow.price > prevLow.price ? 1 : 0;
 
-  const lowerLows =
-    lastLow.price < prevLow.price ? 1 : 0;
+  const lowerLows = lastLow.price < prevLow.price ? 1 : 0;
 
   let marketStructure = "RANGE";
 
-  if (
-    higherHighs &&
-    higherLows
-  ) {
+  if (higherHighs && higherLows) {
     marketStructure = "BULLISH";
-  }
-
-  else if (
-    lowerHighs &&
-    lowerLows
-  ) {
+  } else if (lowerHighs && lowerLows) {
     marketStructure = "BEARISH";
   }
 
@@ -1723,55 +1318,40 @@ function classifyMarketStructure(swingStructure) {
     higherLows,
 
     lowerHighs,
-    lowerLows
+    lowerLows,
   };
 }
 
-function analyzeBreakOfStructure(
-  swingStructure,
-  currentPrice
-) {
+function analyzeBreakOfStructure(swingStructure, currentPrice) {
+  const highs = swingStructure.highs;
 
-  const highs =
-    swingStructure.highs;
+  const lows = swingStructure.lows;
 
-  const lows =
-    swingStructure.lows;
-
-  if (
-    highs.length < 2 ||
-    lows.length < 2
-  ) {
+  if (highs.length < 2 || lows.length < 2) {
     return {
       bullishBOS: false,
       bearishBOS: false,
       structureBreakStrength: 0,
-      lastBreakDirection: null
+      lastBreakDirection: null,
     };
   }
 
-  const lastHigh =
-    highs[highs.length - 1];
+  const lastHigh = highs[highs.length - 1];
 
-  const prevHigh =
-    highs[highs.length - 2];
+  const prevHigh = highs[highs.length - 2];
 
-  const lastLow =
-    lows[lows.length - 1];
+  const lastLow = lows[lows.length - 1];
 
-  const prevLow =
-    lows[lows.length - 2];
+  const prevLow = lows[lows.length - 2];
 
   // ==============================
   // BREAK CONDITIONS
   // ==============================
   const bullishBOS =
-    currentPrice > lastHigh.price &&
-    lastHigh.price > prevHigh.price;
+    currentPrice > lastHigh.price && lastHigh.price > prevHigh.price;
 
   const bearishBOS =
-    currentPrice < lastLow.price &&
-    lastLow.price < prevLow.price;
+    currentPrice < lastLow.price && lastLow.price < prevLow.price;
 
   // ==============================
   // BREAK STRENGTH
@@ -1779,31 +1359,21 @@ function analyzeBreakOfStructure(
   let structureBreakStrength = 0;
 
   if (bullishBOS) {
+    const displacement = currentPrice - lastHigh.price;
 
-    const displacement =
-      currentPrice - lastHigh.price;
-
-    const priorExpansion =
-      lastHigh.price - prevHigh.price;
+    const priorExpansion = lastHigh.price - prevHigh.price;
 
     structureBreakStrength =
-      priorExpansion > 0
-        ? displacement / priorExpansion
-        : 0;
+      priorExpansion > 0 ? displacement / priorExpansion : 0;
   }
 
   if (bearishBOS) {
+    const displacement = lastLow.price - currentPrice;
 
-    const displacement =
-      lastLow.price - currentPrice;
-
-    const priorExpansion =
-      prevLow.price - lastLow.price;
+    const priorExpansion = prevLow.price - lastLow.price;
 
     structureBreakStrength =
-      priorExpansion > 0
-        ? displacement / priorExpansion
-        : 0;
+      priorExpansion > 0 ? displacement / priorExpansion : 0;
   }
 
   return {
@@ -1812,33 +1382,23 @@ function analyzeBreakOfStructure(
 
     structureBreakStrength,
 
-    lastBreakDirection:
-      bullishBOS
-        ? "BULLISH"
-        : bearishBOS
-          ? "BEARISH"
-          : null
+    lastBreakDirection: bullishBOS ? "BULLISH" : bearishBOS ? "BEARISH" : null,
   };
 }
 
 function analyzeAdvancedStructure({
-
   swingStructure,
   setupMemory,
   signal,
   currentPrice,
-  atr
-
+  atr,
 }) {
-
   if (
     swingStructure.highs.length < 2 ||
     swingStructure.lows.length < 2 ||
     setupMemory.length < 6
   ) {
-
     return {
-
       failedBullishBOS: false,
       failedBearishBOS: false,
 
@@ -1854,119 +1414,73 @@ function analyzeAdvancedStructure({
 
       structuralCompression: false,
 
-      structureQuality: 0
+      structureQuality: 0,
     };
   }
 
-  const highs =
-    swingStructure.highs;
+  const highs = swingStructure.highs;
 
-  const lows =
-    swingStructure.lows;
+  const lows = swingStructure.lows;
 
-  const lastHigh =
-    highs.at(-1);
+  const lastHigh = highs.at(-1);
 
-  const prevHigh =
-    highs.at(-2);
+  const prevHigh = highs.at(-2);
 
-  const lastLow =
-    lows.at(-1);
+  const lastLow = lows.at(-1);
 
-  const prevLow =
-    lows.at(-2);
+  const prevLow = lows.at(-2);
 
-  const recent =
-    setupMemory.slice(-5);
+  const recent = setupMemory.slice(-5);
 
   // ==============================
   // FAILED BOS
   // ==============================
   const failedBullishBOS =
-
-    swingStructure.bullishBOS &&
-
-    currentPrice < lastHigh.price;
+    swingStructure.bullishBOS && currentPrice < lastHigh.price;
 
   const failedBearishBOS =
-
-    swingStructure.bearishBOS &&
-
-    currentPrice > lastLow.price;
+    swingStructure.bearishBOS && currentPrice > lastLow.price;
 
   // ==============================
   // WEAK BREAKOUT
   // ==============================
   const weakBullishBreakout =
-
-    swingStructure.bullishBOS &&
-
-    swingStructure.structureBreakStrength < 0.35;
+    swingStructure.bullishBOS && swingStructure.structureBreakStrength < 0.35;
 
   const weakBearishBreakout =
-
-    swingStructure.bearishBOS &&
-
-    swingStructure.structureBreakStrength < 0.35;
+    swingStructure.bearishBOS && swingStructure.structureBreakStrength < 0.35;
 
   // ==============================
   // LIQUIDITY SWEEP
   // ==============================
   const liquiditySweepBullish =
-
-    currentPrice > lastHigh.price &&
-
-    currentPrice <
-      lastHigh.price + (atr * 0.15);
+    currentPrice > lastHigh.price && currentPrice < lastHigh.price + atr * 0.15;
 
   const liquiditySweepBearish =
-
-    currentPrice < lastLow.price &&
-
-    currentPrice >
-      lastLow.price - (atr * 0.15);
+    currentPrice < lastLow.price && currentPrice > lastLow.price - atr * 0.15;
 
   // ==============================
   // RECLAIM REJECTION
   // ==============================
   const reclaimRejection =
-
     signal === "BUY"
-
-      ? recent.at(-1).delta < 0 &&
-        recent.at(-2).delta > 0
-
-      : recent.at(-1).delta > 0 &&
-        recent.at(-2).delta < 0;
+      ? recent.at(-1).delta < 0 && recent.at(-2).delta > 0
+      : recent.at(-1).delta > 0 && recent.at(-2).delta < 0;
 
   // ==============================
   // TRAPPED CONTINUATION
   // ==============================
   const trappedContinuation =
-
-    (
-      failedBullishBOS ||
-      failedBearishBOS
-    )
-
-    &&
-
-    reclaimRejection;
+    (failedBullishBOS || failedBearishBOS) && reclaimRejection;
 
   // ==============================
   // STRUCTURAL COMPRESSION
   // ==============================
   const recentRange =
-    Math.max(
-      ...recent.map(c => c.price)
-    ) -
+    Math.max(...recent.map((c) => c.price)) -
+    Math.min(...recent.map((c) => c.price));
 
-    Math.min(
-      ...recent.map(c => c.price)
-    );
-
-  const structuralCompression =
-    recentRange < atr * 0.45;
+  const structuralCompression = recentRange < atr * 0.45;
 
   // ==============================
   // STRUCTURE QUALITY
@@ -1974,46 +1488,29 @@ function analyzeAdvancedStructure({
   let structureQuality = 50;
 
   // Positive
-  if (
-    swingStructure.bullishBOS ||
-    swingStructure.bearishBOS
-  ) {
+  if (swingStructure.bullishBOS || swingStructure.bearishBOS) {
     structureQuality += 20;
   }
 
-  if (
-    swingStructure.structureBreakStrength > 0.8
-  ) {
+  if (swingStructure.structureBreakStrength > 0.8) {
     structureQuality += 15;
   }
 
   // Negative
-  if (
-    failedBullishBOS ||
-    failedBearishBOS
-  ) {
+  if (failedBullishBOS || failedBearishBOS) {
     structureQuality -= 30;
   }
 
-  if (
-    weakBullishBreakout ||
-    weakBearishBreakout
-  ) {
+  if (weakBullishBreakout || weakBearishBreakout) {
     structureQuality -= 15;
   }
 
-  if (trappedContinuation)
-    structureQuality -= 20;
+  if (trappedContinuation) structureQuality -= 20;
 
   // Clamp
-  structureQuality =
-    Math.max(
-      0,
-      Math.min(100, structureQuality)
-    );
+  structureQuality = Math.max(0, Math.min(100, structureQuality));
 
   return {
-
     failedBullishBOS,
     failedBearishBOS,
 
@@ -2029,7 +1526,7 @@ function analyzeAdvancedStructure({
 
     structuralCompression,
 
-    structureQuality
+    structureQuality,
   };
 }
 
@@ -2038,28 +1535,24 @@ function analyzeExpansionReadiness({
   compressionState,
   swingStructure,
   efficiency,
-  alternation
+  alternation,
 }) {
-
   let expansionReadiness = 0;
 
   // ==============================
   // CONTINUATION QUALITY
   // ==============================
-  expansionReadiness +=
-    continuationState.continuationConfidence * 0.30;
+  expansionReadiness += continuationState.continuationConfidence * 0.3;
 
   // ==============================
   // COMPRESSION QUALITY
   // ==============================
-  expansionReadiness +=
-    compressionState.compressionQuality * 0.25;
+  expansionReadiness += compressionState.compressionQuality * 0.25;
 
   // ==============================
   // STRUCTURE BREAK STRENGTH
-  // ==============================  
-  expansionReadiness +=
-  swingStructure.structureBreakStrength * 15;  
+  // ==============================
+  expansionReadiness += swingStructure.structureBreakStrength * 15;
 
   // ==============================
   // STRUCTURE HEALTH
@@ -2074,57 +1567,37 @@ function analyzeExpansionReadiness({
   // ==============================
   // BOS ALIGNMENT
   // ==============================
-  if (
-    swingStructure.bullishBOS ||
-    swingStructure.bearishBOS
-  ) {
+  if (swingStructure.bullishBOS || swingStructure.bearishBOS) {
     expansionReadiness += 20;
   }
 
   // ==============================
   // EFFICIENCY
   // ==============================
-  if (efficiency > 0.50)
-    expansionReadiness += 10;
-
-  else if (efficiency > 0.35)
-    expansionReadiness += 5;
+  if (efficiency > 0.5) expansionReadiness += 10;
+  else if (efficiency > 0.35) expansionReadiness += 5;
 
   // ==============================
   // ALTERNATION PENALTY
   // ==============================
-  if (alternation > 0.60)
-    expansionReadiness -= 15;
-
-  else if (alternation > 0.45)
-    expansionReadiness -= 5;
+  if (alternation > 0.6) expansionReadiness -= 15;
+  else if (alternation > 0.45) expansionReadiness -= 5;
 
   // Clamp
-  expansionReadiness =
-    Math.max(
-      0,
-      Math.min(100, expansionReadiness)
-    );
+  expansionReadiness = Math.max(0, Math.min(100, expansionReadiness));
 
   // ==============================
   // EXPANSION PRESSURE
   // ==============================
   let expansionPressure = 0;
 
-  expansionPressure +=
-    continuationState.reclaimQuality * 0.4;
+  expansionPressure += continuationState.reclaimQuality * 0.4;
 
-  expansionPressure +=
-    compressionState.compressionQuality * 0.3;
+  expansionPressure += compressionState.compressionQuality * 0.3;
 
-  expansionPressure +=
-    swingStructure.structureBreakStrength * 20;
+  expansionPressure += swingStructure.structureBreakStrength * 20;
 
-  expansionPressure =
-    Math.max(
-      0,
-      Math.min(100, expansionPressure)
-    );
+  expansionPressure = Math.max(0, Math.min(100, expansionPressure));
 
   // ==============================
   // EXPANSION BIAS
@@ -2136,9 +1609,7 @@ function analyzeExpansionReadiness({
     continuationState.healthyStructure
   ) {
     expansionBias = "BULLISH";
-  }
-
-  else if (
+  } else if (
     swingStructure.marketStructure === "BEARISH" &&
     continuationState.healthyStructure
   ) {
@@ -2148,12 +1619,11 @@ function analyzeExpansionReadiness({
   return {
     expansionReadiness,
     expansionPressure,
-    expansionBias
+    expansionBias,
   };
 }
 
 function analyzeExpansionIgnition({
-
   continuationState,
   compressionState,
   persistenceState,
@@ -2163,146 +1633,92 @@ function analyzeExpansionIgnition({
   efficiency,
   alternation,
 
-  signal
-
+  signal,
 }) {
-
   if (setupMemory.length < 6) {
-
     return {
-
       expansionIgnitionBias: false,
 
       ignitionPressure: 0,
       ignitionConfidence: 0,
 
-      ignitionTrajectory: "NEUTRAL"
+      ignitionTrajectory: "NEUTRAL",
     };
   }
 
-  const recent =
-    setupMemory.slice(-5);
+  const recent = setupMemory.slice(-5);
 
   // ==============================
   // DIRECTIONAL PRESSURE
   // ==============================
-  const alignedMoves =
-    recent.filter(c =>
+  const alignedMoves = recent.filter((c) =>
+    signal === "BUY" ? c.delta > 0 : c.delta < 0,
+  );
 
-      signal === "BUY"
-        ? c.delta > 0
-        : c.delta < 0
-    );
+  const opposingMoves = recent.filter((c) =>
+    signal === "BUY" ? c.delta < 0 : c.delta > 0,
+  );
 
-  const opposingMoves =
-    recent.filter(c =>
+  const alignedStrength = alignedMoves.reduce(
+    (sum, c) => sum + Math.abs(c.delta),
+    0,
+  );
 
-      signal === "BUY"
-        ? c.delta < 0
-        : c.delta > 0
-    );
-
-  const alignedStrength =
-    alignedMoves.reduce(
-      (sum, c) =>
-        sum + Math.abs(c.delta),
-      0
-    );
-
-  const opposingStrength =
-    opposingMoves.reduce(
-      (sum, c) =>
-        sum + Math.abs(c.delta),
-      0
-    );
+  const opposingStrength = opposingMoves.reduce(
+    (sum, c) => sum + Math.abs(c.delta),
+    0,
+  );
 
   // ==============================
   // PRESSURE ASYMMETRY
   // ==============================
   let ignitionPressure = 0;
 
-  if (
-    alignedStrength >
-    opposingStrength * 1.5
-  ) {
+  if (alignedStrength > opposingStrength * 1.5) {
     ignitionPressure += 30;
-  }
-
-  else if (
-    alignedStrength >
-    opposingStrength * 1.2
-  ) {
+  } else if (alignedStrength > opposingStrength * 1.2) {
     ignitionPressure += 15;
   }
 
   // ==============================
   // CONTINUATION PRESSURE
   // ==============================
-  ignitionPressure +=
-    continuationState
-      .reclaimQuality * 0.25;
+  ignitionPressure += continuationState.reclaimQuality * 0.25;
 
-  ignitionPressure +=
-    persistenceState
-      .continuationPersistence * 0.12;
+  ignitionPressure += persistenceState.continuationPersistence * 0.12;
 
-  ignitionPressure +=
-    persistenceState
-      .behavioralSurvival * 0.08;
+  ignitionPressure += persistenceState.behavioralSurvival * 0.08;
 
   // ==============================
   // COMPRESSION PRESSURE
   // ==============================
-  if (
-    compressionState
-      .compressionClassification ===
-    "EXPANSION_LOADING"
-  ) {
+  if (compressionState.compressionClassification === "EXPANSION_LOADING") {
     ignitionPressure += 25;
   }
 
-  if (
-    compressionState
-      .compressionClassification ===
-    "TREND_DRIFT"
-  ) {
+  if (compressionState.compressionClassification === "TREND_DRIFT") {
     ignitionPressure += 15;
   }
 
   // ==============================
   // EFFICIENCY
   // ==============================
-  if (efficiency > 0.45)
-    ignitionPressure += 10;
+  if (efficiency > 0.45) ignitionPressure += 10;
 
-  if (alternation < 0.45)
-    ignitionPressure += 10;
+  if (alternation < 0.45) ignitionPressure += 10;
 
   // Clamp
-  ignitionPressure =
-    Math.max(
-      0,
-      Math.min(100, ignitionPressure)
-    );
+  ignitionPressure = Math.max(0, Math.min(100, ignitionPressure));
 
   // ==============================
   // TRAJECTORY
   // ==============================
-  let ignitionTrajectory =
-    "NEUTRAL";
+  let ignitionTrajectory = "NEUTRAL";
 
-  if (
-    ignitionPressure >= 75
-  ) {
-    ignitionTrajectory =
-      "IGNITION_IMMINENT";
-  }
-
-  else if (
-    ignitionPressure >= 55
-  ) {
-    ignitionTrajectory =
-      "PRESSURE_BUILDING";
+  if (ignitionPressure >= 75) {
+    ignitionTrajectory = "IGNITION_IMMINENT";
+  } else if (ignitionPressure >= 55) {
+    ignitionTrajectory = "PRESSURE_BUILDING";
   }
 
   // ==============================
@@ -2310,49 +1726,31 @@ function analyzeExpansionIgnition({
   // ==============================
   let ignitionConfidence = 0;
 
-  ignitionConfidence +=
-    ignitionPressure * 0.65;
+  ignitionConfidence += ignitionPressure * 0.65;
 
-  if (
-    continuationState
-      .healthyStructure
-  ) {
+  if (continuationState.healthyStructure) {
     ignitionConfidence += 15;
   }
 
-  if (
-    compressionState
-      .constructiveCompression
-  ) {
+  if (compressionState.constructiveCompression) {
     ignitionConfidence += 15;
   }
 
-  ignitionConfidence =
-    Math.max(
-      0,
-      Math.min(
-        100,
-        ignitionConfidence
-      )
-    );
+  ignitionConfidence = Math.max(0, Math.min(100, ignitionConfidence));
 
   // ==============================
   // FINAL BIAS
   // ==============================
   const expansionIgnitionBias =
-
-    ignitionPressure >= 60 &&
-
-    ignitionConfidence >= 65;
+    ignitionPressure >= 60 && ignitionConfidence >= 65;
 
   return {
-
     expansionIgnitionBias,
 
     ignitionPressure,
     ignitionConfidence,
 
-    ignitionTrajectory
+    ignitionTrajectory,
   };
 }
 
@@ -2362,118 +1760,86 @@ function analyzeExpansionTrigger({
   swingStructure,
   impulseAnalysis,
   ignitionState,
-  atr
+  atr,
 }) {
-
   if (setupMemory.length < 5) {
     return {
       expansionTriggerActive: false,
       expansionTriggerStrength: 0,
       displacementDetected: false,
       volatilityReleaseDetected: false,
-      accelerationDetected: false
+      accelerationDetected: false,
     };
   }
 
-  const recent =
-    setupMemory.slice(-3);
+  const recent = setupMemory.slice(-3);
 
   const avgDelta =
-    setupMemory.reduce(
-      (sum, c) => sum + Math.abs(c.delta),
-      0
-    ) / setupMemory.length;
+    setupMemory.reduce((sum, c) => sum + Math.abs(c.delta), 0) /
+    setupMemory.length;
 
-  const latest =
-    recent[recent.length - 1];
+  const latest = recent[recent.length - 1];
 
-  const prev =
-    recent[recent.length - 2];
+  const prev = recent[recent.length - 2];
 
   // ==============================
   // DISPLACEMENT
   // ==============================
   const displacementDetected =
-    Math.abs(latest.delta) >
-    Math.max(
-      avgDelta * 1.8,
-      (atr || 1) * 0.25
-    );
+    Math.abs(latest.delta) > Math.max(avgDelta * 1.8, (atr || 1) * 0.25);
 
   // ==============================
   // ACCELERATION
   // ==============================
-  const acceleration =
-    Math.abs(latest.delta) -
-    Math.abs(prev.delta);
+  const acceleration = Math.abs(latest.delta) - Math.abs(prev.delta);
 
-  const accelerationDetected =
-    acceleration > avgDelta * 0.5;
+  const accelerationDetected = acceleration > avgDelta * 0.5;
 
   // ==============================
   // VOLATILITY RELEASE
   // ==============================
   const volatilityReleaseDetected =
-    compressionState.constructiveCompression &&
-    impulseAnalysis.explosiveMove;
+    compressionState.constructiveCompression && impulseAnalysis.explosiveMove;
 
   // ==============================
   // TRIGGER STRENGTH
   // ==============================
   let expansionTriggerStrength = 0;
 
-  if (
-    ignitionState
-      .expansionIgnitionBias
-  ) {
+  if (ignitionState.expansionIgnitionBias) {
     expansionTriggerStrength += 10;
   }
 
-  if (displacementDetected)
-    expansionTriggerStrength += 35;
+  if (displacementDetected) expansionTriggerStrength += 35;
 
-  if (accelerationDetected)
-    expansionTriggerStrength += 25;
+  if (accelerationDetected) expansionTriggerStrength += 25;
 
-  if (volatilityReleaseDetected)
-    expansionTriggerStrength += 25;
+  if (volatilityReleaseDetected) expansionTriggerStrength += 25;
 
-  if (
-    swingStructure.bullishBOS ||
-    swingStructure.bearishBOS
-  ) {
+  if (swingStructure.bullishBOS || swingStructure.bearishBOS) {
     expansionTriggerStrength += 15;
   }
 
   // Clamp
-  expansionTriggerStrength =
-    Math.max(
-      0,
-      Math.min(100, expansionTriggerStrength)
-    );
+  expansionTriggerStrength = Math.max(
+    0,
+    Math.min(100, expansionTriggerStrength),
+  );
 
   // ==============================
   // FINAL TRIGGER
   // ==============================
   const expansionTriggerActive =
-    expansionTriggerStrength >= 60
-
-    ||
-
-    (
-      ignitionState
-        .expansionIgnitionBias
-      &&
-      ignitionState
-        .ignitionConfidence >= 70
-    );
+    expansionTriggerStrength >= 60 ||
+    (ignitionState.expansionIgnitionBias &&
+      ignitionState.ignitionConfidence >= 70);
 
   return {
     expansionTriggerActive,
     expansionTriggerStrength,
     displacementDetected,
     volatilityReleaseDetected,
-    accelerationDetected
+    accelerationDetected,
   };
 }
 
@@ -2484,16 +1850,16 @@ function reset() {
   state.memory = {
     trend: [],
     setup: [],
-    momentum: []
+    momentum: [],
   };
 
   state.lockedScores = {
     trend: 0,
-    setup: 0
+    setup: 0,
   };
 
   state.liveScore = {
-    momentum: 0
+    momentum: 0,
   };
 
   state.validation = {
@@ -2588,7 +1954,7 @@ function reset() {
 
     structureBreakStrength: 0,
 
-    lastBreakDirection: null
+    lastBreakDirection: null,
   };
 
   state.priceHistory = [];
@@ -2605,7 +1971,7 @@ function reset() {
 // ==============================
 
 const phaseAlertState = {
-  lastAlert: {}
+  lastAlert: {},
 };
 
 const PHASE_ALERT_COOLDOWN = 30 * 1000;
@@ -2617,14 +1983,12 @@ async function sendPhaseAlert({
   signal,
   price,
   scores = {},
-  extra = {}
+  extra = {},
 }) {
-
   const now = Date.now();
 
   if (IS_BACKTEST) {
-
-   global.backtestLogger?.write({
+    global.backtestLogger?.write({
       timestamp: now,
       symbol,
       from,
@@ -2632,14 +1996,10 @@ async function sendPhaseAlert({
       signal,
       price,
       scores,
-      extra
-   });
-
+      extra,
+    });
   } else {
-
-    
     try {
-
       const key = `${symbol}_${to}`;
 
       // Anti-spam cooldown
@@ -2658,7 +2018,7 @@ async function sendPhaseAlert({
         SETUP: "🟡",
         SCORING: "🟣",
         ENTRY: "🟢",
-        INVALIDATED: "🔴"
+        INVALIDATED: "🔴",
       };
 
       const msg = `
@@ -2687,22 +2047,16 @@ async function sendPhaseAlert({
       // ==========================
 
       if (global.sendTelegram) {
-        
         setImmediate(() => {
-
           global.sendTelegram(msg, {
-            parse_mode: 'MarkdownV2'
+            parse_mode: "MarkdownV2",
           });
-
         });
       }
-
     } catch (err) {
       console.log("[PHASE ALERT ERROR]", err.message);
     }
-
   }
-
 }
 
 // ==============================
@@ -2717,24 +2071,18 @@ function computeTrendScore(memory, context) {
     ema200,
     price,
     m15Trend, // "BUY" or "SELL"
-    signal
+    signal,
   } = context;
 
   const latest = memory[memory.length - 1];
   const avgWidth =
     memory.reduce((sum, m) => sum + (m.bbWidth || 0), 0) / memory.length;
 
-  const efficiency =
-    computeDirectionalEfficiency(memory);
+  const efficiency = computeDirectionalEfficiency(memory);
 
-  const alternation =
-    computeAlternationRatio(memory);
+  const alternation = computeAlternationRatio(memory);
 
-  const trendStructure =
-    analyzeTrendStructure(
-      memory,
-      signal
-    );  
+  const trendStructure = analyzeTrendStructure(memory, signal);
 
   let compressionPenalty = 0;
 
@@ -2824,14 +2172,11 @@ function computeTrendScore(memory, context) {
 
   if (trendStructure.persistence > 0.8) {
     persistenceScore = 10;
-  }
-  else if (trendStructure.persistence > 0.65) {
+  } else if (trendStructure.persistence > 0.65) {
     persistenceScore = 7;
-  }
-  else if (trendStructure.persistence > 0.5) {
+  } else if (trendStructure.persistence > 0.5) {
     persistenceScore = 5;
-  }
-  else {
+  } else {
     persistenceScore = 2;
   }
 
@@ -2855,11 +2200,7 @@ function computeTrendScore(memory, context) {
     persistenceScore +
     expansionBonus;
 
-  const total = Math.max(
-    0,
-    rawTotal - compressionPenalty
-  );
-  
+  const total = Math.max(0, rawTotal - compressionPenalty);
 
   console.log("[TREND SCORE]", {
     alignmentScore,
@@ -2869,14 +2210,11 @@ function computeTrendScore(memory, context) {
 
     efficiency: efficiency.toFixed(2),
     alternation: alternation.toFixed(2),
-    persistence:
-      trendStructure.persistence.toFixed(2),
+    persistence: trendStructure.persistence.toFixed(2),
 
-    trendStrength:
-      trendStructure.trendStrength.toFixed(2),
+    trendStrength: trendStructure.trendStrength.toFixed(2),
 
-    strongTrend:
-      trendStructure.strongTrend,
+    strongTrend: trendStructure.strongTrend,
 
     persistenceScore,
     expansionBonus,
@@ -2884,7 +2222,7 @@ function computeTrendScore(memory, context) {
     compressionPenalty,
 
     rawTotal,
-    total
+    total,
   });
 
   return total;
@@ -2910,18 +2248,17 @@ function computeSetupScore(memory, context) {
   // ==============================
   // BEHAVIOR
   // ==============================
-  const opposingMoves = memory.filter(c =>
-    signal === "BUY" ? c.delta < 0 : c.delta > 0
+  const opposingMoves = memory.filter((c) =>
+    signal === "BUY" ? c.delta < 0 : c.delta > 0,
   );
 
   const maxPullbackStrength = Math.max(
-    ...opposingMoves.map(c => Math.abs(c.delta)),
-    0
+    ...opposingMoves.map((c) => Math.abs(c.delta)),
+    0,
   );
 
   const avgTrendStrength =
-    memory.reduce((sum, c) => sum + Math.abs(c.delta), 0) /
-    memory.length;
+    memory.reduce((sum, c) => sum + Math.abs(c.delta), 0) / memory.length;
 
   let behaviorScore = 0;
   if (maxPullbackStrength < avgTrendStrength * 0.6) behaviorScore = 10;
@@ -2935,13 +2272,11 @@ function computeSetupScore(memory, context) {
   const prev = memory.at(-2);
 
   const avgDelta =
-    memory.reduce((sum, c) => sum + Math.abs(c.delta), 0) /
-    memory.length;
+    memory.reduce((sum, c) => sum + Math.abs(c.delta), 0) / memory.length;
 
   let confirmationScore = 0;
 
-  const strongMove =
-    Math.abs(last.delta) > avgDelta * 1.0;
+  const strongMove = Math.abs(last.delta) > avgDelta * 1.0;
 
   if (signal === "BUY") {
     if (last.delta > 0 && prev.delta <= 0 && strongMove) confirmationScore = 10;
@@ -2952,21 +2287,22 @@ function computeSetupScore(memory, context) {
     else if (last.delta < 0) confirmationScore = 6;
     else confirmationScore = 2;
   }
-  
+
   let structureBonus = 0;
 
   if (opposingMoves.length >= 2 && confirmationScore >= 6) {
     structureBonus = 3;
   }
 
-  const total = locationScore + behaviorScore + confirmationScore + structureBonus;
+  const total =
+    locationScore + behaviorScore + confirmationScore + structureBonus;
 
   console.log("[SETUP SCORE]", {
     locationScore,
     behaviorScore,
     confirmationScore,
-    structureBonus, 
-    total
+    structureBonus,
+    total,
   });
 
   return total;
@@ -2977,8 +2313,8 @@ function computeMomentumScore(memory, context) {
 
   if (memory.length < 4) return 0;
 
-  const deltas = memory.map(m => m.delta);
-  const absDeltas = deltas.map(d => Math.abs(d));
+  const deltas = memory.map((m) => m.delta);
+  const absDeltas = deltas.map((d) => Math.abs(d));
 
   const last = deltas.at(-1);
   const prev = deltas.at(-2);
@@ -2986,33 +2322,30 @@ function computeMomentumScore(memory, context) {
 
   const avg = absDeltas.reduce((a, b) => a + b, 0) / absDeltas.length;
 
-  const progression =
-    analyzeMomentumProgression(
-      memory,
-      signal
-    );
+  const progression = analyzeMomentumProgression(memory, signal);
 
   // ==============================
   // 1. PULLBACK CONTEXT (0–10)
   // ==============================
-  const oppositeMoves = deltas.filter(d =>
-    signal === "BUY" ? d < 0 : d > 0
+  const oppositeMoves = deltas.filter((d) =>
+    signal === "BUY" ? d < 0 : d > 0,
   );
 
   const pullbackRatio = oppositeMoves.length / deltas.length;
 
   let pullbackScore = 0;
 
-  if (pullbackRatio > 0.6) pullbackScore = 10;     // strong pullback
-  else if (pullbackRatio > 0.4) pullbackScore = 7; // moderate
-  else pullbackScore = 3;                          // weak / already trend
+  if (pullbackRatio > 0.6)
+    pullbackScore = 10; // strong pullback
+  else if (pullbackRatio > 0.4)
+    pullbackScore = 7; // moderate
+  else pullbackScore = 3; // weak / already trend
 
   // ==============================
   // 2. EXHAUSTION (0–15) ⭐ KEY
   // ==============================
   const weakening =
-    Math.abs(last) < Math.abs(prev) &&
-    Math.abs(prev) < Math.abs(prev2);
+    Math.abs(last) < Math.abs(prev) && Math.abs(prev) < Math.abs(prev2);
 
   const belowAverage = Math.abs(last) < avg * 0.8;
 
@@ -3029,18 +2362,14 @@ function computeMomentumScore(memory, context) {
   let reversalScore = 0;
 
   const flipsDirection =
-    signal === "BUY"
-      ? (last > 0 && prev <= 0)
-      : (last < 0 && prev >= 0);
+    signal === "BUY" ? last > 0 && prev <= 0 : last < 0 && prev >= 0;
 
   const strongFlip = Math.abs(last) > avg * 0.8;
 
   if (flipsDirection && strongFlip) reversalScore = 15;
   else if (flipsDirection) reversalScore = 10;
-  else if (
-    (signal === "BUY" && last > 0) ||
-    (signal === "SELL" && last < 0)
-  ) reversalScore = 6;
+  else if ((signal === "BUY" && last > 0) || (signal === "SELL" && last < 0))
+    reversalScore = 6;
   else reversalScore = 2;
 
   // ==============================
@@ -3061,23 +2390,13 @@ function computeMomentumScore(memory, context) {
   // ==============================
   let progressionScore = 0;
 
-  if (
-    progression.strengtheningMomentum &&
-    progression.persistence >= 0.66
-  ) {
+  if (progression.strengtheningMomentum && progression.persistence >= 0.66) {
     progressionScore = 15;
-  }
-  else if (
-    progression.strengtheningMomentum
-  ) {
+  } else if (progression.strengtheningMomentum) {
     progressionScore = 10;
-  }
-  else if (
-    progression.fadingMomentum
-  ) {
+  } else if (progression.fadingMomentum) {
     progressionScore = 2;
-  }
-  else {
+  } else {
     progressionScore = 6;
   }
 
@@ -3088,8 +2407,7 @@ function computeMomentumScore(memory, context) {
 
   if (progression.acceleration > avg * 0.5) {
     accelerationBonus = 5;
-  }
-  else if (progression.acceleration < -avg * 0.5) {
+  } else if (progression.acceleration < -avg * 0.5) {
     accelerationBonus = -3;
   }
 
@@ -3112,18 +2430,14 @@ function computeMomentumScore(memory, context) {
     progressionScore,
     accelerationBonus,
 
-    acceleration:
-      progression.acceleration.toFixed(2),
+    acceleration: progression.acceleration.toFixed(2),
 
-    persistence:
-      progression.persistence.toFixed(2),
+    persistence: progression.persistence.toFixed(2),
 
-    fadingMomentum:
-      progression.fadingMomentum,
+    fadingMomentum: progression.fadingMomentum,
 
-    strengtheningMomentum:
-      progression.strengtheningMomentum,
-    total
+    strengtheningMomentum: progression.strengtheningMomentum,
+    total,
   });
 
   return total;
@@ -3135,22 +2449,13 @@ function computeMomentumScore(memory, context) {
 function strategyEngine(ctx) {
   const { indicators } = ctx;
   const price = ctx.price?.bid || ctx.price?.ask;
-  ctx.timestamp =
-  ctx.timestamp || Date.now();
+  ctx.timestamp = ctx.timestamp || Date.now();
 
-  const {
-    ema50,
-    ema200,
-    rsi,
-    stochastic,
-    bollinger,
-    atr
-  } = indicators;
+  const { ema50, ema200, rsi, stochastic, bollinger, atr } = indicators;
 
   const prevStoch = state.prevStochastic;
   state.prevStochastic = stochastic;
 
-  
   console.log("[TICK]", {
     phase: state.phase,
     signal: state.signal,
@@ -3163,8 +2468,8 @@ function strategyEngine(ctx) {
     mem: {
       trend: state.memory.trend.length,
       setup: state.memory.setup.length,
-      momentum: state.memory.momentum.length
-    }
+      momentum: state.memory.momentum.length,
+    },
   });
 
   // ==============================
@@ -3199,7 +2504,6 @@ function strategyEngine(ctx) {
   // IDLE → TREND
   // ==============================
   if (state.phase === "IDLE") {
-
     if (ema50 > ema200) {
       const previousPhase = state.phase;
 
@@ -3247,23 +2551,17 @@ function strategyEngine(ctx) {
   // TREND
   // ==============================
   if (state.phase === "TREND") {
-
     state.trendPriceHistory.push(price);
 
     trim(state.trendPriceHistory);
 
-    const trendDelta = computeSmoothedDelta(
-      price,
-      state.trendPriceHistory,
-      5
-    );
-
+    const trendDelta = computeSmoothedDelta(price, state.trendPriceHistory, 5);
 
     state.memory.trend.push({
       emaDiff: Math.abs(ema50 - ema200),
       priceDistance: Math.abs(price - ema50),
       bbWidth: bollinger.width || 0,
-      delta: trendDelta
+      delta: trendDelta,
     });
 
     console.log("[TREND]", {
@@ -3272,7 +2570,7 @@ function strategyEngine(ctx) {
       priceDistance: Math.abs(price - ema50),
       bbWidth: bollinger.width,
       stochastic,
-      memory: state.memory.trend.length
+      memory: state.memory.trend.length,
     });
 
     trim(state.memory.trend);
@@ -3302,7 +2600,7 @@ function strategyEngine(ctx) {
       condition:
         (state.signal === "BUY" && stochastic < 35) ||
         (state.signal === "SELL" && stochastic > 65),
-      stochastic
+      stochastic,
     });
 
     const pullbackTriggered =
@@ -3310,13 +2608,12 @@ function strategyEngine(ctx) {
       (state.signal === "SELL" && stochastic > 65);
 
     if (pullbackTriggered && state.memory.trend.length >= 3) {
-
       state.lockedScores.trend = computeTrendScore(state.memory.trend, {
         ema50,
         ema200,
         price,
         m15Trend: state.m15Trend, // make sure you're storing this
-        signal: state.signal
+        signal: state.signal,
       });
 
       const previousPhase = state.phase;
@@ -3335,7 +2632,10 @@ function strategyEngine(ctx) {
       //     reason: "Pullback detected"
       //   }
       // });
-      console.log("[TREND] Locked Trend Score:", state.lockedScores.trend.toFixed(2));
+      console.log(
+        "[TREND] Locked Trend Score:",
+        state.lockedScores.trend.toFixed(2),
+      );
       console.log("[Phase] → SETUP");
 
       return { action: null };
@@ -3346,7 +2646,6 @@ function strategyEngine(ctx) {
   // SETUP
   // ==============================
   if (state.phase === "SETUP") {
-
     // ==============================
     // BUILD MEMORY (STRUCTURE DATA)
     // ==============================
@@ -3354,411 +2653,301 @@ function strategyEngine(ctx) {
 
     trim(state.priceHistory);
 
-    const delta = computeSmoothedDelta(
-      price,
-      state.priceHistory,
-      4
-    );
+    const delta = computeSmoothedDelta(price, state.priceHistory, 4);
 
     state.memory.setup.push({
       price,
       ema50,
       delta,
       weight: 1,
-      timestamp: getTimestamp(ctx)
+      timestamp: getTimestamp(ctx),
     });
-
 
     trim(state.memory.setup);
 
-    const efficiency =
-      computeDirectionalEfficiency(state.memory.setup);
+    const efficiency = computeDirectionalEfficiency(state.memory.setup);
 
-    const alternation =
-      computeAlternationRatio(state.memory.setup);
+    const alternation = computeAlternationRatio(state.memory.setup);
 
-    const driftState =
-      analyzeDirectionalDrift(
-        state.memory.setup,
-        state.signal
-      );  
+    const driftState = analyzeDirectionalDrift(
+      state.memory.setup,
+      state.signal,
+    );
 
-    const directionBias =
-      computeDirectionalBias(
-        state.memory.setup,
-        state.signal
-      );  
+    const directionBias = computeDirectionalBias(
+      state.memory.setup,
+      state.signal,
+    );
 
-    const weakStructure =
-      directionBias.dominance < 0.15;
+    const weakStructure = directionBias.dominance < 0.15;
 
-    const failedStructure =
-      directionBias.dominance < 0;  
+    const failedStructure = directionBias.dominance < 0;
 
-    const pullbackAnalysis =
-      analyzePullback(
-        state.memory.setup,
-        state.signal
-      );  
+    const pullbackAnalysis = analyzePullback(state.memory.setup, state.signal);
 
-    const regimeAnalysis =
-      analyzeMarketRegime(
-        state.memory.setup,
-        atr
-      );  
+    const regimeAnalysis = analyzeMarketRegime(state.memory.setup, atr);
 
-    const dangerousPullback =
-      regimeAnalysis?.explosiveRegime
-        ? pullbackAnalysis.pullbackStrength >
-          pullbackAnalysis.reclaimStrength * 1.5
-        : pullbackAnalysis.reclaimFailure;
-    
-    const impulseAnalysis =
-      analyzeImpulse(
-        state.memory.setup,
-        state.signal
-      );  
+    const dangerousPullback = regimeAnalysis?.explosiveRegime
+      ? pullbackAnalysis.pullbackStrength >
+        pullbackAnalysis.reclaimStrength * 1.5
+      : pullbackAnalysis.reclaimFailure;
 
-    const impulseWeak =
-      impulseAnalysis.expansionStrength < 1.2;
-  
-    const explosiveImpulse =
-      impulseAnalysis.explosiveMove;
+    const impulseAnalysis = analyzeImpulse(state.memory.setup, state.signal);
 
-    const agingAnalysis =
-      analyzeSetupAging(
-        state.memory.setup
-      );
+    const impulseWeak = impulseAnalysis.expansionStrength < 1.2;
+
+    const explosiveImpulse = impulseAnalysis.explosiveMove;
+
+    const agingAnalysis = analyzeSetupAging(state.memory.setup);
 
     const previousValidation = {
-      ...state.validation
-    };  
-      
-    const continuationState =
-      analyzeContinuationState(
-        state.memory.setup,
-        state.signal
-      );
-
-    state.validation = {
       ...state.validation,
-      ...continuationState
     };
 
-    const compressionState =
-      analyzeCompression(
-        state.memory.setup,
-        state.signal
-      );
+    const continuationState = analyzeContinuationState(
+      state.memory.setup,
+      state.signal,
+    );
 
     state.validation = {
       ...state.validation,
-      ...compressionState
+      ...continuationState,
     };
 
-    const persistenceState =
-      analyzeContinuationPersistence({
-
-        previousValidation,
-
-        continuationState,
-
-        compressionState,
-
-        driftState,
-
-        directionBias,
-
-        efficiency,
-
-        alternation
-      });
+    const compressionState = analyzeCompression(
+      state.memory.setup,
+      state.signal,
+    );
 
     state.validation = {
       ...state.validation,
-      ...persistenceState
+      ...compressionState,
     };
 
-    const setupHealthState =
-      analyzeSetupHealth({
+    const persistenceState = analyzeContinuationPersistence({
+      previousValidation,
 
-        previousValidation,
+      continuationState,
 
-        continuationState,
-        compressionState,
-        persistenceState,
+      compressionState,
 
-        agingAnalysis,
-        driftState,
+      driftState,
 
-        weakStructure,
-        failedStructure,
+      directionBias,
 
-        dangerousPullback,
+      efficiency,
 
-        efficiency,
-        alternation
-      });
+      alternation,
+    });
 
     state.validation = {
       ...state.validation,
-      ...setupHealthState
+      ...persistenceState,
+    };
+
+    const setupHealthState = analyzeSetupHealth({
+      previousValidation,
+
+      continuationState,
+      compressionState,
+      persistenceState,
+
+      agingAnalysis,
+      driftState,
+
+      weakStructure,
+      failedStructure,
+
+      dangerousPullback,
+
+      efficiency,
+      alternation,
+    });
+
+    state.validation = {
+      ...state.validation,
+      ...setupHealthState,
     };
 
     const compressionClassification =
       compressionState.compressionClassification;
 
-    const heavyChop =
-      compressionClassification ===
-      "DEAD_CHOP";
+    const heavyChop = compressionClassification === "DEAD_CHOP";
 
-    const moderateChop =
-      compressionClassification ===
-      "ROTATIONAL";
+    const moderateChop = compressionClassification === "ROTATIONAL";
 
-    const dynamicDecayState =
-      analyzeDynamicDecay({
-        agingAnalysis,
-        continuationState,
-        compressionState,
-        efficiency,
-        alternation
-      });
+    const dynamicDecayState = analyzeDynamicDecay({
+      agingAnalysis,
+      continuationState,
+      compressionState,
+      efficiency,
+      alternation,
+    });
 
     state.validation = {
       ...state.validation,
-      ...dynamicDecayState
+      ...dynamicDecayState,
     };
 
-    const swingState =
-      detectSwings(
-        state.memory.setup
-      );
+    const swingState = detectSwings(state.memory.setup);
 
     if (swingState.detectedHigh) {
-
       state.swingStructure.highs.push({
         price: swingState.swingHigh,
-        timestamp: getTimestamp(ctx)
+        timestamp: getTimestamp(ctx),
       });
 
-      trim(
-        state.swingStructure.highs,
-        CONFIG.SWING_MEMORY_LIMIT
-      );
+      trim(state.swingStructure.highs, CONFIG.SWING_MEMORY_LIMIT);
 
-      state.swingStructure.lastHigh =
-        swingState.swingHigh;
+      state.swingStructure.lastHigh = swingState.swingHigh;
     }
 
     if (swingState.detectedLow) {
-
       state.swingStructure.lows.push({
         price: swingState.swingLow,
-        timestamp: getTimestamp(ctx)
+        timestamp: getTimestamp(ctx),
       });
 
-      trim(
-        state.swingStructure.lows,
-        CONFIG.SWING_MEMORY_LIMIT
-      );
+      trim(state.swingStructure.lows, CONFIG.SWING_MEMORY_LIMIT);
 
-      state.swingStructure.lastLow =
-        swingState.swingLow;
-    }  
+      state.swingStructure.lastLow = swingState.swingLow;
+    }
 
-    const structureState =
-      classifyMarketStructure(
-        state.swingStructure
-      );
+    const structureState = classifyMarketStructure(state.swingStructure);
 
     state.swingStructure = {
       ...state.swingStructure,
-      ...structureState
+      ...structureState,
     };
 
-    const bosState =
-      analyzeBreakOfStructure(
-        state.swingStructure,
-        price
-      );
+    const bosState = analyzeBreakOfStructure(state.swingStructure, price);
 
     state.swingStructure = {
       ...state.swingStructure,
-      ...bosState
+      ...bosState,
     };
 
-    const advancedStructureState =
-      analyzeAdvancedStructure({
+    const advancedStructureState = analyzeAdvancedStructure({
+      swingStructure: state.swingStructure,
 
-        swingStructure:
-          state.swingStructure,
+      setupMemory: state.memory.setup,
 
-        setupMemory:
-          state.memory.setup,
+      signal: state.signal,
 
-        signal:
-          state.signal,
+      currentPrice: price,
 
-        currentPrice:
-          price,
-
-        atr
-      });
+      atr,
+    });
 
     state.validation = {
       ...state.validation,
-      ...advancedStructureState
+      ...advancedStructureState,
     };
-    
-    const expansionState =
-      analyzeExpansionReadiness({
-        continuationState,
-        compressionState,
-        swingStructure:
-          state.swingStructure,
-        efficiency,
-        alternation
-      });
+
+    const expansionState = analyzeExpansionReadiness({
+      continuationState,
+      compressionState,
+      swingStructure: state.swingStructure,
+      efficiency,
+      alternation,
+    });
 
     state.validation = {
       ...state.validation,
-      ...expansionState
+      ...expansionState,
     };
 
-    const ignitionState =
-      analyzeExpansionIgnition({
+    const ignitionState = analyzeExpansionIgnition({
+      continuationState,
+      compressionState,
+      persistenceState,
 
-        continuationState,
-        compressionState,
-        persistenceState,
+      setupMemory: state.memory.setup,
 
-        setupMemory:
-          state.memory.setup,
+      efficiency,
+      alternation,
 
-        efficiency,
-        alternation,
-
-        signal:
-          state.signal
-      });
+      signal: state.signal,
+    });
 
     state.validation = {
       ...state.validation,
-      ...ignitionState
+      ...ignitionState,
     };
 
-    const expansionTriggerState =
-      analyzeExpansionTrigger({
-        setupMemory:
-          state.memory.setup,
+    const expansionTriggerState = analyzeExpansionTrigger({
+      setupMemory: state.memory.setup,
 
-        compressionState,
+      compressionState,
 
-        swingStructure:
-          state.swingStructure,
+      swingStructure: state.swingStructure,
 
-        impulseAnalysis,
+      impulseAnalysis,
 
-        ignitionState,
+      ignitionState,
 
-        atr
-      });
+      atr,
+    });
 
     state.validation = {
       ...state.validation,
-      ...expansionTriggerState
+      ...expansionTriggerState,
     };
 
-    const staleSetup =
-      agingAnalysis.staleStructure;
+    const staleSetup = agingAnalysis.staleStructure;
 
-    const decayingSetup =
-      dynamicDecayState.decayingStructure;  
+    const decayingSetup = dynamicDecayState.decayingStructure;
 
-      
     console.log("[MARKET STRUCTURE]", {
       efficiency: efficiency.toFixed(2),
       alternation: alternation.toFixed(2),
-      lastSwingHigh:
-        state.swingStructure.lastHigh,
+      lastSwingHigh: state.swingStructure.lastHigh,
 
-      lastSwingLow:
-        state.swingStructure.lastLow,
+      lastSwingLow: state.swingStructure.lastLow,
 
-      marketStructure:
-        state.swingStructure.marketStructure,
+      marketStructure: state.swingStructure.marketStructure,
 
-      higherHighs:
-        state.swingStructure.higherHighs,
+      higherHighs: state.swingStructure.higherHighs,
 
-      higherLows:
-        state.swingStructure.higherLows,
+      higherLows: state.swingStructure.higherLows,
 
-      lowerHighs:
-        state.swingStructure.lowerHighs,
+      lowerHighs: state.swingStructure.lowerHighs,
 
-      lowerLows:
-        state.swingStructure.lowerLows,  
+      lowerLows: state.swingStructure.lowerLows,
 
-      bullishBOS:
-        state.swingStructure.bullishBOS,
+      bullishBOS: state.swingStructure.bullishBOS,
 
-      bearishBOS:
-        state.swingStructure.bearishBOS,
+      bearishBOS: state.swingStructure.bearishBOS,
 
-      structureBreakStrength:
-        state.swingStructure.structureBreakStrength,
+      structureBreakStrength: state.swingStructure.structureBreakStrength,
 
-      lastBreakDirection:
-        state.swingStructure.lastBreakDirection, 
+      lastBreakDirection: state.swingStructure.lastBreakDirection,
 
-      failedBullishBOS:
-        state.validation
-          .failedBullishBOS,
+      failedBullishBOS: state.validation.failedBullishBOS,
 
-      failedBearishBOS:
-        state.validation
-          .failedBearishBOS,
+      failedBearishBOS: state.validation.failedBearishBOS,
 
-      weakBullishBreakout:
-        state.validation
-          .weakBullishBreakout,
+      weakBullishBreakout: state.validation.weakBullishBreakout,
 
-      weakBearishBreakout:
-        state.validation
-          .weakBearishBreakout,
+      weakBearishBreakout: state.validation.weakBearishBreakout,
 
-      liquiditySweepBullish:
-        state.validation
-          .liquiditySweepBullish,
+      liquiditySweepBullish: state.validation.liquiditySweepBullish,
 
-      liquiditySweepBearish:
-        state.validation
-          .liquiditySweepBearish,
+      liquiditySweepBearish: state.validation.liquiditySweepBearish,
 
-      reclaimRejection:
-        state.validation
-          .reclaimRejection,
+      reclaimRejection: state.validation.reclaimRejection,
 
-      trappedContinuation:
-        state.validation
-          .trappedContinuation,
+      trappedContinuation: state.validation.trappedContinuation,
 
-      structuralCompression:
-        state.validation
-          .structuralCompression,
+      structuralCompression: state.validation.structuralCompression,
 
-      structureQuality:
-        state.validation
-          .structureQuality
-          .toFixed(2),   
+      structureQuality: state.validation.structureQuality.toFixed(2),
     });
 
     console.log("[SETUP BUILD]", {
       price,
       delta,
-      size: state.memory.setup.length
+      size: state.memory.setup.length,
     });
 
     // ==============================
@@ -3772,33 +2961,20 @@ function strategyEngine(ctx) {
     // CHOP INVALIDATION
     // ==============================
     if (
-
       heavyChop &&
-
       state.validation.setupHealth < 35 &&
-
       state.validation.setupPressure > 60
-
     ) {
+      console.log("[SETUP INVALIDATED] Terminal chop deterioration", {
+        setupHealth: state.validation.setupHealth.toFixed(2),
 
-      console.log(
-        "[SETUP INVALIDATED] Terminal chop deterioration",
-        {
+        setupPressure: state.validation.setupPressure.toFixed(2),
 
-          setupHealth:
-            state.validation.setupHealth.toFixed(2),
+        setupInvalidationRisk:
+          state.validation.setupInvalidationRisk.toFixed(2),
 
-          setupPressure:
-            state.validation.setupPressure.toFixed(2),
-
-          setupInvalidationRisk:
-            state.validation
-              .setupInvalidationRisk
-              .toFixed(2),
-
-          compressionClassification
-        }
-      );
+        compressionClassification,
+      });
 
       // sendPhaseAlert({
       //   from: state.phase,
@@ -3819,28 +2995,14 @@ function strategyEngine(ctx) {
     // ==============================
     // STRUCTURE FAILURE
     // ==============================
-    if (
+    if (failedStructure && state.validation.setupHealth < 25) {
+      console.log("[SETUP INVALIDATED] Structural collapse", {
+        setupHealth: state.validation.setupHealth.toFixed(2),
 
-      failedStructure &&
+        setupPressure: state.validation.setupPressure.toFixed(2),
 
-      state.validation.setupHealth < 25
-
-    ) {
-
-      console.log(
-        "[SETUP INVALIDATED] Structural collapse",
-        {
-
-          setupHealth:
-            state.validation.setupHealth.toFixed(2),
-
-          setupPressure:
-            state.validation.setupPressure.toFixed(2),
-
-          dominance:
-            directionBias.dominance.toFixed(2)
-        }
-      );
+        dominance: directionBias.dominance.toFixed(2),
+      });
 
       // sendPhaseAlert({
       //   from: state.phase,
@@ -3861,32 +3023,14 @@ function strategyEngine(ctx) {
     // ==============================
     // DANGEROUS PULLBACK
     // ==============================
-    if (
+    if (dangerousPullback && state.validation.setupHealth < 30) {
+      console.log("[SETUP INVALIDATED] Pullback exhaustion", {
+        setupHealth: state.validation.setupHealth.toFixed(2),
 
-      dangerousPullback &&
+        pullbackStrength: pullbackAnalysis.pullbackStrength.toFixed(2),
 
-      state.validation.setupHealth < 30
-
-    ) {
-
-      console.log(
-        "[SETUP INVALIDATED] Pullback exhaustion",
-        {
-
-          setupHealth:
-            state.validation.setupHealth.toFixed(2),
-
-          pullbackStrength:
-            pullbackAnalysis
-              .pullbackStrength
-              .toFixed(2),
-
-          reclaimStrength:
-            pullbackAnalysis
-              .reclaimStrength
-              .toFixed(2)
-        }
-      );
+        reclaimStrength: pullbackAnalysis.reclaimStrength.toFixed(2),
+      });
 
       // sendPhaseAlert({
       //   from: state.phase,
@@ -3907,30 +3051,14 @@ function strategyEngine(ctx) {
     // ==============================
     // STALE / DECAYING SETUP
     // ==============================
-    if (
+    if (staleSetup && decayingSetup && state.validation.setupHealth < 35) {
+      console.log("[SETUP INVALIDATED] Terminal deterioration", {
+        setupHealth: state.validation.setupHealth.toFixed(2),
 
-      staleSetup &&
+        setupPressure: state.validation.setupPressure.toFixed(2),
 
-      decayingSetup &&
-
-      state.validation.setupHealth < 35
-
-    ) {
-
-      console.log(
-        "[SETUP INVALIDATED] Terminal deterioration",
-        {
-
-          setupHealth:
-            state.validation.setupHealth.toFixed(2),
-
-          setupPressure:
-            state.validation.setupPressure.toFixed(2),
-
-          ageMinutes:
-            agingAnalysis.ageMinutes.toFixed(2)
-        }
-      );
+        ageMinutes: agingAnalysis.ageMinutes.toFixed(2),
+      });
 
       // sendPhaseAlert({
       //   from: state.phase,
@@ -3952,44 +3080,25 @@ function strategyEngine(ctx) {
     // CONTINUATION DETERIORATION
     // ==============================
     const deterioratingContinuation =
-
       state.validation.behavioralSurvival < 35 &&
-
       state.validation.continuationPersistence < 40 &&
-
       state.validation.behavioralDeterioration > 55;
 
     if (
-
       deterioratingContinuation &&
-
       !driftState.directionalDrift &&
-
       state.validation.setupHealth < 40
-
     ) {
+      console.log("[SETUP INVALIDATED] Behavioral deterioration", {
+        setupHealth: state.validation.setupHealth.toFixed(2),
 
-      console.log(
-        "[SETUP INVALIDATED] Behavioral deterioration",
-        {
+        setupPressure: state.validation.setupPressure.toFixed(2),
 
-          setupHealth:
-            state.validation.setupHealth.toFixed(2),
+        behavioralSurvival: state.validation.behavioralSurvival.toFixed(2),
 
-          setupPressure:
-            state.validation.setupPressure.toFixed(2),
-
-          behavioralSurvival:
-            state.validation
-              .behavioralSurvival
-              .toFixed(2),
-
-          continuationPersistence:
-            state.validation
-              .continuationPersistence
-              .toFixed(2)
-        }
-      );
+        continuationPersistence:
+          state.validation.continuationPersistence.toFixed(2),
+      });
 
       // sendPhaseAlert({
       //   from: state.phase,
@@ -4007,47 +3116,21 @@ function strategyEngine(ctx) {
       return { action: null };
     }
 
-    
     // ==============================
     // STRUCTURAL FAILURE
     // ==============================
     const structurallyTrapped =
+      state.validation.trappedContinuation &&
+      state.validation.structureQuality < 35;
 
-      state.validation
-        .trappedContinuation
+    if (structurallyTrapped && state.validation.setupHealth < 45) {
+      console.log("[SETUP INVALIDATED] Structural trap", {
+        structureQuality: state.validation.structureQuality.toFixed(2),
 
-      &&
+        trappedContinuation: state.validation.trappedContinuation,
 
-      state.validation
-        .structureQuality < 35;
-
-    if (
-      
-      structurallyTrapped &&
-
-      state.validation
-        .setupHealth < 45
-
-    ) {
-
-      console.log(
-        "[SETUP INVALIDATED] Structural trap",
-        {
-
-          structureQuality:
-            state.validation
-              .structureQuality
-              .toFixed(2),
-
-          trappedContinuation:
-            state.validation
-              .trappedContinuation,
-
-          reclaimRejection:
-            state.validation
-              .reclaimRejection
-        }
-      );
+        reclaimRejection: state.validation.reclaimRejection,
+      });
 
       // sendPhaseAlert({
       //   from: state.phase,
@@ -4063,56 +3146,43 @@ function strategyEngine(ctx) {
       reset();
 
       return { action: null };
-    }    
+    }
 
     // ==============================
     // PULLBACK DETECTION
     // ==============================
-    const pullbackMoves = state.memory.setup.filter(c =>
-      state.signal === "BUY"
-        ? c.delta < 0
-        : c.delta > 0
+    const pullbackMoves = state.memory.setup.filter((c) =>
+      state.signal === "BUY" ? c.delta < 0 : c.delta > 0,
     );
 
     const pullbackCount = pullbackMoves.length;
 
-    let minPullback =
-      state.lockedScores.trend > 30 ? 2 : 3;
+    let minPullback = state.lockedScores.trend > 30 ? 2 : 3;
 
     // Only ONE structural penalty allowed
     let penalty = 0;
 
-    if (moderateChop)
-      penalty = Math.max(penalty, 1);
+    if (moderateChop) penalty = Math.max(penalty, 1);
 
-    if (weakStructure)
-      penalty = Math.max(penalty, 1);
+    if (weakStructure) penalty = Math.max(penalty, 1);
 
-    if (impulseWeak)
-      penalty = Math.max(penalty, 1);
+    if (impulseWeak) penalty = Math.max(penalty, 1);
 
-    if (decayingSetup)
-      penalty = Math.max(penalty, 1);
+    if (decayingSetup) penalty = Math.max(penalty, 1);
 
     // Slow compression trends should not inflate aggressively
-    if (
-      driftState.directionalDrift &&
-      driftState.staircaseTrend
-    ) {
+    if (driftState.directionalDrift && driftState.staircaseTrend) {
       penalty = Math.max(0, penalty - 1);
     }
 
     minPullback += penalty;
 
     // Hard cap prevents confirmation paralysis
-    minPullback =
-      Math.min(minPullback, 4);
+    minPullback = Math.min(minPullback, 4);
 
     if (regimeAnalysis.explosiveRegime) {
       minPullback -= 1;
     }
-
-    
 
     // ==============================
     // RESUMPTION DETECTION
@@ -4124,296 +3194,169 @@ function strategyEngine(ctx) {
       state.memory.setup.reduce((sum, c) => sum + Math.abs(c.delta), 0) /
       state.memory.setup.length;
 
-    const strongMove =
-      Math.abs(last.delta) > avgDelta * 0.9;
+    const strongMove = Math.abs(last.delta) > avgDelta * 0.9;
 
     const directionalContinuation =
-      state.signal === "BUY"
-        ? last.delta > 0
-        : last.delta < 0;
+      state.signal === "BUY" ? last.delta > 0 : last.delta < 0;
 
     const progressiveContinuation =
+      (continuationState.continuationConfidence > 45 &&
+        continuationState.reclaimQuality > 30) ||
+      state.validation.continuationPersistence > 60 ||
+      state.validation.behavioralSurvival > 55;
 
-      (
-        continuationState.continuationConfidence > 45 &&
-        continuationState.reclaimQuality > 30
-      )
-
-      ||
-
-      (
-        state.validation
-          .continuationPersistence > 60
-      )
-
-      ||
-
-      (
-        state.validation
-          .behavioralSurvival > 55
-      );
-
-    const expansionContinuation =
-      state.validation.expansionTriggerActive;
+    const expansionContinuation = state.validation.expansionTriggerActive;
 
     const structuralContinuation =
-
-      (
-        driftState.directionalDrift &&
-        driftState.staircaseTrend
-      )
-
-      ||
-
-      (
-        compressionState
-          .compressionClassification ===
-        "TREND_DRIFT"
-      )
-
-      ||
-
-      (
-        state.validation
-          .continuationPersistence > 70
-      );
+      (driftState.directionalDrift && driftState.staircaseTrend) ||
+      compressionState.compressionClassification === "TREND_DRIFT" ||
+      state.validation.continuationPersistence > 70;
 
     const structureAligned =
+      (state.signal === "BUY" &&
+        state.swingStructure.marketStructure === "BULLISH") ||
+      (state.signal === "SELL" &&
+        state.swingStructure.marketStructure === "BEARISH");
 
-      (
-        state.signal === "BUY" &&
-        state.swingStructure.marketStructure === "BULLISH"
-      )
+    const arbitrationState = analyzeBehavioralArbitration({
+      continuationState,
+      compressionState,
+      persistenceState,
+      setupHealthState,
 
-      ||
+      validation: state.validation,
 
-      (
-        state.signal === "SELL" &&
-        state.swingStructure.marketStructure === "BEARISH"
-      );  
+      driftState,
 
-    const arbitrationState =
-      analyzeBehavioralArbitration({
-
-        continuationState,
-        compressionState,
-        persistenceState,
-        setupHealthState,
-
-        validation:
-          state.validation,
-
-        driftState,
-
-        structureAligned,
-        progressiveContinuation,
-        structuralContinuation
-      });
+      structureAligned,
+      progressiveContinuation,
+      structuralContinuation,
+    });
 
     state.validation = {
       ...state.validation,
-      ...arbitrationState
-    };  
+      ...arbitrationState,
+    };
 
     const resuming =
-      (
-        directionalContinuation &&
-        strongMove
-      ) ||
+      (directionalContinuation && strongMove) ||
       progressiveContinuation ||
       expansionContinuation ||
-      (
-        structuralContinuation &&
-        continuationState.reclaimQuality > 20
-      );
+      (structuralContinuation && continuationState.reclaimQuality > 20);
 
     // ==============================
     // DEPTH CHECK (ATR BASED)
     // ==============================
     const maxDistance = Math.max(
-      ...state.memory.setup.map(c => Math.abs(c.price - c.ema50))
+      ...state.memory.setup.map((c) => Math.abs(c.price - c.ema50)),
     );
 
-    const hasDepth =
-      structuralContinuation
-        ? maxDistance > (atr * 0.18)
-        : maxDistance > (atr * 0.4);
+    const hasDepth = structuralContinuation
+      ? maxDistance > atr * 0.18
+      : maxDistance > atr * 0.4;
 
     // ==============================
     // FINAL SETUP VALIDATION
     // ==============================
-    const isValidSetup =
-      pullbackCount >= minPullback &&
-      resuming &&
-      hasDepth;
-      
-    console.log("[CONTINUATION STATE]", {
+    const isValidSetup = pullbackCount >= minPullback && resuming && hasDepth;
 
-      healthyStructure:
-        continuationState.healthyStructure,
+    console.log("[CONTINUATION STATE]", {
+      healthyStructure: continuationState.healthyStructure,
 
       continuationConfidence:
         continuationState.continuationConfidence.toFixed(2),
 
       continuationPersistence:
-        state.validation
-          .continuationPersistence
-          .toFixed(2),
+        state.validation.continuationPersistence.toFixed(2),
 
       continuationPersistenceDecay:
-        state.validation
-          .continuationPersistenceDecay
-          .toFixed(2),
+        state.validation.continuationPersistenceDecay.toFixed(2),
 
       continuationPersistenceRecovery:
-        state.validation
-          .continuationPersistenceRecovery
-          .toFixed(2),
+        state.validation.continuationPersistenceRecovery.toFixed(2),
 
-      behavioralSurvival:
-        state.validation
-          .behavioralSurvival
-          .toFixed(2),
+      behavioralSurvival: state.validation.behavioralSurvival.toFixed(2),
 
       behavioralDeterioration:
-        state.validation
-          .behavioralDeterioration
-          .toFixed(2),
+        state.validation.behavioralDeterioration.toFixed(2),
 
-      directionalCommitment:
-        state.validation
-          .directionalCommitment
-          .toFixed(2),  
+      directionalCommitment: state.validation.directionalCommitment.toFixed(2),
 
-      setupHealth:
-        state.validation
-          .setupHealth
-          .toFixed(2),
+      setupHealth: state.validation.setupHealth.toFixed(2),
 
-      setupRecovery:
-        state.validation
-          .setupRecovery
-          .toFixed(2),
+      setupRecovery: state.validation.setupRecovery.toFixed(2),
 
-      setupDecay:
-        state.validation
-          .setupDecay
-          .toFixed(2),
+      setupDecay: state.validation.setupDecay.toFixed(2),
 
-      setupPressure:
-        state.validation
-          .setupPressure
-          .toFixed(2),
+      setupPressure: state.validation.setupPressure.toFixed(2),
 
-      setupInvalidationRisk:
-        state.validation
-          .setupInvalidationRisk
-          .toFixed(2),    
+      setupInvalidationRisk: state.validation.setupInvalidationRisk.toFixed(2),
 
-      contradictionRisk:
-        continuationState.contradictionRisk.toFixed(2),
+      contradictionRisk: continuationState.contradictionRisk.toFixed(2),
 
-      reclaimQuality:
-        continuationState.reclaimQuality.toFixed(2),
+      reclaimQuality: continuationState.reclaimQuality.toFixed(2),
 
-      expansionIgnitionBias:
-        state.validation
-          .expansionIgnitionBias,
+      expansionIgnitionBias: state.validation.expansionIgnitionBias,
 
-      ignitionPressure:
-        state.validation
-          .ignitionPressure
-          .toFixed(2),
+      ignitionPressure: state.validation.ignitionPressure.toFixed(2),
 
-      ignitionConfidence:
-        state.validation
-          .ignitionConfidence
-          .toFixed(2),
+      ignitionConfidence: state.validation.ignitionConfidence.toFixed(2),
 
-      ignitionTrajectory:
-        state.validation
-          .ignitionTrajectory,  
+      ignitionTrajectory: state.validation.ignitionTrajectory,
 
-      stabilizationStrength:
-        continuationState.stabilizationStrength.toFixed(2),
+      stabilizationStrength: continuationState.stabilizationStrength.toFixed(2),
 
-      weakeningOpposition:
-        continuationState.weakeningOpposition,
+      weakeningOpposition: continuationState.weakeningOpposition,
 
-      constructiveCompression:
-        compressionState.constructiveCompression,
+      constructiveCompression: compressionState.constructiveCompression,
 
-      compressionQuality:
-        compressionState.compressionQuality.toFixed(2),
+      compressionQuality: compressionState.compressionQuality.toFixed(2),
 
-      compressionBias:
-        compressionState.compressionBias.toFixed(2),
+      compressionBias: compressionState.compressionBias.toFixed(2),
 
-      volatilityCompression:
-        compressionState.volatilityCompression,
+      volatilityCompression: compressionState.volatilityCompression,
 
-      directionalCompression:
-        compressionState.directionalCompression,
+      directionalCompression: compressionState.directionalCompression,
 
-      compressionClassification:
-        compressionState.compressionClassification,
+      compressionClassification: compressionState.compressionClassification,
 
-      compressionPersistence:
-        compressionState.compressionPersistence,
+      compressionPersistence: compressionState.compressionPersistence,
 
-      compressionTransition:
-        compressionState.compressionTransition,  
+      compressionTransition: compressionState.compressionTransition,
 
-      dynamicDecayRisk:
-        dynamicDecayState.dynamicDecayRisk.toFixed(2),
+      dynamicDecayRisk: dynamicDecayState.dynamicDecayRisk.toFixed(2),
 
-      lastSwingHigh:
-        state.swingStructure.lastHigh,
+      lastSwingHigh: state.swingStructure.lastHigh,
 
-      lastSwingLow:
-        state.swingStructure.lastLow,
+      lastSwingLow: state.swingStructure.lastLow,
 
-      detectedSwingHigh:
-        swingState.detectedHigh,
+      detectedSwingHigh: swingState.detectedHigh,
 
-      detectedSwingLow:
-        swingState.detectedLow,  
+      detectedSwingLow: swingState.detectedLow,
 
-      marketStructure:
-        state.swingStructure.marketStructure,  
+      marketStructure: state.swingStructure.marketStructure,
 
-      bullishBOS:
-        state.swingStructure.bullishBOS,
+      bullishBOS: state.swingStructure.bullishBOS,
 
-      bearishBOS:
-        state.swingStructure.bearishBOS,
+      bearishBOS: state.swingStructure.bearishBOS,
 
-      expansionReadiness:
-        state.validation.expansionReadiness.toFixed(2),
+      expansionReadiness: state.validation.expansionReadiness.toFixed(2),
 
-      expansionPressure:
-        state.validation.expansionPressure.toFixed(2),
+      expansionPressure: state.validation.expansionPressure.toFixed(2),
 
-      expansionBias:
-        state.validation.expansionBias, 
-        
-      expansionTriggerActive:
-        state.validation.expansionTriggerActive,
+      expansionBias: state.validation.expansionBias,
+
+      expansionTriggerActive: state.validation.expansionTriggerActive,
 
       expansionTriggerStrength:
         state.validation.expansionTriggerStrength.toFixed(2),
 
-      displacementDetected:
-        state.validation.displacementDetected,
+      displacementDetected: state.validation.displacementDetected,
 
-      volatilityReleaseDetected:
-        state.validation.volatilityReleaseDetected,
+      volatilityReleaseDetected: state.validation.volatilityReleaseDetected,
 
-      accelerationDetected:
-        state.validation.accelerationDetected,  
-
+      accelerationDetected: state.validation.accelerationDetected,
     });
-
 
     console.log("[SETUP CHECK]", {
       pullbackCount,
@@ -4425,32 +3368,24 @@ function strategyEngine(ctx) {
       bullishBias: directionBias.bullish.toFixed(2),
       bearishBias: directionBias.bearish.toFixed(2),
       dominance: directionBias.dominance.toFixed(2),
-      pullbackStrength:
-      pullbackAnalysis.pullbackStrength.toFixed(2),
-      impulseStrength:
-        impulseAnalysis.impulseStrength.toFixed(2),
+      pullbackStrength: pullbackAnalysis.pullbackStrength.toFixed(2),
+      impulseStrength: impulseAnalysis.impulseStrength.toFixed(2),
 
-      expansionStrength:
-        impulseAnalysis.expansionStrength.toFixed(2),
+      expansionStrength: impulseAnalysis.expansionStrength.toFixed(2),
 
       impulseWeak,
       explosiveImpulse,
-      ageMinutes:
-      agingAnalysis.ageMinutes.toFixed(2),
+      ageMinutes: agingAnalysis.ageMinutes.toFixed(2),
 
       staleSetup,
       decayingSetup,
-      volatilityFactor:
-        regimeAnalysis.volatilityFactor.toFixed(2),
+      volatilityFactor: regimeAnalysis.volatilityFactor.toFixed(2),
 
-      explosiveRegime:
-        regimeAnalysis.explosiveRegime,
+      explosiveRegime: regimeAnalysis.explosiveRegime,
 
-      slowRegime:
-        regimeAnalysis.slowRegime,
+      slowRegime: regimeAnalysis.slowRegime,
 
-      reclaimStrength:
-        pullbackAnalysis.reclaimStrength.toFixed(2),
+      reclaimStrength: pullbackAnalysis.reclaimStrength.toFixed(2),
 
       dangerousPullback,
 
@@ -4462,148 +3397,92 @@ function strategyEngine(ctx) {
         continuationState.continuationConfidence.toFixed(2),
 
       continuationPersistence:
-        state.validation
-          .continuationPersistence
-          .toFixed(2),
+        state.validation.continuationPersistence.toFixed(2),
 
-      behavioralSurvival:
-        state.validation
-          .behavioralSurvival
-          .toFixed(2),
+      behavioralSurvival: state.validation.behavioralSurvival.toFixed(2),
 
       behavioralDeterioration:
-        state.validation
-          .behavioralDeterioration
-          .toFixed(2),
+        state.validation.behavioralDeterioration.toFixed(2),
 
-      directionalCommitment:
-        state.validation
-          .directionalCommitment
-          .toFixed(2),  
+      directionalCommitment: state.validation.directionalCommitment.toFixed(2),
 
-      setupHealth:
-        state.validation
-          .setupHealth
-          .toFixed(2),
+      setupHealth: state.validation.setupHealth.toFixed(2),
 
-      setupRecovery:
-        state.validation
-          .setupRecovery
-          .toFixed(2),
+      setupRecovery: state.validation.setupRecovery.toFixed(2),
 
-      setupDecay:
-        state.validation
-          .setupDecay
-          .toFixed(2),
+      setupDecay: state.validation.setupDecay.toFixed(2),
 
-      setupPressure:
-        state.validation
-          .setupPressure
-          .toFixed(2),
+      setupPressure: state.validation.setupPressure.toFixed(2),
 
-      setupInvalidationRisk:
-        state.validation
-          .setupInvalidationRisk
-          .toFixed(2),    
+      setupInvalidationRisk: state.validation.setupInvalidationRisk.toFixed(2),
 
-      contradictionRisk:
-        continuationState.contradictionRisk.toFixed(2),
+      contradictionRisk: continuationState.contradictionRisk.toFixed(2),
 
-      reclaimQuality:
-        continuationState.reclaimQuality.toFixed(2),
+      reclaimQuality: continuationState.reclaimQuality.toFixed(2),
 
-      expansionIgnitionBias:
-        state.validation
-          .expansionIgnitionBias,
+      expansionIgnitionBias: state.validation.expansionIgnitionBias,
 
-      ignitionPressure:
-        state.validation
-          .ignitionPressure
-          .toFixed(2),
+      ignitionPressure: state.validation.ignitionPressure.toFixed(2),
 
-      ignitionConfidence:
-        state.validation
-          .ignitionConfidence
-          .toFixed(2),
+      ignitionConfidence: state.validation.ignitionConfidence.toFixed(2),
 
-      ignitionTrajectory:
-        state.validation
-          .ignitionTrajectory,  
+      ignitionTrajectory: state.validation.ignitionTrajectory,
 
-      healthyStructure:
-        continuationState.healthyStructure,
-      constructiveCompression:
-        compressionState.constructiveCompression,
+      healthyStructure: continuationState.healthyStructure,
+      constructiveCompression: compressionState.constructiveCompression,
 
-      compressionQuality:
-        compressionState.compressionQuality.toFixed(2),
+      compressionQuality: compressionState.compressionQuality.toFixed(2),
 
       compressionClassification,
-      compressionPersistence:
-        compressionState.compressionPersistence,
+      compressionPersistence: compressionState.compressionPersistence,
 
-      compressionTransition:
-        compressionState.compressionTransition,  
-      
-      dynamicDecayRisk:
-        dynamicDecayState.dynamicDecayRisk.toFixed(2),  
+      compressionTransition: compressionState.compressionTransition,
 
-      expansionReadiness:
-        state.validation.expansionReadiness.toFixed(2),
+      dynamicDecayRisk: dynamicDecayState.dynamicDecayRisk.toFixed(2),
 
-      expansionPressure:
-        state.validation.expansionPressure.toFixed(2),
+      expansionReadiness: state.validation.expansionReadiness.toFixed(2),
 
-      expansionBias:
-        state.validation.expansionBias,
+      expansionPressure: state.validation.expansionPressure.toFixed(2),
 
-      expansionTriggerActive:
-        state.validation.expansionTriggerActive,
+      expansionBias: state.validation.expansionBias,
+
+      expansionTriggerActive: state.validation.expansionTriggerActive,
 
       expansionTriggerStrength:
-        state.validation.expansionTriggerStrength.toFixed(2),  
+        state.validation.expansionTriggerStrength.toFixed(2),
 
-      directionalDrift:
-        driftState.directionalDrift,
+      directionalDrift: driftState.directionalDrift,
 
-      driftStrength:
-        driftState.driftStrength,
+      driftStrength: driftState.driftStrength,
 
-      staircaseTrend:
-        driftState.staircaseTrend,  
+      staircaseTrend: driftState.staircaseTrend,
 
-      valid: isValidSetup
+      valid: isValidSetup,
     });
-
 
     // ==============================
     // IF VALID → SCORE
     // ==============================
     if (isValidSetup) {
-
       let impulseBonus = 0;
 
       if (explosiveImpulse) {
         impulseBonus = 5;
 
         console.log("[IMPULSE BONUS]", {
-          expansionStrength:
-            impulseAnalysis.expansionStrength.toFixed(2),
+          expansionStrength: impulseAnalysis.expansionStrength.toFixed(2),
 
-          bonus: impulseBonus
+          bonus: impulseBonus,
         });
       }
 
       state.lockedScores.setup =
-        computeSetupScore(
-          state.memory.setup,
-          {
-            signal: state.signal,
-            price,
-            ema50,
-            atr
-          }
-        ) + impulseBonus;
+        computeSetupScore(state.memory.setup, {
+          signal: state.signal,
+          price,
+          ema50,
+          atr,
+        }) + impulseBonus;
 
       // HARD FILTER
       if (state.lockedScores.setup < 10) {
@@ -4613,107 +3492,59 @@ function strategyEngine(ctx) {
       }
 
       state.memory.setup = decayWeights(state.memory.setup);
-      const setupScore =
-        computeSetupScore(
-          state.memory.setup,
-          {
-            signal: state.signal,
-            price,
-            ema50,
-            atr
-          }
-        );
+      const setupScore = computeSetupScore(state.memory.setup, {
+        signal: state.signal,
+        price,
+        ema50,
+        atr,
+      });
 
-      const momentumScore =
-        computeMomentumScore(
-          state.memory.setup,
-          {
-            signal: state.signal,
-            atr
-          }
-        );
+      const momentumScore = computeMomentumScore(state.memory.setup, {
+        signal: state.signal,
+        atr,
+      });
 
-      state.lockedScores.setup =
-        setupScore;
+      state.lockedScores.setup = setupScore;
 
-      state.liveScore.momentum =
-        momentumScore;
+      state.liveScore.momentum = momentumScore;
 
-      const totalScore =
-        state.lockedScores.trend +
-        setupScore +
-        momentumScore;
+      const totalScore = state.lockedScores.trend + setupScore + momentumScore;
 
-      const scoreQualified =
-        totalScore >= CONFIG.THRESHOLD;
+      const scoreQualified = totalScore >= CONFIG.THRESHOLD;
 
-      const behavioralQualified =
-        state.validation
-          .behavioralValidation;
+      const behavioralQualified = state.validation.behavioralValidation;
 
       console.log("[ENTRY AUTHORITY]", {
-        totalScore:
-          totalScore.toFixed(2),
+        totalScore: totalScore.toFixed(2),
 
         scoreQualified,
 
         behavioralQualified,
 
         behavioralArbitrationScore:
-          state.validation
-            .behavioralArbitrationScore
-            .toFixed(2),
+          state.validation.behavioralArbitrationScore.toFixed(2),
 
-        primaryAuthority:
-          state.validation
-            .primaryAuthority
-            .toFixed(2),
+        primaryAuthority: state.validation.primaryAuthority.toFixed(2),
 
-        secondaryAuthority:
-          state.validation
-            .secondaryAuthority
-            .toFixed(2),
+        secondaryAuthority: state.validation.secondaryAuthority.toFixed(2),
 
-        triggerAuthority:
-          state.validation
-            .triggerAuthority
-            .toFixed(2),
+        triggerAuthority: state.validation.triggerAuthority.toFixed(2),
 
-        expansionReadiness:
-          state.validation
-            .expansionReadiness
-            .toFixed(2),
+        expansionReadiness: state.validation.expansionReadiness.toFixed(2),
 
-        expansionTrigger:
-          state.validation
-            .expansionTriggerActive,
+        expansionTrigger: state.validation.expansionTriggerActive,
 
-        marketStructure:
-          state.swingStructure
-            .marketStructure,
+        marketStructure: state.swingStructure.marketStructure,
 
-        structureQuality:
-          state.validation
-            .structureQuality
-            .toFixed(2),
+        structureQuality: state.validation.structureQuality.toFixed(2),
 
-        trappedContinuation:
-          state.validation
-            .trappedContinuation,
+        trappedContinuation: state.validation.trappedContinuation,
 
-        reclaimRejection:
-          state.validation
-            .reclaimRejection,    
+        reclaimRejection: state.validation.reclaimRejection,
       });
 
-      if (
-        scoreQualified ||
-        behavioralQualified
-      ) {
-
-        console.log(
-          "[DIRECT ENTRY] Behavioral execution validated"
-        );
+      if (scoreQualified || behavioralQualified) {
+        console.log("[DIRECT ENTRY] Behavioral execution validated");
 
         // sendPhaseAlert({
         //   from: state.phase,
@@ -4740,12 +3571,11 @@ function strategyEngine(ctx) {
         //         : "Score-qualified entry"
         //   }
         // });
-        
 
         return {
           action: "ENTER",
           score: totalScore,
-          signal: state.signal
+          signal: state.signal,
         };
       }
 
@@ -4758,5 +3588,5 @@ function strategyEngine(ctx) {
 
 module.exports = {
   strategyEngine,
-  resetStrategyEngine: reset
+  resetStrategyEngine: reset,
 };
