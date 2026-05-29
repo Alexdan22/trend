@@ -54,6 +54,7 @@ const { initSymbol } = require('./src/core/symbolRegistry');
 const { updatePrice } = require('./src/core/symbolRegistry');
 const { getContext } = require('./src/core/symbolRegistry');
 const { strategyEngine, resetStrategyEngine } = require('./src/strategy/strategyEngine');
+const { captureTradeSnapshot } = require("./services/tradeSnapshot");
 
 
 
@@ -179,6 +180,67 @@ async function sendTelegram(message, options = {}) {
   });
 
   processTelegramQueue();
+}
+
+async function sendTelegramPhoto(
+  imageBuffer,
+  caption = ""
+) {
+
+  try {
+
+    const bot = getBot();
+    const chatId =
+      process.env.TELEGRAM_CHAT_ID;
+
+    if (!chatId) return;
+
+    await bot.sendPhoto(
+      chatId,
+      imageBuffer,
+      {
+        caption
+      }
+    );
+
+  } catch (err) {
+
+    console.error(
+      "[TELEGRAM PHOTO]",
+      err.message
+    );
+  }
+}
+
+async function sendTradeChartAlert({
+  event,
+  rec,
+  score = null
+}) {
+
+  try {
+
+    const {
+      buffer,
+      caption
+    } = await captureTradeSnapshot({
+      event,
+      rec,
+      candles: candles_5m.slice(-70)
+    });
+
+    await sendTelegramPhoto(
+      buffer,
+      caption
+    );
+
+  } catch (err) {
+
+    console.error(
+      `[SNAPSHOT ${event}]`,
+      err.message || err
+    );
+  }
 }
 
 // expose globally
@@ -1098,17 +1160,12 @@ async function processStrategyEntry(side, score = null) {
       ? `📊 Score: ${score}\n`
       : '';
 
-    await sendTelegram(
-      `${side === 'BUY' ? '🟢 BUY Trade Placed' : '🔴 SELL Trade Placed'}\n` +
-      `━━━━━━━━━━━━━━━\n` +
-      `${scoreText}` +
-      `🆔 Pair: ${safePairId}\n` +
-      `💰 Lot: ${lot}\n` +
-      `🎯 Entry: ${entryPrice.toFixed(2)}\n` +
-      `📊 SL: ${slPrice.toFixed(2)}\n` +
-      `🎯 TP: ${tpPrice.toFixed(2)}\n` +
-      `📅 Time: ${new Date().toLocaleTimeString()} UTC`,
-      { parse_mode: 'MarkdownV2' }
+    sendTradeChartAlert({
+      event: "ENTRY",
+      rec: openPairs[prePair.pairId],
+      score
+    }).catch(err =>
+      console.error("[ENTRY SNAPSHOT]", err)
     );
 
     console.log("[ENTRY] ✔ STRATEGY ENTRY completed");
@@ -1251,13 +1308,11 @@ async function processTickForOpenPairs(price) {
 
             console.log(`[PAIR][${pairId}] PARTIAL closed + BE activated`);
 
-            const safePairId = md2(pairId);
-            await sendTelegram(
-              `🟠 *PARTIAL CLOSED + BREAK-EVEN*\n` +
-              `${safePairId}\n` +
-              `Side: ${side}\n` +
-              `BE: ${rec.entryPrice.toFixed(2)}`,
-              { parse_mode: 'MarkdownV2' }
+            sendTradeChartAlert({
+              event: "PARTIAL",
+              rec
+            }).catch(err =>
+              console.error("[PARTIAL SNAPSHOT]", err)
             );
           }
         }
@@ -1289,17 +1344,11 @@ async function processTickForOpenPairs(price) {
               rec.trades[key].ticket = null;
             }
           }
-
-          // 📣 TELEGRAM FIRST (state still exists here)
-          const safePairId = md2(pairId);
-          await sendTelegram(
-            `🎯 *TP HIT — PROFIT CLOSED*\n` +
-            `${safePairId}\n` +
-            `Side: ${side}\n` +
-            `TP: ${rec.tp.toFixed(2)}\n` +
-            `Entry: ${rec.entryPrice.toFixed(2)}`,
-            { parse_mode: 'MarkdownV2' }
-          );
+          
+          await sendTradeChartAlert({
+            event: "TP",
+            rec
+          });
 
           // 🧹 FINALIZE AFTER NOTIFICATION
           finalizePair(pairId, 'TP_HIT');
@@ -1331,14 +1380,13 @@ async function processTickForOpenPairs(price) {
           await safeClosePosition(trailingRec.ticket, trailingRec.lot);
           rec.trades.TRAILING.ticket = null;
 
+          await sendTradeChartAlert({
+            event: "BREAK_EVEN",
+            rec
+          });
+
           finalizePair(pairId, 'BREAK_EVEN');
-
-          const safePairId = md2(pairId);
-          await sendTelegram(
-            `🔵 *BREAK-EVEN HIT*\n${safePairId}\nSide: ${side}`,
-            { parse_mode: 'MarkdownV2' }
-          );
-
+          
           continue;
         }
       }
@@ -1374,16 +1422,11 @@ async function processTickForOpenPairs(price) {
               rec.trades[key].ticket = null;
             }
           }
-
-          const safePairId = md2(pairId);
-          await sendTelegram(
-            `⛔ *STOP-LOSS HIT — LOSS CLOSED*\n` +
-            `${safePairId}\n` +
-            `Side: ${side}\n` +
-            `SL: ${effectiveSL.toFixed(2)}\n` +
-            `Entry: ${rec.entryPrice.toFixed(2)}`,
-            { parse_mode: 'MarkdownV2' }
-          );
+          
+          await sendTradeChartAlert({
+            event: "STOP_LOSS",
+            rec
+          });
 
           finalizePair(pairId, 'STOP_LOSS');
           continue;
