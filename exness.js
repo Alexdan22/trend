@@ -1160,6 +1160,45 @@ async function processTickForOpenPairs(price) {
       const current = side === 'BUY' ? price.bid : price.ask;
       if (current == null) continue;
 
+      const effectiveSL = rec.internalSL ?? rec.sl;
+
+      const nearManagementLevel =
+        Math.abs(current - rec.tp) <= 0.50 ||
+        Math.abs(current - effectiveSL) <= 0.50;
+
+      if (nearManagementLevel) {
+
+        console.log(
+          `[MGMT-CHECK] ${pairId}`,
+          JSON.stringify({
+            state: rec.state,
+
+            side,
+
+            current,
+
+            entryPrice: rec.entryPrice,
+
+            tp: rec.tp,
+            effectiveSL,
+
+            breakEvenActive: rec.breakEvenActive,
+            partialClosed: rec.partialClosed,
+
+            partialTicket: rec.trades?.PARTIAL?.ticket,
+            trailingTicket: rec.trades?.TRAILING?.ticket,
+
+            tpHit:
+              (side === 'BUY' && current >= rec.tp) ||
+              (side === 'SELL' && current <= rec.tp),
+
+            slHit:
+              (side === 'BUY' && current <= effectiveSL) ||
+              (side === 'SELL' && current >= effectiveSL)
+          }, null, 2)
+        );
+      }
+
       // --- Ticket validity check (existing) ---
       // Don't treat missing tickets as missing during the first 5 seconds
       if (ageMs >= 5000) {
@@ -1232,6 +1271,15 @@ async function processTickForOpenPairs(price) {
 
         if (tpHit) {
 
+          console.log(
+            `[TP-EVAL] ${pairId}`,
+            {
+              current,
+              tp: rec.tp,
+              side,
+              tpHit
+            }
+          );
           transitionPairState(rec, PAIR_STATE.CLOSING, 'TP_HIT');
 
           for (const key of ['PARTIAL', 'TRAILING']) {
@@ -1268,7 +1316,16 @@ async function processTickForOpenPairs(price) {
           (side === 'SELL' && current >= rec.internalSL);
 
         if (beHit) {
-
+          console.log(
+            `[BE-EVAL] ${pairId}`,
+            {
+              current,
+              internalSL: rec.internalSL,
+              side,
+              breakEvenActive: rec.breakEvenActive,
+              beHit
+            }
+          );
           console.log(`[PAIR] 🔵 BREAK-EVEN HIT → closing trailing leg (${pairId})`);
 
           await safeClosePosition(trailingRec.ticket, trailingRec.lot);
@@ -1296,6 +1353,15 @@ async function processTickForOpenPairs(price) {
           (side === 'SELL' && current >= effectiveSL);
 
         if (slHit) {
+          console.log(
+            `[SL-EVAL] ${pairId}`,
+            {
+              current,
+              effectiveSL,
+              side,
+              slHit
+            }
+          );
 
           console.log(`[PAIR] ⛔ STOP-LOSS HIT → closing pair (${pairId})`);
 
@@ -1725,6 +1791,37 @@ async function syncOpenPairsWithPositions(positions) {
           rec.trades.TRAILING.ticket = brokerTicket;
           ticketOwnershipMap.set(String(brokerTicket), pairId); // ✅ OWNERSHIP
           transitionPairState(rec, PAIR_STATE.ACTIVE);
+          console.log(
+            `[PAIR-ACTIVE] ${pairId}`,
+            JSON.stringify({
+              pairId: rec.pairId,
+              state: rec.state,
+
+              side: rec.side,
+
+              entryPrice: rec.entryPrice,
+              sl: rec.sl,
+              tp: rec.tp,
+
+              breakEvenActive: rec.breakEvenActive,
+              internalSL: rec.internalSL,
+              internalTrailingSL: rec.internalTrailingSL,
+
+              partialClosed: rec.partialClosed,
+
+              partialTicket: rec.trades?.PARTIAL?.ticket,
+              partialLot: rec.trades?.PARTIAL?.lot,
+
+              trailingTicket: rec.trades?.TRAILING?.ticket,
+              trailingLot: rec.trades?.TRAILING?.lot,
+
+              openedAt: rec.openedAt,
+              entryTimestamp: rec.entryTimestamp,
+
+              latestBid: latestPrice?.bid,
+              latestAsk: latestPrice?.ask
+            }, null, 2)
+          );
           releaseEntryLock('entry-success');
 
 

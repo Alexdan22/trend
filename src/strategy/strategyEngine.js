@@ -4745,7 +4745,7 @@ function strategyEngine(ctx) {
         return {
           action: "ENTER",
           score: totalScore,
-          signal: state.signal.toLowerCase()
+          signal: state.signal
         };
       }
 
