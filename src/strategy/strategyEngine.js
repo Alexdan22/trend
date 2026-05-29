@@ -3208,16 +3208,16 @@ function strategyEngine(ctx) {
 
       console.log("[Phase] IDLE → TREND (BUY)");
 
-      sendPhaseAlert({
-        from: previousPhase,
-        to: state.phase,
-        signal: state.signal,
-        price,
-        scores: {},
-        extra: {
-          reason: "EMA50 crossed above EMA200"
-        }
-      });
+      // sendPhaseAlert({
+      //   from: previousPhase,
+      //   to: state.phase,
+      //   signal: state.signal,
+      //   price,
+      //   scores: {},
+      //   extra: {
+      //     reason: "EMA50 crossed above EMA200"
+      //   }
+      // });
     }
 
     if (ema50 < ema200) {
@@ -3228,16 +3228,16 @@ function strategyEngine(ctx) {
 
       console.log("[Phase] IDLE → TREND (SELL)");
 
-      sendPhaseAlert({
-        from: previousPhase,
-        to: state.phase,
-        signal: state.signal,
-        price,
-        scores: {},
-        extra: {
-          reason: "EMA50 crossed below EMA200"
-        }
-      });
+      // sendPhaseAlert({
+      //   from: previousPhase,
+      //   to: state.phase,
+      //   signal: state.signal,
+      //   price,
+      //   scores: {},
+      //   extra: {
+      //     reason: "EMA50 crossed below EMA200"
+      //   }
+      // });
     }
 
     return { action: null };
@@ -3282,15 +3282,15 @@ function strategyEngine(ctx) {
       (state.signal === "BUY" && ema50 < ema200) ||
       (state.signal === "SELL" && ema50 > ema200)
     ) {
-      sendPhaseAlert({
-        from: state.phase,
-        to: "INVALIDATED",
-        signal: state.signal,
-        price,
-        extra: {
-          reason: "Trend invalidation"
-        }
-      });
+      // sendPhaseAlert({
+      //   from: state.phase,
+      //   to: "INVALIDATED",
+      //   signal: state.signal,
+      //   price,
+      //   extra: {
+      //     reason: "Trend invalidation"
+      //   }
+      // });
 
       reset();
 
@@ -3323,18 +3323,18 @@ function strategyEngine(ctx) {
 
       state.phase = "SETUP";
 
-      sendPhaseAlert({
-        from: previousPhase,
-        to: state.phase,
-        signal: state.signal,
-        price,
-        scores: {
-          trend: state.lockedScores.trend
-        },
-        extra: {
-          reason: "Pullback detected"
-        }
-      });
+      // sendPhaseAlert({
+      //   from: previousPhase,
+      //   to: state.phase,
+      //   signal: state.signal,
+      //   price,
+      //   scores: {
+      //     trend: state.lockedScores.trend
+      //   },
+      //   extra: {
+      //     reason: "Pullback detected"
+      //   }
+      // });
       console.log("[TREND] Locked Trend Score:", state.lockedScores.trend.toFixed(2));
       console.log("[Phase] → SETUP");
 
@@ -3800,16 +3800,16 @@ function strategyEngine(ctx) {
         }
       );
 
-      sendPhaseAlert({
-        from: state.phase,
-        to: "INVALIDATED",
-        signal: state.signal,
-        price,
-        extra: {
-          reason:
-            "Terminal chop deterioration"
-        }
-      });
+      // sendPhaseAlert({
+      //   from: state.phase,
+      //   to: "INVALIDATED",
+      //   signal: state.signal,
+      //   price,
+      //   extra: {
+      //     reason:
+      //       "Terminal chop deterioration"
+      //   }
+      // });
 
       reset();
 
@@ -3842,16 +3842,16 @@ function strategyEngine(ctx) {
         }
       );
 
-      sendPhaseAlert({
-        from: state.phase,
-        to: "INVALIDATED",
-        signal: state.signal,
-        price,
-        extra: {
-          reason:
-            "Structural collapse"
-        }
-      });
+      // sendPhaseAlert({
+      //   from: state.phase,
+      //   to: "INVALIDATED",
+      //   signal: state.signal,
+      //   price,
+      //   extra: {
+      //     reason:
+      //       "Structural collapse"
+      //   }
+      // });
 
       reset();
 
@@ -3888,16 +3888,16 @@ function strategyEngine(ctx) {
         }
       );
 
-      sendPhaseAlert({
-        from: state.phase,
-        to: "INVALIDATED",
-        signal: state.signal,
-        price,
-        extra: {
-          reason:
-            "Pullback exhaustion"
-        }
-      });
+      // sendPhaseAlert({
+      //   from: state.phase,
+      //   to: "INVALIDATED",
+      //   signal: state.signal,
+      //   price,
+      //   extra: {
+      //     reason:
+      //       "Pullback exhaustion"
+      //   }
+      // });
 
       reset();
 
@@ -3932,16 +3932,16 @@ function strategyEngine(ctx) {
         }
       );
 
-      sendPhaseAlert({
-        from: state.phase,
-        to: "INVALIDATED",
-        signal: state.signal,
-        price,
-        extra: {
-          reason:
-            "Terminal deterioration"
-        }
-      });
+      // sendPhaseAlert({
+      //   from: state.phase,
+      //   to: "INVALIDATED",
+      //   signal: state.signal,
+      //   price,
+      //   extra: {
+      //     reason:
+      //       "Terminal deterioration"
+      //   }
+      // });
 
       reset();
 
@@ -3991,16 +3991,16 @@ function strategyEngine(ctx) {
         }
       );
 
-      sendPhaseAlert({
-        from: state.phase,
-        to: "INVALIDATED",
-        signal: state.signal,
-        price,
-        extra: {
-          reason:
-            "Behavioral deterioration"
-        }
-      });
+      // sendPhaseAlert({
+      //   from: state.phase,
+      //   to: "INVALIDATED",
+      //   signal: state.signal,
+      //   price,
+      //   extra: {
+      //     reason:
+      //       "Behavioral deterioration"
+      //   }
+      // });
 
       reset();
 
@@ -4049,16 +4049,16 @@ function strategyEngine(ctx) {
         }
       );
 
-      sendPhaseAlert({
-        from: state.phase,
-        to: "INVALIDATED",
-        signal: state.signal,
-        price,
-        extra: {
-          reason:
-            "Structural trap"
-        }
-      });
+      // sendPhaseAlert({
+      //   from: state.phase,
+      //   to: "INVALIDATED",
+      //   signal: state.signal,
+      //   price,
+      //   extra: {
+      //     reason:
+      //       "Structural trap"
+      //   }
+      // });
 
       reset();
 
@@ -4715,31 +4715,31 @@ function strategyEngine(ctx) {
           "[DIRECT ENTRY] Behavioral execution validated"
         );
 
-        sendPhaseAlert({
-          from: state.phase,
-          to: "ENTRY",
-          signal: state.signal,
-          price,
-          scores: {
-            trend:
-              state.lockedScores.trend,
+        // sendPhaseAlert({
+        //   from: state.phase,
+        //   to: "ENTRY",
+        //   signal: state.signal,
+        //   price,
+        //   scores: {
+        //     trend:
+        //       state.lockedScores.trend,
 
-            setup:
-              setupScore,
+        //     setup:
+        //       setupScore,
 
-            momentum:
-              momentumScore,
+        //     momentum:
+        //       momentumScore,
 
-            final:
-              totalScore
-          },
-          extra: {
-            reason:
-              behavioralQualified
-                ? "Behavioral validation entry"
-                : "Score-qualified entry"
-          }
-        });
+        //     final:
+        //       totalScore
+        //   },
+        //   extra: {
+        //     reason:
+        //       behavioralQualified
+        //         ? "Behavioral validation entry"
+        //         : "Score-qualified entry"
+        //   }
+        // });
         
 
         return {
