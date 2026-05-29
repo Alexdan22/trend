@@ -1344,7 +1344,6 @@ async function processTickForOpenPairs(price) {
       }
 
       // ---------- STOP-LOSS HIT ----------
-      const effectiveSL = rec.internalSL ?? rec.sl;
 
       if (effectiveSL) {
 
