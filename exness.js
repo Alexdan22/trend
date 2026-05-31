@@ -263,6 +263,18 @@ const USE_BROKER_SLTP = true; // 🔒 default OFF
 const MAX_TP_DISTANCE = 30; // XAUUSD dollars
 const MAX_SL_DISTANCE = 8; // XAUUSD dollars
 
+function getHistoricalCandleVolume(candle) {
+  const volume = Number(
+    candle?.tickVolume ??
+      candle?.volume ??
+      candle?.realVolume ??
+      candle?.Volume ??
+      0,
+  );
+
+  return Number.isFinite(volume) && volume > 0 ? volume : 0;
+}
+
 let lastTickPrice = null;
 let isProcessingTick = false;
 let lastTickTime = Date.now();
@@ -458,6 +470,7 @@ async function preloadHistoricalM5() {
         high: Number(c.high),
         low: Number(c.low),
         close: Number(c.close),
+        volume: getHistoricalCandleVolume(c),
       });
     }
 
@@ -484,11 +497,13 @@ function bootstrapM15FromM5() {
         high: c.high,
         low: c.low,
         close: c.close,
+        volume: c.volume || 0,
       });
     } else {
       last.high = Math.max(last.high, c.high);
       last.low = Math.min(last.low, c.low);
       last.close = c.close;
+      last.volume = (last.volume || 0) + (c.volume || 0);
     }
   }
 
@@ -511,6 +526,7 @@ async function backfillHistoricalData() {
         high: Number(c.high),
         low: Number(c.low),
         close: Number(c.close),
+        volume: getHistoricalCandleVolume(c),
       });
     }
   }
@@ -1448,6 +1464,7 @@ async function handleTick(tick) {
             high: priceMid,
             low: priceMid,
             close: priceMid,
+            volume: 1,
           });
           if (candles_1m.length > MAX_CANDLES) candles_1m.shift();
           ctx.candles.m1 = candles_1m;
@@ -1455,6 +1472,7 @@ async function handleTick(tick) {
           last1.high = Math.max(last1.high, priceMid);
           last1.low = Math.min(last1.low, priceMid);
           last1.close = priceMid;
+          last1.volume = (last1.volume || 0) + 1;
         }
 
         // 3m candle (built directly from ticks)
@@ -1466,12 +1484,14 @@ async function handleTick(tick) {
             high: priceMid,
             low: priceMid,
             close: priceMid,
+            volume: 1,
           });
           if (candles_3m.length > MAX_CANDLES) candles_3m.shift();
         } else {
           last3.high = Math.max(last3.high, priceMid);
           last3.low = Math.min(last3.low, priceMid);
           last3.close = priceMid;
+          last3.volume = (last3.volume || 0) + 1;
         }
 
         // 5m candle (built directly from ticks)
@@ -1483,6 +1503,7 @@ async function handleTick(tick) {
             high: priceMid,
             low: priceMid,
             close: priceMid,
+            volume: 1,
           });
           if (candles_5m.length > MAX_CANDLES) candles_5m.shift();
           ctx.candles.m5 = candles_5m;
@@ -1490,6 +1511,7 @@ async function handleTick(tick) {
           last5.high = Math.max(last5.high, priceMid);
           last5.low = Math.min(last5.low, priceMid);
           last5.close = priceMid;
+          last5.volume = (last5.volume || 0) + 1;
         }
 
         // 15m candle (built directly from ticks)
@@ -1501,6 +1523,7 @@ async function handleTick(tick) {
             high: priceMid,
             low: priceMid,
             close: priceMid,
+            volume: 1,
           });
           if (candles_15m.length > MAX_CANDLES) candles_15m.shift();
           ctx.candles.m15 = candles_15m;
@@ -1508,6 +1531,7 @@ async function handleTick(tick) {
           last15.high = Math.max(last15.high, priceMid);
           last15.low = Math.min(last15.low, priceMid);
           last15.close = priceMid;
+          last15.volume = (last15.volume || 0) + 1;
         }
 
         const m5Closes = candles_5m.map((c) => c.close);

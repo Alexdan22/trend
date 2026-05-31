@@ -18,3 +18,7 @@ yarn-error.log*
 # MetaApi cache
 .metaapi/
 
+# Local generated artifacts
+artifacts/
+.codex-remote-attachments/
+

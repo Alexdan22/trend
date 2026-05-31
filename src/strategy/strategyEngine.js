@@ -78,6 +78,8 @@ const state = {
 
     liquiditySweepBullish: false,
     liquiditySweepBearish: false,
+    liquiditySweepQuality: 0,
+    structuralReclaimQuality: 0,
 
     reclaimRejection: false,
 
@@ -143,6 +145,9 @@ const state = {
 
   trendPriceHistory: [],
 
+  m15Trend: null,
+  m15TrendStrength: 0,
+
   scoringStartTime: null,
 };
 
@@ -163,6 +168,91 @@ function trim(arr, limit = CONFIG.MEMORY_LIMIT) {
   if (arr.length > limit) {
     arr.splice(0, arr.length - limit);
   }
+}
+
+function clamp(value, min = 0, max = 100) {
+  if (!Number.isFinite(value)) return min;
+  return Math.max(min, Math.min(max, value));
+}
+
+function latestCandle(ctx, timeframe = "m5") {
+  const candles = ctx?.candles?.[timeframe];
+  return Array.isArray(candles) && candles.length ? candles.at(-1) : null;
+}
+
+function numericOr(value, fallback) {
+  return Number.isFinite(Number(value)) ? Number(value) : fallback;
+}
+
+function buildSetupMemoryPoint(ctx, { price, ema50, delta, timestamp }) {
+  const candle = latestCandle(ctx, "m5") || {};
+
+  const open = numericOr(candle.open, price);
+  const close = numericOr(candle.close, price);
+  const high = Math.max(numericOr(candle.high, price), open, close);
+  const low = Math.min(numericOr(candle.low, price), open, close);
+  const range = Math.max(high - low, 0);
+  const body = Math.abs(close - open);
+
+  return {
+    price,
+    ema50,
+    delta,
+    weight: 1,
+    timestamp,
+    open,
+    high,
+    low,
+    close,
+    range,
+    body,
+    upperWick: Math.max(0, high - Math.max(open, close)),
+    lowerWick: Math.max(0, Math.min(open, close) - low),
+    volume: Math.max(0, numericOr(candle.volume, 0)),
+  };
+}
+
+function deriveM15Trend(ctx, { ema50, ema200, atr }) {
+  if (!ema50 || !ema200) {
+    return {
+      direction: null,
+      strength: 0,
+    };
+  }
+
+  const candles = ctx?.candles?.m15 || [];
+  const closes = candles.map((candle) => candle.close).filter(Number.isFinite);
+  const recent = closes.slice(-8);
+  const slope =
+    recent.length >= 2 ? recent.at(-1) - recent[0] : ema50 - ema200;
+
+  const emaDiff = ema50 - ema200;
+  const direction = emaDiff > 0 ? "BUY" : emaDiff < 0 ? "SELL" : null;
+
+  if (!direction) {
+    return {
+      direction: null,
+      strength: 0,
+    };
+  }
+
+  const safeAtr = atr || Math.max(Math.abs(emaDiff), 1);
+  const alignmentStrength = clamp((Math.abs(emaDiff) / safeAtr) * 35, 0, 45);
+  const slopeStrength = clamp((Math.abs(slope) / safeAtr) * 25, 0, 35);
+  const slopeDirection = slope > 0 ? "BUY" : slope < 0 ? "SELL" : null;
+
+  let strength = alignmentStrength + 20;
+
+  if (slopeDirection === direction) {
+    strength += slopeStrength;
+  } else if (slopeDirection) {
+    strength -= Math.min(25, slopeStrength);
+  }
+
+  return {
+    direction,
+    strength: clamp(strength, 0, 100),
+  };
 }
 
 function decayWeights(arr) {
@@ -884,25 +974,33 @@ function analyzeBehavioralArbitration({
   progressiveContinuation,
   structuralContinuation,
 }) {
+  const liquiditySweepQuality = validation.liquiditySweepQuality || 0;
+  const structuralReclaimQuality = validation.structuralReclaimQuality || 0;
+
   // ==============================
   // PRIMARY AUTHORITY
   // ==============================
   let primaryAuthority = 0;
 
   // Persistence
-  primaryAuthority += persistenceState.continuationPersistence * 0.3;
+  primaryAuthority += persistenceState.continuationPersistence * 0.25;
 
   // Behavioral survival
-  primaryAuthority += persistenceState.behavioralSurvival * 0.2;
+  primaryAuthority += persistenceState.behavioralSurvival * 0.18;
 
   // Directional commitment
-  primaryAuthority += persistenceState.directionalCommitment * 0.15;
+  primaryAuthority += persistenceState.directionalCommitment * 0.17;
 
   // Setup health
   primaryAuthority += setupHealthState.setupHealth * 0.15;
 
   // Continuation confidence
-  primaryAuthority += continuationState.continuationConfidence * 0.2;
+  primaryAuthority += continuationState.continuationConfidence * 0.17;
+
+  // Candle reclaim quality
+  primaryAuthority += structuralReclaimQuality * 0.08;
+
+  primaryAuthority = clamp(primaryAuthority);
 
   // ==============================
   // SECONDARY AUTHORITY
@@ -910,20 +1008,24 @@ function analyzeBehavioralArbitration({
   let secondaryAuthority = 0;
 
   // Compression quality
-  secondaryAuthority += compressionState.compressionQuality * 0.3;
+  secondaryAuthority += compressionState.compressionQuality * 0.25;
 
   // Expansion readiness
-  secondaryAuthority += validation.expansionReadiness * 0.25;
+  secondaryAuthority += validation.expansionReadiness * 0.2;
 
-  secondaryAuthority += validation.ignitionPressure * 0.15;
+  secondaryAuthority += validation.ignitionPressure * 0.12;
 
-  secondaryAuthority += validation.ignitionConfidence * 0.1;
+  secondaryAuthority += validation.ignitionConfidence * 0.08;
 
   // Reclaim quality
-  secondaryAuthority += continuationState.reclaimQuality * 0.2;
+  secondaryAuthority += continuationState.reclaimQuality * 0.18;
 
   // Structure quality
-  secondaryAuthority += validation.structureQuality * 0.2;
+  secondaryAuthority += validation.structureQuality * 0.14;
+
+  secondaryAuthority += liquiditySweepQuality * 0.1;
+
+  secondaryAuthority += structuralReclaimQuality * 0.1;
 
   // Structural alignment
   if (structureAligned) secondaryAuthority += 15;
@@ -955,7 +1057,11 @@ function analyzeBehavioralArbitration({
 
   if (validation.expansionTriggerActive) triggerAuthority += 50;
 
-  triggerAuthority += validation.expansionTriggerStrength * 0.5;
+  triggerAuthority += validation.expansionTriggerStrength * 0.45;
+
+  triggerAuthority += liquiditySweepQuality * 0.12;
+
+  triggerAuthority += structuralReclaimQuality * 0.12;
 
   // Drift continuation needs
   // less trigger dependency
@@ -1227,6 +1333,7 @@ function detectSwings(memory) {
     return {
       swingHigh: null,
       swingLow: null,
+      swingTimestamp: null,
       detectedHigh: false,
       detectedLow: false,
     };
@@ -1242,28 +1349,36 @@ function detectSwings(memory) {
 
   const right2 = memory[memory.length - 1];
 
+  const highOf = (candle) => numericOr(candle.high, candle.price);
+  const lowOf = (candle) => numericOr(candle.low, candle.price);
+
+  const midHigh = highOf(mid);
+  const midLow = lowOf(mid);
+
   // ==============================
   // SWING HIGH
   // ==============================
   const detectedHigh =
-    mid.price > left1.price &&
-    mid.price > left2.price &&
-    mid.price > right1.price &&
-    mid.price > right2.price;
+    midHigh > highOf(left1) &&
+    midHigh > highOf(left2) &&
+    midHigh > highOf(right1) &&
+    midHigh > highOf(right2);
 
   // ==============================
   // SWING LOW
   // ==============================
   const detectedLow =
-    mid.price < left1.price &&
-    mid.price < left2.price &&
-    mid.price < right1.price &&
-    mid.price < right2.price;
+    midLow < lowOf(left1) &&
+    midLow < lowOf(left2) &&
+    midLow < lowOf(right1) &&
+    midLow < lowOf(right2);
 
   return {
-    swingHigh: detectedHigh ? mid.price : null,
+    swingHigh: detectedHigh ? midHigh : null,
 
-    swingLow: detectedLow ? mid.price : null,
+    swingLow: detectedLow ? midLow : null,
+
+    swingTimestamp: mid.timestamp || null,
 
     detectedHigh,
     detectedLow,
@@ -1407,6 +1522,8 @@ function analyzeAdvancedStructure({
 
       liquiditySweepBullish: false,
       liquiditySweepBearish: false,
+      liquiditySweepQuality: 0,
+      structuralReclaimQuality: 0,
 
       reclaimRejection: false,
 
@@ -1431,6 +1548,19 @@ function analyzeAdvancedStructure({
   const prevLow = lows.at(-2);
 
   const recent = setupMemory.slice(-5);
+  const latest = recent.at(-1);
+  const previous = recent.at(-2);
+  const safeAtr = atr || Math.max(latest?.range || 0, 1);
+  const latestRange = Math.max(latest?.range || 0, safeAtr * 0.05);
+  const latestBody = latest?.body ?? Math.abs((latest?.close || 0) - (latest?.open || 0));
+  const closeLocation =
+    signal === "BUY"
+      ? (latest.close - latest.low) / latestRange
+      : (latest.high - latest.close) / latestRange;
+  const directionalBody =
+    signal === "BUY"
+      ? latest.close > latest.open
+      : latest.close < latest.open;
 
   // ==============================
   // FAILED BOS
@@ -1453,19 +1583,92 @@ function analyzeAdvancedStructure({
   // ==============================
   // LIQUIDITY SWEEP
   // ==============================
-  const liquiditySweepBullish =
-    currentPrice > lastHigh.price && currentPrice < lastHigh.price + atr * 0.15;
+  const recentHigh = Math.max(...recent.map((c) => numericOr(c.high, c.price)));
+  const recentLow = Math.min(...recent.map((c) => numericOr(c.low, c.price)));
+  const highSweepLevel = Math.max(lastHigh.price, prevHigh.price);
+  const lowSweepLevel = Math.min(lastLow.price, prevLow.price);
 
-  const liquiditySweepBearish =
-    currentPrice < lastLow.price && currentPrice > lastLow.price - atr * 0.15;
+  const liquiditySweepBullish = recentHigh > highSweepLevel + safeAtr * 0.02;
+
+  const liquiditySweepBearish = recentLow < lowSweepLevel - safeAtr * 0.02;
+
+  const highSweepReclaimed =
+    liquiditySweepBullish &&
+    latest.close < highSweepLevel &&
+    latest.close < latest.open;
+
+  const lowSweepReclaimed =
+    liquiditySweepBearish &&
+    latest.close > lowSweepLevel &&
+    latest.close > latest.open;
+
+  const alignedSweepReclaim =
+    signal === "BUY" ? lowSweepReclaimed : highSweepReclaimed;
+
+  const alignedSweepDepth =
+    signal === "BUY"
+      ? Math.max(0, lowSweepLevel - recentLow)
+      : Math.max(0, recentHigh - highSweepLevel);
+
+  let liquiditySweepQuality = 0;
+
+  if (alignedSweepReclaim) {
+    liquiditySweepQuality += 35;
+    liquiditySweepQuality += clamp((alignedSweepDepth / safeAtr) * 140, 0, 25);
+    liquiditySweepQuality += clamp(closeLocation * 20, 0, 20);
+    liquiditySweepQuality += clamp((latestBody / latestRange) * 20, 0, 20);
+  } else if (
+    (signal === "BUY" && liquiditySweepBearish) ||
+    (signal === "SELL" && liquiditySweepBullish)
+  ) {
+    liquiditySweepQuality += 15;
+  }
+
+  liquiditySweepQuality = clamp(liquiditySweepQuality);
+
+  // ==============================
+  // STRUCTURAL RECLAIM
+  // ==============================
+  const displacement = Math.abs(latest.close - previous.close) / safeAtr;
+  const closeBeyondPrevious =
+    signal === "BUY"
+      ? latest.close > Math.max(previous.open, previous.close)
+      : latest.close < Math.min(previous.open, previous.close);
+
+  let structuralReclaimQuality = 0;
+
+  if (directionalBody) structuralReclaimQuality += 30;
+
+  if (latest.delta && (signal === "BUY" ? latest.delta > 0 : latest.delta < 0)) {
+    structuralReclaimQuality += 20;
+  }
+
+  if (closeBeyondPrevious) structuralReclaimQuality += 20;
+
+  structuralReclaimQuality += clamp(closeLocation * 15, 0, 15);
+
+  structuralReclaimQuality += clamp(displacement * 40, 0, 15);
+
+  if (alignedSweepReclaim) structuralReclaimQuality += 10;
+
+  structuralReclaimQuality = clamp(structuralReclaimQuality);
 
   // ==============================
   // RECLAIM REJECTION
   // ==============================
-  const reclaimRejection =
+  const deltaFlipRejected =
     signal === "BUY"
       ? recent.at(-1).delta < 0 && recent.at(-2).delta > 0
       : recent.at(-1).delta > 0 && recent.at(-2).delta < 0;
+
+  const failedAlignedSweep =
+    signal === "BUY"
+      ? liquiditySweepBearish && !lowSweepReclaimed
+      : liquiditySweepBullish && !highSweepReclaimed;
+
+  const reclaimRejection =
+    failedAlignedSweep ||
+    (deltaFlipRejected && structuralReclaimQuality < 35);
 
   // ==============================
   // TRAPPED CONTINUATION
@@ -1477,38 +1680,58 @@ function analyzeAdvancedStructure({
   // STRUCTURAL COMPRESSION
   // ==============================
   const recentRange =
-    Math.max(...recent.map((c) => c.price)) -
-    Math.min(...recent.map((c) => c.price));
+    Math.max(...recent.map((c) => numericOr(c.high, c.price))) -
+    Math.min(...recent.map((c) => numericOr(c.low, c.price)));
 
-  const structuralCompression = recentRange < atr * 0.45;
+  const structuralCompression = recentRange < safeAtr * 0.45;
 
   // ==============================
   // STRUCTURE QUALITY
   // ==============================
-  let structureQuality = 50;
+  const alignedBOS =
+    (signal === "BUY" && swingStructure.bullishBOS) ||
+    (signal === "SELL" && swingStructure.bearishBOS);
+
+  const opposingBOS =
+    (signal === "BUY" && swingStructure.bearishBOS) ||
+    (signal === "SELL" && swingStructure.bullishBOS);
+
+  let structureQuality = 45;
 
   // Positive
-  if (swingStructure.bullishBOS || swingStructure.bearishBOS) {
-    structureQuality += 20;
+  if (alignedBOS) {
+    structureQuality += 18;
+  } else if (opposingBOS) {
+    structureQuality -= 18;
   }
 
   if (swingStructure.structureBreakStrength > 0.8) {
-    structureQuality += 15;
+    structureQuality += alignedBOS ? 12 : 4;
   }
+
+  structureQuality += liquiditySweepQuality * 0.25;
+
+  structureQuality += structuralReclaimQuality * 0.2;
 
   // Negative
   if (failedBullishBOS || failedBearishBOS) {
-    structureQuality -= 30;
+    structureQuality -= opposingBOS ? 30 : 18;
   }
 
   if (weakBullishBreakout || weakBearishBreakout) {
-    structureQuality -= 15;
+    structureQuality -= alignedBOS ? 10 : 15;
   }
 
   if (trappedContinuation) structureQuality -= 20;
 
+  if (reclaimRejection) structureQuality -= 12;
+
+  if (structuralCompression && structuralReclaimQuality < 35) {
+    structureQuality -= 8;
+  }
+
   // Clamp
-  structureQuality = Math.max(0, Math.min(100, structureQuality));
+  structureQuality = clamp(structureQuality);
 
   return {
     failedBullishBOS,
@@ -1519,6 +1742,8 @@ function analyzeAdvancedStructure({
 
     liquiditySweepBullish,
     liquiditySweepBearish,
+    liquiditySweepQuality,
+    structuralReclaimQuality,
 
     reclaimRejection,
 
@@ -1761,6 +1986,7 @@ function analyzeExpansionTrigger({
   impulseAnalysis,
   ignitionState,
   atr,
+  signal,
 }) {
   if (setupMemory.length < 5) {
     return {
@@ -1782,24 +2008,44 @@ function analyzeExpansionTrigger({
 
   const prev = recent[recent.length - 2];
 
+  const directionalMove =
+    signal === "BUY" ? latest.delta > 0 : latest.delta < 0;
+
+  const avgRange =
+    setupMemory.reduce((sum, c) => sum + (c.range || 0), 0) /
+    setupMemory.length;
+
+  const bodyRatio =
+    latest.range > 0 ? (latest.body || 0) / latest.range : 0;
+
+  const directionalBody =
+    signal === "BUY"
+      ? latest.close > latest.open
+      : latest.close < latest.open;
+
   // ==============================
   // DISPLACEMENT
   // ==============================
   const displacementDetected =
-    Math.abs(latest.delta) > Math.max(avgDelta * 1.8, (atr || 1) * 0.25);
+    directionalMove &&
+    directionalBody &&
+    (Math.abs(latest.delta) > Math.max(avgDelta * 1.6, (atr || 1) * 0.2) ||
+      ((latest.range || 0) > avgRange * 1.15 && bodyRatio > 0.45));
 
   // ==============================
   // ACCELERATION
   // ==============================
   const acceleration = Math.abs(latest.delta) - Math.abs(prev.delta);
 
-  const accelerationDetected = acceleration > avgDelta * 0.5;
+  const accelerationDetected = directionalMove && acceleration > avgDelta * 0.5;
 
   // ==============================
   // VOLATILITY RELEASE
   // ==============================
   const volatilityReleaseDetected =
-    compressionState.constructiveCompression && impulseAnalysis.explosiveMove;
+    directionalMove &&
+    compressionState.constructiveCompression &&
+    impulseAnalysis.explosiveMove;
 
   // ==============================
   // TRIGGER STRENGTH
@@ -1898,6 +2144,8 @@ function reset() {
 
     liquiditySweepBullish: false,
     liquiditySweepBearish: false,
+    liquiditySweepQuality: 0,
+    structuralReclaimQuality: 0,
 
     reclaimRejection: false,
 
@@ -1960,6 +2208,10 @@ function reset() {
   state.priceHistory = [];
 
   state.trendPriceHistory = [];
+
+  state.m15Trend = null;
+
+  state.m15TrendStrength = 0;
 
   state.bestScore = 0;
 
@@ -2071,6 +2323,7 @@ function computeTrendScore(memory, context) {
     ema200,
     price,
     m15Trend, // "BUY" or "SELL"
+    m15TrendStrength,
     signal,
   } = context;
 
@@ -2143,14 +2396,13 @@ function computeTrendScore(memory, context) {
   // 3. HTF CONFIRMATION (0–10)
   // ==============================
   let htfScore = 0;
-  console.log("[HTF]", state.m15Trend);
 
   if (!m15Trend) {
     htfScore = 5; // neutral fallback
   } else if (m15Trend === signal) {
-    htfScore = 10;
+    htfScore = 7 + Math.min(3, (m15TrendStrength || 0) / 35);
   } else {
-    htfScore = 2;
+    htfScore = Math.max(1, 4 - (m15TrendStrength || 0) / 35);
   }
 
   // ==============================
@@ -2229,7 +2481,16 @@ function computeTrendScore(memory, context) {
 }
 
 function computeSetupScore(memory, context) {
-  const { signal, price, ema50, atr } = context;
+  const {
+    signal,
+    price,
+    ema50,
+    atr,
+    structureQuality = 0,
+    liquiditySweepQuality = 0,
+    structuralReclaimQuality = 0,
+    reclaimRejection = false,
+  } = context;
 
   if (!memory.length) return 0;
 
@@ -2291,8 +2552,16 @@ function computeSetupScore(memory, context) {
   let structureBonus = 0;
 
   if (opposingMoves.length >= 2 && confirmationScore >= 6) {
-    structureBonus = 3;
+    structureBonus += 2;
   }
+
+  structureBonus += clamp((structureQuality - 45) / 12, -3, 5);
+
+  structureBonus += clamp(liquiditySweepQuality / 22, 0, 4);
+
+  structureBonus += clamp(structuralReclaimQuality / 25, 0, 4);
+
+  if (reclaimRejection) structureBonus -= 4;
 
   const total =
     locationScore + behaviorScore + confirmationScore + structureBonus;
@@ -2302,6 +2571,10 @@ function computeSetupScore(memory, context) {
     behaviorScore,
     confirmationScore,
     structureBonus,
+    structureQuality,
+    liquiditySweepQuality,
+    structuralReclaimQuality,
+    reclaimRejection,
     total,
   });
 
@@ -2309,7 +2582,13 @@ function computeSetupScore(memory, context) {
 }
 
 function computeMomentumScore(memory, context) {
-  const { signal, atr } = context;
+  const {
+    signal,
+    atr,
+    liquiditySweepQuality = 0,
+    structuralReclaimQuality = 0,
+    reclaimRejection = false,
+  } = context;
 
   if (memory.length < 4) return 0;
 
@@ -2412,6 +2691,25 @@ function computeMomentumScore(memory, context) {
   }
 
   // ==============================
+  // 7. STRUCTURAL MOMENTUM BONUS
+  // ==============================
+  let structuralMomentumBonus = 0;
+
+  if (structuralReclaimQuality >= 65 && reversalScore >= 6) {
+    structuralMomentumBonus += 4;
+  } else if (structuralReclaimQuality >= 45 && reversalScore >= 6) {
+    structuralMomentumBonus += 2;
+  }
+
+  if (liquiditySweepQuality >= 65) {
+    structuralMomentumBonus += 3;
+  }
+
+  if (reclaimRejection) {
+    structuralMomentumBonus -= 5;
+  }
+
+  // ==============================
   // FINAL SCORE
   // ==============================
   const total =
@@ -2420,7 +2718,8 @@ function computeMomentumScore(memory, context) {
     reversalScore +
     noiseScore +
     progressionScore +
-    accelerationBonus;
+    accelerationBonus +
+    structuralMomentumBonus;
 
   console.log("[MOMENTUM V2]", {
     pullbackScore,
@@ -2429,6 +2728,7 @@ function computeMomentumScore(memory, context) {
     noiseScore,
     progressionScore,
     accelerationBonus,
+    structuralMomentumBonus,
 
     acceleration: progression.acceleration.toFixed(2),
 
@@ -2500,6 +2800,16 @@ function strategyEngine(ctx) {
     return { action: null };
   }
 
+  const htfTrend = deriveM15Trend(ctx, {
+    ema50,
+    ema200,
+    atr,
+  });
+
+  state.m15Trend = htfTrend.direction;
+
+  state.m15TrendStrength = htfTrend.strength;
+
   // ==============================
   // IDLE → TREND
   // ==============================
@@ -2562,6 +2872,7 @@ function strategyEngine(ctx) {
       priceDistance: Math.abs(price - ema50),
       bbWidth: bollinger.width || 0,
       delta: trendDelta,
+      timestamp: getTimestamp(ctx),
     });
 
     console.log("[TREND]", {
@@ -2612,7 +2923,9 @@ function strategyEngine(ctx) {
         ema50,
         ema200,
         price,
-        m15Trend: state.m15Trend, // make sure you're storing this
+        atr,
+        m15Trend: state.m15Trend,
+        m15TrendStrength: state.m15TrendStrength,
         signal: state.signal,
       });
 
@@ -2655,13 +2968,12 @@ function strategyEngine(ctx) {
 
     const delta = computeSmoothedDelta(price, state.priceHistory, 4);
 
-    state.memory.setup.push({
+    state.memory.setup.push(buildSetupMemoryPoint(ctx, {
       price,
       ema50,
       delta,
-      weight: 1,
       timestamp: getTimestamp(ctx),
-    });
+    }));
 
     trim(state.memory.setup);
 
@@ -2794,7 +3106,7 @@ function strategyEngine(ctx) {
     if (swingState.detectedHigh) {
       state.swingStructure.highs.push({
         price: swingState.swingHigh,
-        timestamp: getTimestamp(ctx),
+        timestamp: swingState.swingTimestamp || getTimestamp(ctx),
       });
 
       trim(state.swingStructure.highs, CONFIG.SWING_MEMORY_LIMIT);
@@ -2805,7 +3117,7 @@ function strategyEngine(ctx) {
     if (swingState.detectedLow) {
       state.swingStructure.lows.push({
         price: swingState.swingLow,
-        timestamp: getTimestamp(ctx),
+        timestamp: swingState.swingTimestamp || getTimestamp(ctx),
       });
 
       trim(state.swingStructure.lows, CONFIG.SWING_MEMORY_LIMIT);
@@ -2887,6 +3199,8 @@ function strategyEngine(ctx) {
       ignitionState,
 
       atr,
+
+      signal: state.signal,
     });
 
     state.validation = {
@@ -2934,6 +3248,11 @@ function strategyEngine(ctx) {
       liquiditySweepBullish: state.validation.liquiditySweepBullish,
 
       liquiditySweepBearish: state.validation.liquiditySweepBearish,
+
+      liquiditySweepQuality: state.validation.liquiditySweepQuality.toFixed(2),
+
+      structuralReclaimQuality:
+        state.validation.structuralReclaimQuality.toFixed(2),
 
       reclaimRejection: state.validation.reclaimRejection,
 
@@ -3127,6 +3446,12 @@ function strategyEngine(ctx) {
       console.log("[SETUP INVALIDATED] Structural trap", {
         structureQuality: state.validation.structureQuality.toFixed(2),
 
+        liquiditySweepQuality:
+          state.validation.liquiditySweepQuality.toFixed(2),
+
+        structuralReclaimQuality:
+          state.validation.structuralReclaimQuality.toFixed(2),
+
         trappedContinuation: state.validation.trappedContinuation,
 
         reclaimRejection: state.validation.reclaimRejection,
@@ -3200,17 +3525,20 @@ function strategyEngine(ctx) {
       state.signal === "BUY" ? last.delta > 0 : last.delta < 0;
 
     const progressiveContinuation =
-      (continuationState.continuationConfidence > 45 &&
+      !state.validation.reclaimRejection &&
+      ((continuationState.continuationConfidence > 45 &&
         continuationState.reclaimQuality > 30) ||
-      state.validation.continuationPersistence > 60 ||
-      state.validation.behavioralSurvival > 55;
+        state.validation.continuationPersistence > 60 ||
+        state.validation.behavioralSurvival > 55);
 
     const expansionContinuation = state.validation.expansionTriggerActive;
 
     const structuralContinuation =
       (driftState.directionalDrift && driftState.staircaseTrend) ||
       compressionState.compressionClassification === "TREND_DRIFT" ||
-      state.validation.continuationPersistence > 70;
+      state.validation.continuationPersistence > 70 ||
+      (state.validation.structuralReclaimQuality >= 60 &&
+        state.validation.structureQuality >= 45);
 
     const structureAligned =
       (state.signal === "BUY" &&
@@ -3482,6 +3810,10 @@ function strategyEngine(ctx) {
           price,
           ema50,
           atr,
+          structureQuality: state.validation.structureQuality,
+          liquiditySweepQuality: state.validation.liquiditySweepQuality,
+          structuralReclaimQuality: state.validation.structuralReclaimQuality,
+          reclaimRejection: state.validation.reclaimRejection,
         }) + impulseBonus;
 
       // HARD FILTER
@@ -3497,11 +3829,18 @@ function strategyEngine(ctx) {
         price,
         ema50,
         atr,
+        structureQuality: state.validation.structureQuality,
+        liquiditySweepQuality: state.validation.liquiditySweepQuality,
+        structuralReclaimQuality: state.validation.structuralReclaimQuality,
+        reclaimRejection: state.validation.reclaimRejection,
       });
 
       const momentumScore = computeMomentumScore(state.memory.setup, {
         signal: state.signal,
         atr,
+        liquiditySweepQuality: state.validation.liquiditySweepQuality,
+        structuralReclaimQuality: state.validation.structuralReclaimQuality,
+        reclaimRejection: state.validation.reclaimRejection,
       });
 
       state.lockedScores.setup = setupScore;
@@ -3576,6 +3915,35 @@ function strategyEngine(ctx) {
           action: "ENTER",
           score: totalScore,
           signal: state.signal,
+          entry: {
+            reason: behavioralQualified
+              ? scoreQualified
+                ? "BEHAVIORAL_AND_SCORE"
+                : "BEHAVIORAL"
+              : "SCORE",
+            behavioralQualified,
+            scoreQualified,
+            scores: {
+              trend: state.lockedScores.trend,
+              setup: setupScore,
+              momentum: momentumScore,
+              final: totalScore,
+            },
+            behavioral: {
+              arbitrationScore: state.validation.behavioralArbitrationScore,
+              primaryAuthority: state.validation.primaryAuthority,
+              secondaryAuthority: state.validation.secondaryAuthority,
+              triggerAuthority: state.validation.triggerAuthority,
+              expansionReadiness: state.validation.expansionReadiness,
+              expansionTriggerActive: state.validation.expansionTriggerActive,
+              structureQuality: state.validation.structureQuality,
+              liquiditySweepQuality: state.validation.liquiditySweepQuality,
+              structuralReclaimQuality:
+                state.validation.structuralReclaimQuality,
+              trappedContinuation: state.validation.trappedContinuation,
+              reclaimRejection: state.validation.reclaimRejection,
+            },
+          },
         };
       }
 
