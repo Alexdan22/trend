@@ -445,11 +445,16 @@ function calculateStochastic(candles, period = 14) {
 
 // Preload recent M5 candles on startup for ATR and regime evaluation
 
+function getLatestHistoricalM5(limit = 700) {
+  // MetaApi serializes null as startTime=, which the API rejects.
+  return account.getHistoricalCandles(SYMBOL, "5m", undefined, limit);
+}
+
 async function preloadHistoricalM5() {
   try {
     console.log("[HISTORY] Loading M5 history...");
 
-    const history = await account.getHistoricalCandles(SYMBOL, "5m", null, 700);
+    const history = await getLatestHistoricalM5();
 
     if (!history?.length) {
       console.warn("[HISTORY] No M5 candles returned");
@@ -511,7 +516,7 @@ function bootstrapM15FromM5() {
 }
 
 async function backfillHistoricalData() {
-  const history = await account.getHistoricalCandles(SYMBOL, "5m", null, 700);
+  const history = await getLatestHistoricalM5();
   if (!history?.length) return;
 
   const existingTimes = new Set(candles_5m.map((c) => c.time));
@@ -2374,18 +2379,22 @@ async function startBot() {
       CONNECTION_STATE.watchdogsStarted = true;
 
       WATCHDOG_INTERVALS.coldStart = setInterval(async () => {
-        if (
-          coldStartMode &&
-          Date.now() - coldStartStartedAt >= COLD_START_DURATION
-        ) {
-          console.log(
-            "[COLD START] 1hr completed → Fetching historical backfill",
-          );
+        try {
+          if (
+            coldStartMode &&
+            Date.now() - coldStartStartedAt >= COLD_START_DURATION
+          ) {
+            console.log(
+              "[COLD START] 1hr completed → Fetching historical backfill",
+            );
 
-          await backfillHistoricalData();
+            await backfillHistoricalData();
 
-          coldStartMode = false;
-          console.log("[COLD START] Backfill done → Strategy Activated");
+            coldStartMode = false;
+            console.log("[COLD START] Backfill done → Strategy Activated");
+          }
+        } catch (e) {
+          console.error("[COLD START] Backfill failed:", e.message || e);
         }
       }, 10_000);
 
