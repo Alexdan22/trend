@@ -24,6 +24,7 @@ const {
   createUserFromPending,
   getAccountsByUser
 } = require("./models");
+const { buildTradeReport } = require("./services/reporting/reportBuilder");
 
 
 const token = process.env.TELEGRAM_BOT_TOKEN;
@@ -49,6 +50,9 @@ const COMMANDS = {
     { cmd: "/status", desc: "View trading account status" },
     { cmd: "/pause", desc: "Pause trading for the account" },
     { cmd: "/resume", desc: "Resume trading for the account" },
+    { cmd: "/report_daily", desc: "Send today's strategy report" },
+    { cmd: "/report_weekly", desc: "Send this week's strategy report" },
+    { cmd: "/report_monthly", desc: "Send this month's strategy report" },
 
     { cmd: "/pending_users", desc: "List users awaiting approval" },
     { cmd: "/approve_user <telegramId>", desc: "Approve a pending user" },
@@ -97,6 +101,30 @@ function renderHelp(role) {
   }
 
   return text;
+}
+
+async function sendLongMessage(bot, chatId, text, limit = 3900) {
+  if (text.length <= limit) {
+    return bot.sendMessage(chatId, text);
+  }
+
+  let remaining = text;
+
+  while (remaining.length > limit) {
+    const index = remaining.lastIndexOf("\n", limit);
+    const splitAt = index > 1000 ? index : limit;
+    await bot.sendMessage(chatId, remaining.slice(0, splitAt));
+    remaining = remaining.slice(splitAt).trimStart();
+  }
+
+  if (remaining) {
+    await bot.sendMessage(chatId, remaining);
+  }
+}
+
+async function sendManualReport(bot, chatId, period) {
+  const { message } = await buildTradeReport(period);
+  return sendLongMessage(bot, chatId, message);
 }
 
 async function initTelegramBot() {
@@ -305,6 +333,24 @@ bot.on("message", async (msg) => {
                 `• Paused: ${account.userPaused ? "⏸️ Yes" : "▶️ No"}\n\n` +
                 `State:\n${account.status}`
             );
+        }
+
+        case "/report_daily": {
+            requireRole(tgUser, ["ADMIN"]);
+            await bot.sendMessage(chatId, "Building daily strategy report...");
+            return sendManualReport(bot, chatId, "daily");
+        }
+
+        case "/report_weekly": {
+            requireRole(tgUser, ["ADMIN"]);
+            await bot.sendMessage(chatId, "Building weekly strategy report...");
+            return sendManualReport(bot, chatId, "weekly");
+        }
+
+        case "/report_monthly": {
+            requireRole(tgUser, ["ADMIN"]);
+            await bot.sendMessage(chatId, "Building monthly strategy report...");
+            return sendManualReport(bot, chatId, "monthly");
         }
 
         case "/pending_users": {

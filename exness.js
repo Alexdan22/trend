@@ -57,6 +57,7 @@ const RAW_ORDERS_LOG = "/tmp/raw_order_responses.log";
 const { connectDB } = require("./db");
 const { loadOpenPairs, saveTrade } = require("./models");
 const { initTelegramBot, getBot } = require("./telegram");
+const { startReportScheduler } = require("./services/reporting/reportScheduler");
 const { initSymbol } = require("./src/core/symbolRegistry");
 const { updatePrice } = require("./src/core/symbolRegistry");
 const { getContext } = require("./src/core/symbolRegistry");
@@ -112,6 +113,7 @@ const WATCHDOG_INTERVALS = {
   freeze: null,
   reconnect: null,
   health: null,
+  reports: null,
 };
 
 // --------------------- CONFIG ---------------------
@@ -122,6 +124,7 @@ initSymbol(SYMBOL);
 const MIN_LOT = 0.01; // minimum lot size per broker
 // ---------------- LOT SIZING ----------------
 let FIXED_LOT = 0.02; // default lot size for ALL trades
+const CONTRACT_SIZE = Number(process.env.CONTRACT_SIZE || 100);
 
 // global map to track idempotency
 const ticketOwnershipMap = new Map(); // ticket -> pairId
@@ -184,12 +187,59 @@ async function sendTelegramPhoto(imageBuffer, caption = "") {
   }
 }
 
-async function sendTradeChartAlert({ event, rec, score = null }) {
+function candleIndexAtOrBefore(candles, timestamp) {
+  if (!Number.isFinite(timestamp)) return -1;
+
+  let index = -1;
+
+  for (let i = 0; i < candles.length; i++) {
+    const candleTime = Number(candles[i]?.time);
+    if (!Number.isFinite(candleTime)) continue;
+    if (candleTime <= timestamp) index = i;
+    else break;
+  }
+
+  return index;
+}
+
+function selectSnapshotCandles(rec, event) {
+  const normalizedEvent = String(event || "").toUpperCase();
+  const maxCandles = normalizedEvent === "ENTRY" ? 42 : 90;
+
+  if (normalizedEvent === "ENTRY" || !rec?.entryTimestamp) {
+    return candles_5m.slice(-maxCandles);
+  }
+
+  const entryIndex = candleIndexAtOrBefore(candles_5m, Number(rec.entryTimestamp));
+
+  if (entryIndex < 0) {
+    return candles_5m.slice(-maxCandles);
+  }
+
+  const contextBeforeEntry = 8;
+  let start = Math.max(0, entryIndex - contextBeforeEntry);
+
+  if (candles_5m.length - start > maxCandles) {
+    start = Math.max(0, candles_5m.length - maxCandles);
+  }
+
+  return candles_5m.slice(start);
+}
+
+async function sendTradeChartAlert({
+  event,
+  rec,
+  score = null,
+  exitPrice = null,
+  exitTime = Date.now(),
+}) {
   try {
     const { buffer, caption } = await captureTradeSnapshot({
       event,
       rec,
-      candles: candles_5m.slice(-70),
+      candles: selectSnapshotCandles(rec, event),
+      exitPrice,
+      exitTime,
     });
 
     await sendTelegramPhoto(buffer, caption);
@@ -600,6 +650,57 @@ async function transitionPairState(rec, nextState, reason = null) {
   return true;
 }
 
+function calculateTradePnL(side, entryPrice, exitPrice, lot) {
+  const entry = Number(entryPrice);
+  const exit = Number(exitPrice);
+  const volume = Number(lot);
+
+  if (![entry, exit, volume].every(Number.isFinite)) return 0;
+
+  const movement = side === "BUY" ? exit - entry : entry - exit;
+  return movement * volume * CONTRACT_SIZE;
+}
+
+function markPartialOutcome(rec, exitPrice, exitTime = Date.now()) {
+  const lot = Number(rec.lotEach || rec.trades?.PARTIAL?.lot || 0);
+
+  rec.partialExitPrice = Number(exitPrice);
+  rec.partialClosedAt = new Date(exitTime);
+  rec.partialPnL = calculateTradePnL(
+    rec.side,
+    rec.entryPrice,
+    rec.partialExitPrice,
+    lot,
+  );
+}
+
+function markFinalOutcome(rec, reason, exitPrice, exitTime = Date.now()) {
+  const exit = Number(exitPrice);
+  const lotEach = Number(rec.lotEach || rec.totalLot / 2 || 0);
+  const totalLot = Number(rec.totalLot || lotEach * 2 || 0);
+  const hasRecordedPartial =
+    rec.partialClosed && Number.isFinite(Number(rec.partialPnL));
+  const partialPnL = hasRecordedPartial ? Number(rec.partialPnL) : 0;
+  const remainingLot = hasRecordedPartial ? lotEach : totalLot;
+  const remainingPnL = calculateTradePnL(
+    rec.side,
+    rec.entryPrice,
+    exit,
+    remainingLot,
+  );
+  const realizedPnL = partialPnL + remainingPnL;
+  const riskPerFullTrade =
+    Math.abs(Number(rec.entryPrice) - Number(rec.sl)) *
+    totalLot *
+    CONTRACT_SIZE;
+
+  rec.exitPrice = exit;
+  rec.exitAt = new Date(exitTime);
+  rec.closingReason = reason;
+  rec.realizedPnL = realizedPnL;
+  rec.realizedR = riskPerFullTrade > 0 ? realizedPnL / riskPerFullTrade : 0;
+}
+
 function buildTradeSnapshot(rec) {
   // --- normalize openedAt safely ---
   const openedAt =
@@ -612,22 +713,55 @@ function buildTradeSnapshot(rec) {
   }
 
   const pnl = rec.realizedPnL ?? 0;
+  const closedAt =
+    rec.exitAt instanceof Date
+      ? rec.exitAt
+      : rec.closedAt
+        ? new Date(rec.closedAt)
+        : new Date();
+  const durationSec = Math.floor(
+    (closedAt.getTime() - openedAt.getTime()) / 1000,
+  );
+  const plannedRisk =
+    Math.abs(Number(rec.entryPrice) - Number(rec.sl)) *
+    Number(rec.totalLot || 0) *
+    CONTRACT_SIZE;
+  const plannedReward =
+    Math.abs(Number(rec.tp) - Number(rec.entryPrice)) *
+    Number(rec.totalLot || 0) *
+    CONTRACT_SIZE;
 
   return {
     tradeId: rec.pairId,
-    accountId: rec.accountId,
+    accountId: rec.accountId || process.env.METAAPI_ACCOUNT_ID,
     userId: rec.userId,
     side: rec.side,
     category: rec.category,
-    symbol: rec.symbol,
+    symbol: rec.symbol || SYMBOL,
+    entryScore: rec.entryScore,
+    entryReason: rec.entryReason,
+    entryMeta: rec.entryMeta,
     entryPrice: rec.entryPrice,
     exitPrice: rec.exitPrice,
+    sl: rec.sl,
+    tp: rec.tp,
     lot: rec.totalLot,
+    lotEach: rec.lotEach,
     grossPnL: pnl,
     netPnL: pnl,
     openedAt,
-    closedAt: new Date(),
-    durationSec: Math.floor((Date.now() - openedAt.getTime()) / 1000),
+    closedAt,
+    durationSec: Math.max(0, durationSec),
+    closingReason: rec.closingReason,
+    partialClosed: Boolean(rec.partialClosed),
+    partialExitPrice: rec.partialExitPrice,
+    partialClosedAt: rec.partialClosedAt,
+    partialPnL: rec.partialPnL,
+    breakEvenActive: Boolean(rec.breakEvenActive),
+    plannedRisk,
+    plannedReward,
+    plannedRR: plannedRisk > 0 ? plannedReward / plannedRisk : null,
+    realizedR: rec.realizedR,
     result: pnl > 0 ? "WIN" : pnl < 0 ? "LOSS" : "BE",
   };
 }
@@ -987,7 +1121,7 @@ async function placePairedOrder(side, totalLot, slPrice, tpPrice, riskPercent) {
   }
 }
 
-async function processStrategyEntry(side, score = null) {
+async function processStrategyEntry(side, score = null, entryMeta = null) {
   if (isEntryLocked()) {
     console.log("[ENTRY] ⛔ Blocked — entry lock active");
     return;
@@ -1054,6 +1188,9 @@ async function processStrategyEntry(side, score = null) {
     openPairs[prePair.pairId].sl = sl;
     openPairs[prePair.pairId].tp = tp;
     openPairs[prePair.pairId].slDistance = slDistance;
+    openPairs[prePair.pairId].entryScore = score;
+    openPairs[prePair.pairId].entryReason = entryMeta?.reason || null;
+    openPairs[prePair.pairId].entryMeta = entryMeta || null;
 
     // ---- SAVE TO DB ----
     const { savePair } = require("./models");
@@ -1215,6 +1352,7 @@ async function processTickForOpenPairs(price) {
           // 🔸 PARTIAL at 50% of TP distance
           if (progress >= 0.5) {
             await safeClosePosition(partialRec.ticket, partialRec.lot);
+            markPartialOutcome(rec, current, price.timestamp || Date.now());
             rec.partialClosed = true;
             rec.trades.PARTIAL.ticket = null;
 
@@ -1227,6 +1365,8 @@ async function processTickForOpenPairs(price) {
             sendTradeChartAlert({
               event: "PARTIAL",
               rec,
+              exitPrice: current,
+              exitTime: price.timestamp || Date.now(),
             }).catch((err) => console.error("[PARTIAL SNAPSHOT]", err));
           }
         }
@@ -1239,6 +1379,8 @@ async function processTickForOpenPairs(price) {
           (side === "SELL" && current <= rec.tp);
 
         if (tpHit) {
+          markFinalOutcome(rec, "TP_HIT", rec.tp, price.timestamp || Date.now());
+
           console.log(`[TP-EVAL] ${pairId}`, {
             current,
             tp: rec.tp,
@@ -1258,6 +1400,8 @@ async function processTickForOpenPairs(price) {
           await sendTradeChartAlert({
             event: "TP",
             rec,
+            exitPrice: rec.tp,
+            exitTime: price.timestamp || Date.now(),
           });
 
           // 🧹 FINALIZE AFTER NOTIFICATION
@@ -1274,6 +1418,13 @@ async function processTickForOpenPairs(price) {
           (side === "SELL" && current >= rec.internalSL);
 
         if (beHit) {
+          markFinalOutcome(
+            rec,
+            "BREAK_EVEN",
+            rec.internalSL,
+            price.timestamp || Date.now(),
+          );
+
           console.log(`[BE-EVAL] ${pairId}`, {
             current,
             internalSL: rec.internalSL,
@@ -1291,6 +1442,8 @@ async function processTickForOpenPairs(price) {
           await sendTradeChartAlert({
             event: "BREAK_EVEN",
             rec,
+            exitPrice: rec.internalSL,
+            exitTime: price.timestamp || Date.now(),
           });
 
           finalizePair(pairId, "BREAK_EVEN");
@@ -1307,6 +1460,13 @@ async function processTickForOpenPairs(price) {
           (side === "SELL" && current >= effectiveSL);
 
         if (slHit) {
+          markFinalOutcome(
+            rec,
+            "STOP_LOSS",
+            effectiveSL,
+            price.timestamp || Date.now(),
+          );
+
           console.log(`[SL-EVAL] ${pairId}`, {
             current,
             effectiveSL,
@@ -1330,6 +1490,8 @@ async function processTickForOpenPairs(price) {
           await sendTradeChartAlert({
             event: "STOP_LOSS",
             rec,
+            exitPrice: effectiveSL,
+            exitTime: price.timestamp || Date.now(),
           });
 
           finalizePair(pairId, "STOP_LOSS");
@@ -1569,7 +1731,11 @@ async function handleTick(tick) {
             const result = strategyEngine(ctx);
 
             if (result?.action === "ENTER") {
-              await processStrategyEntry(result.signal, result.score);
+              await processStrategyEntry(
+                result.signal,
+                result.score,
+                result.entry,
+              );
 
               resetStrategyEngine();
             }
@@ -2194,6 +2360,10 @@ async function stagedRecovery() {
 async function startBot() {
   const { setTimeout: delay } = require("timers/promises");
   await initTelegramBot();
+
+  if (!WATCHDOG_INTERVALS.reports) {
+    WATCHDOG_INTERVALS.reports = startReportScheduler({ sendTelegram });
+  }
 
   // basic validation
   if (!process.env.METAAPI_TOKEN || !process.env.METAAPI_ACCOUNT_ID) {

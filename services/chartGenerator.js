@@ -13,11 +13,16 @@ const COLORS = {
   muted: "#787b86",
   green: "#26a69a",
   greenSoft: "rgba(38, 166, 154, 0.38)",
+  greenZone: "rgba(38, 166, 154, 0.16)",
+  greenZoneStrong: "rgba(38, 166, 154, 0.26)",
   red: "#ef5350",
   redSoft: "rgba(239, 83, 80, 0.38)",
+  redZone: "rgba(239, 83, 80, 0.14)",
+  redZoneStrong: "rgba(239, 83, 80, 0.26)",
   blue: "#2962ff",
   white: "#e5e7eb",
   amber: "#f5c542",
+  amberZone: "rgba(245, 197, 66, 0.18)",
   purple: "#b388ff",
 };
 
@@ -60,8 +65,32 @@ function formatEvent(event) {
   return String(event || "").replace(/_/g, " ");
 }
 
+function normalizeEvent(event) {
+  return String(event || "").toUpperCase();
+}
+
+function isExitEvent(event) {
+  return new Set(["PARTIAL", "TP", "BREAK_EVEN", "STOP_LOSS", "SL"]).has(
+    normalizeEvent(event),
+  );
+}
+
+function parseTimestamp(value) {
+  if (value == null || value === "") return null;
+
+  const numeric = Number(value);
+  if (Number.isFinite(numeric)) return numeric;
+
+  const parsed = new Date(value).getTime();
+  return Number.isFinite(parsed) ? parsed : null;
+}
+
 function formatTime(value) {
   if (!value) return "";
+  if (typeof value === "number" && Number.isFinite(value)) {
+    return new Date(value).toISOString().slice(11, 16);
+  }
+
   if (typeof value === "string" && /^\d{2}:\d{2}/.test(value)) {
     return value.slice(0, 5);
   }
@@ -92,10 +121,13 @@ function roundNice(value) {
   return niceFraction * 10 ** exponent;
 }
 
-function getPriceRange(candles, levels) {
+function getPriceRange(candles, levels, options = {}) {
   const prices = [];
+  const rangeCandles = options.focusCandleCount
+    ? candles.slice(-options.focusCandleCount)
+    : candles;
 
-  for (const candle of candles) {
+  for (const candle of rangeCandles) {
     if (Number.isFinite(candle.high)) prices.push(candle.high);
     if (Number.isFinite(candle.low)) prices.push(candle.low);
   }
@@ -133,6 +165,26 @@ function priceToY(price, minPrice, maxPrice) {
 
 function xForIndex(index, candleWidth) {
   return PLOT.left + index * candleWidth + candleWidth / 2;
+}
+
+function indexForTimestamp(candles, timestamp, fallback) {
+  if (!Number.isFinite(timestamp) || !candles.length) return fallback;
+
+  let bestIndex = fallback;
+  let bestDistance = Infinity;
+
+  for (let i = 0; i < candles.length; i++) {
+    const candleTime = parseTimestamp(candles[i].time);
+    if (!Number.isFinite(candleTime)) continue;
+
+    const distance = Math.abs(candleTime - timestamp);
+    if (distance < bestDistance) {
+      bestDistance = distance;
+      bestIndex = i;
+    }
+  }
+
+  return bestIndex;
 }
 
 function drawRoundedRect(ctx, x, y, width, height, radius) {
@@ -420,7 +472,169 @@ function drawCurrentPriceLine(ctx, price, minPrice, maxPrice) {
   return y;
 }
 
+function partialPriceForTrade(side, entry, tp) {
+  if (!Number.isFinite(entry) || !Number.isFinite(tp)) return null;
+  return entry + (tp - entry) * 0.5;
+}
+
+function resolveExitPrice({ event, side, entry, sl, tp, lastClose, exitPrice }) {
+  const explicitExit = toNumber(exitPrice);
+  if (Number.isFinite(explicitExit)) return explicitExit;
+
+  switch (normalizeEvent(event)) {
+    case "PARTIAL":
+      return partialPriceForTrade(side, entry, tp) ?? lastClose;
+    case "TP":
+      return Number.isFinite(tp) ? tp : lastClose;
+    case "BREAK_EVEN":
+      return Number.isFinite(entry) ? entry : lastClose;
+    case "STOP_LOSS":
+    case "SL":
+      return Number.isFinite(sl) ? sl : lastClose;
+    default:
+      return lastClose;
+  }
+}
+
+function drawZoneRect(ctx, x1, x2, y1, y2, fill, stroke) {
+  const left = Math.max(PLOT.left, Math.min(x1, x2));
+  const right = Math.min(PLOT.right, Math.max(x1, x2));
+  const top = Math.max(PLOT.top, Math.min(y1, y2));
+  const bottom = Math.min(PLOT.bottom, Math.max(y1, y2));
+
+  if (right <= left || bottom <= top) return;
+
+  ctx.fillStyle = fill;
+  ctx.fillRect(left, top, right - left, bottom - top);
+
+  ctx.strokeStyle = stroke;
+  ctx.lineWidth = 1.4;
+  ctx.strokeRect(left, top, right - left, bottom - top);
+}
+
+function drawTradeArea(ctx, {
+  candles,
+  candleWidth,
+  side,
+  event,
+  entry,
+  sl,
+  tp,
+  exitPrice,
+  entryTime,
+  exitTime,
+  minPrice,
+  maxPrice,
+}) {
+  if (!isExitEvent(event)) return;
+  if (!Number.isFinite(entry)) return;
+
+  const entryIndex = indexForTimestamp(
+    candles,
+    parseTimestamp(entryTime),
+    0,
+  );
+  const exitIndex = indexForTimestamp(
+    candles,
+    parseTimestamp(exitTime),
+    candles.length - 1,
+  );
+
+  const entryX = Math.max(
+    PLOT.left,
+    xForIndex(entryIndex, candleWidth) - candleWidth / 2,
+  );
+  const exitX = Math.min(
+    PLOT.right,
+    Math.max(entryX + candleWidth * 1.5, xForIndex(exitIndex, candleWidth) + candleWidth / 2),
+  );
+
+  const entryY = priceToY(entry, minPrice, maxPrice);
+
+  ctx.save();
+
+  if (Number.isFinite(tp)) {
+    const tpY = priceToY(tp, minPrice, maxPrice);
+    drawZoneRect(
+      ctx,
+      entryX,
+      exitX,
+      entryY,
+      tpY,
+      COLORS.greenZone,
+      "rgba(38, 166, 154, 0.44)",
+    );
+  }
+
+  if (Number.isFinite(sl)) {
+    const slY = priceToY(sl, minPrice, maxPrice);
+    drawZoneRect(
+      ctx,
+      entryX,
+      exitX,
+      entryY,
+      slY,
+      COLORS.redZone,
+      "rgba(239, 83, 80, 0.42)",
+    );
+  }
+
+  if (Number.isFinite(exitPrice) && !samePrice(exitPrice, entry, minPrice, maxPrice)) {
+    const exitY = priceToY(exitPrice, minPrice, maxPrice);
+    const profitable =
+      side === "BUY" ? exitPrice > entry : exitPrice < entry;
+
+    drawZoneRect(
+      ctx,
+      entryX,
+      exitX,
+      entryY,
+      exitY,
+      profitable ? COLORS.greenZoneStrong : COLORS.redZoneStrong,
+      profitable ? COLORS.green : COLORS.red,
+    );
+  } else if (normalizeEvent(event) === "BREAK_EVEN") {
+    ctx.fillStyle = COLORS.amberZone;
+    ctx.fillRect(entryX, PLOT.top, exitX - entryX, PLOT.bottom - PLOT.top);
+  }
+
+  ctx.setLineDash([6, 5]);
+  ctx.lineWidth = 1.4;
+  ctx.strokeStyle = COLORS.white;
+  ctx.beginPath();
+  ctx.moveTo(entryX, PLOT.top);
+  ctx.lineTo(entryX, PLOT.bottom);
+  ctx.stroke();
+
+  ctx.setLineDash([]);
+  ctx.strokeStyle =
+    normalizeEvent(event) === "STOP_LOSS" || normalizeEvent(event) === "SL"
+      ? COLORS.red
+      : normalizeEvent(event) === "BREAK_EVEN"
+        ? COLORS.amber
+        : COLORS.green;
+  ctx.lineWidth = 2;
+  ctx.beginPath();
+  ctx.moveTo(exitX, PLOT.top);
+  ctx.lineTo(exitX, PLOT.bottom);
+  ctx.stroke();
+
+  drawText(ctx, "ENTRY", entryX + 6, PLOT.top + 18, {
+    color: COLORS.white,
+    font: "bold 13px Arial",
+  });
+
+  drawText(ctx, formatEvent(event), exitX - 6, PLOT.top + 18, {
+    align: "right",
+    color: ctx.strokeStyle,
+    font: "bold 13px Arial",
+  });
+
+  ctx.restore();
+}
+
 function samePrice(a, b, minPrice, maxPrice) {
+  if (!Number.isFinite(a) || !Number.isFinite(b)) return false;
   return Math.abs(a - b) <= Math.max((maxPrice - minPrice) * 0.0015, 0.01);
 }
 
@@ -473,7 +687,18 @@ function layoutLevelLabels(labels) {
   return sorted;
 }
 
-function drawTradeLevels(ctx, { event, entry, sl, tp, lastClose, minPrice, maxPrice }) {
+function drawTradeLevels(ctx, {
+  event,
+  side,
+  entry,
+  sl,
+  tp,
+  partial,
+  exitPrice,
+  lastClose,
+  minPrice,
+  maxPrice,
+}) {
   const stopLabel = getStopLevelLabel(event, entry, sl, minPrice, maxPrice);
   const levels = [
     { price: tp, color: COLORS.blue, label: "TP", dashed: false },
@@ -485,6 +710,37 @@ function drawTradeLevels(ctx, { event, entry, sl, tp, lastClose, minPrice, maxPr
       dashed: false,
     },
   ];
+
+  if (
+    normalizeEvent(event) === "PARTIAL" &&
+    Number.isFinite(partial) &&
+    !samePrice(partial, tp, minPrice, maxPrice) &&
+    !samePrice(partial, entry, minPrice, maxPrice)
+  ) {
+    levels.push({
+      price: partial,
+      color: COLORS.amber,
+      label: "PARTIAL",
+      dashed: false,
+    });
+  }
+
+  if (
+    isExitEvent(event) &&
+    Number.isFinite(exitPrice) &&
+    !samePrice(exitPrice, tp, minPrice, maxPrice) &&
+    !samePrice(exitPrice, sl, minPrice, maxPrice) &&
+    !samePrice(exitPrice, entry, minPrice, maxPrice) &&
+    !samePrice(exitPrice, partial, minPrice, maxPrice)
+  ) {
+    const profitable = side === "BUY" ? exitPrice > entry : exitPrice < entry;
+    levels.push({
+      price: exitPrice,
+      color: profitable ? COLORS.green : COLORS.red,
+      label: "EXIT",
+      dashed: false,
+    });
+  }
 
   const labels = [];
 
@@ -533,6 +789,9 @@ async function generateTradeChart({
   entryPrice,
   stopLoss,
   takeProfit,
+  exitPrice,
+  entryTime,
+  exitTime,
 }) {
   const normalizedCandles = candles
     .map(normalizeCandle)
@@ -547,12 +806,31 @@ async function generateTradeChart({
   const entry = toNumber(entryPrice);
   const sl = toNumber(stopLoss);
   const tp = toNumber(takeProfit);
+  const partial = partialPriceForTrade(side, entry, tp);
+  const lastClose = normalizedCandles[normalizedCandles.length - 1].close;
+  const resolvedExitPrice = resolveExitPrice({
+    event,
+    side,
+    entry,
+    sl,
+    tp,
+    lastClose,
+    exitPrice,
+  });
 
   const canvas = createCanvas(WIDTH, HEIGHT);
   const ctx = canvas.getContext("2d");
-  const { maxPrice, minPrice } = getPriceRange(normalizedCandles, [entry, sl, tp]);
+  const priceFocusCandleCount = normalizeEvent(event) === "ENTRY" ? 28 : null;
+  const { maxPrice, minPrice } = getPriceRange(normalizedCandles, [
+    entry,
+    sl,
+    tp,
+    partial,
+    resolvedExitPrice,
+  ], {
+    focusCandleCount: priceFocusCandleCount,
+  });
   const candleWidth = (PLOT.right - PLOT.left) / normalizedCandles.length;
-  const lastClose = normalizedCandles[normalizedCandles.length - 1].close;
 
   drawBackground(ctx);
   drawHeader(ctx, {
@@ -566,6 +844,20 @@ async function generateTradeChart({
   });
   drawPriceGrid(ctx, minPrice, maxPrice);
   drawTimeGrid(ctx, normalizedCandles, candleWidth);
+  drawTradeArea(ctx, {
+    candles: normalizedCandles,
+    candleWidth,
+    side,
+    event,
+    entry,
+    sl,
+    tp,
+    exitPrice: resolvedExitPrice,
+    entryTime,
+    exitTime,
+    minPrice,
+    maxPrice,
+  });
   drawWatermark(ctx);
   drawVolume(ctx, normalizedCandles, candleWidth);
   drawLineSeries(ctx, calculateEma(normalizedCandles, 20), candleWidth, minPrice, maxPrice, COLORS.amber);
@@ -574,9 +866,12 @@ async function generateTradeChart({
 
   drawTradeLevels(ctx, {
     event,
+    side,
     entry,
     sl,
     tp,
+    partial,
+    exitPrice: resolvedExitPrice,
     lastClose,
     minPrice,
     maxPrice,

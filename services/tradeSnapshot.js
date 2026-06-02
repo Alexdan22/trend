@@ -1,6 +1,12 @@
 const { generateTradeChart } = require("./chartGenerator");
 
-async function captureTradeSnapshot({ event, rec, candles }) {
+async function captureTradeSnapshot({
+  event,
+  rec,
+  candles,
+  exitPrice = null,
+  exitTime = Date.now(),
+}) {
   const buffer = await generateTradeChart({
     candles,
     side: rec.side,
@@ -9,6 +15,9 @@ async function captureTradeSnapshot({ event, rec, candles }) {
     entryPrice: rec.entryPrice,
     stopLoss: rec.internalSL ?? rec.sl,
     takeProfit: rec.tp,
+    exitPrice,
+    entryTime: rec.entryTimestamp || rec.openedAt,
+    exitTime,
   });
 
   let caption = "";

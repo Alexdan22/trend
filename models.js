@@ -121,6 +121,22 @@ async function getTradesAll(from, to) {
   }).toArray();
 }
 
+async function acquireReportRun(reportKey, period) {
+  const result = await getDB().collection("report_runs").updateOne(
+    { reportKey },
+    {
+      $setOnInsert: {
+        reportKey,
+        period,
+        createdAt: new Date()
+      }
+    },
+    { upsert: true }
+  );
+
+  return result.upsertedCount === 1;
+}
+
 
 // ---------------- TELEGRAM USER MANAGEMENT ----------------
 
@@ -319,6 +335,7 @@ module.exports = {
   listUsersWithoutAccounts,
   saveTrade,
   getTradesByUser,
+  acquireReportRun,
   getTelegramUser,
   getTradesAll,
   getAccountById,
