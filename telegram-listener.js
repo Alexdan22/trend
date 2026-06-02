@@ -2,6 +2,15 @@ require("dotenv").config();
 
 const { initTelegramBot, getBot } = require("./telegram");
 
+process.on("unhandledRejection", (error) => {
+  console.warn("[TELEGRAM] Unhandled rejection:", error);
+});
+
+process.on("uncaughtException", (error) => {
+  console.error("[TELEGRAM] Uncaught exception:", error);
+  process.exit(1);
+});
+
 async function startTelegramListener() {
   await initTelegramBot({ polling: true, commands: true });
   console.log("[TELEGRAM] Command listener ready");

@@ -128,6 +128,29 @@ function installTelegramSendFailsafe(botInstance) {
     withTelegramRetry("COMMAND_MESSAGE", () => sendMessage(...args));
 }
 
+function installTelegramDiagnostics(botInstance) {
+  botInstance.on("polling_error", (error) => {
+    const summary = summarizeTelegramError(error) || String(error);
+    console.warn(`[TELEGRAM POLLING] ${summary}`);
+  });
+
+  botInstance.on("webhook_error", (error) => {
+    const summary = summarizeTelegramError(error) || String(error);
+    console.warn(`[TELEGRAM WEBHOOK] ${summary}`);
+  });
+
+  botInstance.on("error", (error) => {
+    const summary = summarizeTelegramError(error) || String(error);
+    console.warn(`[TELEGRAM ERROR] ${summary}`);
+  });
+}
+
+function normalizeTelegramCommand(rawCommand) {
+  return String(rawCommand || "")
+    .split("@")[0]
+    .toLowerCase();
+}
+
 
 
 
@@ -234,6 +257,7 @@ async function initTelegramBot(options = {}) {
 
   bot = new TelegramBot(token, { polling });
   installTelegramSendFailsafe(bot);
+  installTelegramDiagnostics(bot);
   console.log(
     polling
       ? "[TELEGRAM] Bot polling started"
@@ -258,8 +282,12 @@ bot.on("message", async (msg) => {
   const chatId = msg.chat.id;
   
   const parts = msg.text.trim().split(/\s+/);
-  const command = parts[0].toLowerCase();
+  const command = normalizeTelegramCommand(parts[0]);
   const args = parts.slice(1);
+
+  console.log(
+    `[TELEGRAM COMMAND] ${command} from=${telegramId} chat=${chatId}`,
+  );
 
   // 🔓 Allow onboarding commands without RBAC
     if (command === "/start") {
@@ -704,6 +732,9 @@ bot.on("message", async (msg) => {
 
     }
   } catch (err) {
+    console.warn(
+      `[TELEGRAM COMMAND] ${command} failed: ${err.message || err}`,
+    );
     return bot.sendMessage(chatId, err.message || "Command failed.");
   }
 });
