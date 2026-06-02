@@ -624,8 +624,17 @@ function drawTradeArea(ctx, {
     font: "bold 13px Arial",
   });
 
-  drawText(ctx, formatEvent(event), exitX - 6, PLOT.top + 18, {
-    align: "right",
+  const eventLabelNeedsRoom = exitX - entryX < 150;
+  const eventLabelCanFitRight = exitX + 160 < PLOT.right;
+  const eventLabelX =
+    eventLabelNeedsRoom && eventLabelCanFitRight
+      ? exitX + 8
+      : exitX - 6;
+  const eventLabelY =
+    eventLabelNeedsRoom && !eventLabelCanFitRight ? PLOT.top + 38 : PLOT.top + 18;
+
+  drawText(ctx, formatEvent(event), eventLabelX, eventLabelY, {
+    align: eventLabelNeedsRoom && eventLabelCanFitRight ? "left" : "right",
     color: ctx.strokeStyle,
     font: "bold 13px Arial",
   });
@@ -796,7 +805,9 @@ async function generateTradeChart({
   const normalizedCandles = candles
     .map(normalizeCandle)
     .filter((c) =>
-      [c.open, c.high, c.low, c.close].every((value) => Number.isFinite(value)),
+      [c.open, c.high, c.low, c.close].every(
+        (value) => Number.isFinite(value) && value > 0,
+      ) && c.high >= c.low,
     );
 
   if (!normalizedCandles.length) {

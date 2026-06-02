@@ -292,7 +292,9 @@ function candleIndexAtOrBefore(candles, timestamp) {
 
 function selectSnapshotCandles(rec, event) {
   const normalizedEvent = String(event || "").toUpperCase();
-  const maxCandles = normalizedEvent === "ENTRY" ? 42 : 90;
+  const maxCandles = normalizedEvent === "ENTRY" ? 42 : 96;
+  const minExitCandles = 64;
+  const exitContextBeforeEntry = 44;
 
   if (normalizedEvent === "ENTRY" || !rec?.entryTimestamp) {
     return candles_5m.slice(-maxCandles);
@@ -304,8 +306,10 @@ function selectSnapshotCandles(rec, event) {
     return candles_5m.slice(-maxCandles);
   }
 
-  const contextBeforeEntry = 8;
-  let start = Math.max(0, entryIndex - contextBeforeEntry);
+  const lastIndex = candles_5m.length - 1;
+  const minWindowStart = Math.max(0, lastIndex - minExitCandles + 1);
+  const contextStart = Math.max(0, entryIndex - exitContextBeforeEntry);
+  let start = Math.min(minWindowStart, contextStart);
 
   if (candles_5m.length - start > maxCandles) {
     start = Math.max(0, candles_5m.length - maxCandles);
