@@ -106,9 +106,10 @@ function splitTelegramMessage(message, limit = 3900) {
 async function sendReport(period, sendTelegram, now = new Date()) {
   const { buildTradeReport } = require("./reportBuilder");
   const { message } = await buildTradeReport(period, now);
+  const chatId = process.env.TELEGRAM_REPORT_CHAT_ID || process.env.TELEGRAM_CHAT_ID;
 
   for (const chunk of splitTelegramMessage(message)) {
-    await sendTelegram(chunk);
+    await sendTelegram(chunk, chatId ? { chatId } : {});
   }
 }
 

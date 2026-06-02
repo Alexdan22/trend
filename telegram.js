@@ -4,6 +4,7 @@ const {
   listAccounts,
   listAvailableAccounts,
   setAccountEnabled,
+  setAccountPaused,
   setLotSize,
   pauseAccountsByUser,
   assignAccountToUser,
@@ -220,6 +221,83 @@ function renderHelp(role) {
   return text;
 }
 
+const OWNER_COMMANDS = [
+  { cmd: "/status", desc: "View the live account state" },
+  { cmd: "/pause", desc: "Pause new trade entries" },
+  { cmd: "/resume", desc: "Resume new trade entries" },
+  { cmd: "/report_daily", desc: "Send today's report to the group" },
+  { cmd: "/report_weekly", desc: "Send this week's report to the group" },
+  { cmd: "/report_monthly", desc: "Send this month's report to the group" },
+  { cmd: "/help", desc: "Show this command list" },
+];
+
+let ownerWarningLogged = false;
+
+function parseTelegramIdList(value) {
+  return String(value || "")
+    .split(/[,\s]+/)
+    .map((item) => item.trim())
+    .filter(Boolean);
+}
+
+function commandOwnerIds() {
+  return parseTelegramIdList(
+    process.env.TELEGRAM_OWNER_IDS ||
+      process.env.TELEGRAM_COMMAND_USER_IDS ||
+      process.env.TELEGRAM_ALLOWED_USER_IDS,
+  );
+}
+
+function isAuthorizedCommandUser(telegramId) {
+  const owners = commandOwnerIds();
+
+  if (!owners.length) {
+    if (!ownerWarningLogged) {
+      console.warn("[TELEGRAM] No command owner IDs configured; allowing commands");
+      ownerWarningLogged = true;
+    }
+
+    return true;
+  }
+
+  return owners.includes(String(telegramId));
+}
+
+function reportChatId() {
+  return process.env.TELEGRAM_REPORT_CHAT_ID || process.env.TELEGRAM_CHAT_ID;
+}
+
+function renderOwnerHelp() {
+  let text = "Available commands:\n\n";
+
+  for (const c of OWNER_COMMANDS) {
+    text += `${c.cmd} - ${c.desc}\n`;
+  }
+
+  return text;
+}
+
+async function getSingleAccount() {
+  const accountId = process.env.METAAPI_ACCOUNT_ID;
+  if (!accountId) throw new Error("METAAPI_ACCOUNT_ID missing");
+
+  const account = await getAccountById(accountId);
+  return { accountId, account };
+}
+
+function renderSingleAccountStatus(accountId, account) {
+  const paused = account?.userPaused === true;
+  const state = account?.status || "DEPLOYED";
+
+  return (
+    "ACCOUNT STATUS\n\n" +
+    `Account ID:\n${accountId}\n\n` +
+    `New Entries: ${paused ? "PAUSED" : "ACTIVE"}\n` +
+    `State: ${state}\n\n` +
+    `Reports: ${reportChatId() ? "Group configured" : "Group not configured"}`
+  );
+}
+
 async function sendLongMessage(bot, chatId, text, limit = 3900) {
   if (text.length <= limit) {
     return bot.sendMessage(chatId, text);
@@ -240,8 +318,71 @@ async function sendLongMessage(bot, chatId, text, limit = 3900) {
 }
 
 async function sendManualReport(bot, chatId, period) {
+  const targetChatId = reportChatId();
+  if (!targetChatId) throw new Error("TELEGRAM_REPORT_CHAT_ID or TELEGRAM_CHAT_ID missing");
+
   const { message } = await buildTradeReport(period);
-  return sendLongMessage(bot, chatId, message);
+  await sendLongMessage(bot, targetChatId, message);
+
+  if (String(targetChatId) !== String(chatId)) {
+    return bot.sendMessage(chatId, `${period} report sent to the group.`);
+  }
+
+  return null;
+}
+
+async function handleOwnerCommand(bot, chatId, telegramId, command) {
+  if (!isAuthorizedCommandUser(telegramId)) {
+    console.warn(`[TELEGRAM COMMAND] unauthorized user=${telegramId}`);
+    return bot.sendMessage(chatId, "Unauthorized.");
+  }
+
+  switch (command) {
+    case "/start":
+    case "/help":
+      return bot.sendMessage(chatId, renderOwnerHelp());
+
+    case "/status": {
+      const { accountId, account } = await getSingleAccount();
+      return bot.sendMessage(
+        chatId,
+        renderSingleAccountStatus(accountId, account),
+      );
+    }
+
+    case "/pause": {
+      const { accountId } = await getSingleAccount();
+      await setAccountPaused(accountId, true);
+      return bot.sendMessage(
+        chatId,
+        "TRADING PAUSED\n\nNew trade entries are paused for the live account.",
+      );
+    }
+
+    case "/resume": {
+      const { accountId } = await getSingleAccount();
+      await setAccountPaused(accountId, false);
+      return bot.sendMessage(
+        chatId,
+        "TRADING RESUMED\n\nNew trade entries are active for the live account.",
+      );
+    }
+
+    case "/report_daily":
+      await bot.sendMessage(chatId, "Building daily report for the group...");
+      return sendManualReport(bot, chatId, "daily");
+
+    case "/report_weekly":
+      await bot.sendMessage(chatId, "Building weekly report for the group...");
+      return sendManualReport(bot, chatId, "weekly");
+
+    case "/report_monthly":
+      await bot.sendMessage(chatId, "Building monthly report for the group...");
+      return sendManualReport(bot, chatId, "monthly");
+
+    default:
+      return bot.sendMessage(chatId, renderOwnerHelp());
+  }
 }
 
 async function initTelegramBot(options = {}) {
@@ -288,6 +429,15 @@ bot.on("message", async (msg) => {
   console.log(
     `[TELEGRAM COMMAND] ${command} from=${telegramId} chat=${chatId}`,
   );
+
+  try {
+    return await handleOwnerCommand(bot, chatId, telegramId, command);
+  } catch (err) {
+    console.warn(
+      `[TELEGRAM COMMAND] ${command} failed: ${err.message || err}`,
+    );
+    return bot.sendMessage(chatId, err.message || "Command failed.");
+  }
 
   // 🔓 Allow onboarding commands without RBAC
     if (command === "/start") {

@@ -216,7 +216,8 @@ async function processTelegramQueue() {
 
       try {
         const bot = getBot();
-        const chatId = process.env.TELEGRAM_CHAT_ID;
+        const { chatId: targetChatId, ...sendOptions } = options || {};
+        const chatId = targetChatId || process.env.TELEGRAM_CHAT_ID;
         const sendMessage = bot.__rawSendMessage || bot.sendMessage.bind(bot);
 
         if (!chatId) continue;
@@ -227,7 +228,7 @@ async function processTelegramQueue() {
         );
 
         await withTelegramRetry("MESSAGE", () =>
-          sendMessage(chatId, safeMessage, options),
+          sendMessage(chatId, safeMessage, sendOptions),
         );
       } catch (e) {
         console.warn(
@@ -943,19 +944,15 @@ function checkEntryTimeouts() {
 }
 
 async function canPlaceTrade(accountId) {
-  const { getAccountById, getUserByUserId } = require("./models");
+  const { getAccountById } = require("./models");
 
   const account = await getAccountById(accountId);
-  if (!account) return false;
+  if (!account) {
+    console.warn("[ENTRY] Account control record missing; allowing trade");
+    return true;
+  }
 
-  const user = await getUserByUserId(account.userId);
-  if (!user) return false;
-
-  return (
-    user.enabled === true &&
-    account.enabled === true &&
-    account.userPaused === false
-  );
+  return account.userPaused !== true;
 }
 
 function parseSignalString(signalStr) {
@@ -1217,6 +1214,14 @@ async function processStrategyEntry(side, score = null, entryMeta = null) {
 
   try {
     const accountId = process.env.METAAPI_ACCOUNT_ID;
+
+    const allowed = await canPlaceTrade(accountId);
+
+    if (!allowed) {
+      console.log("[ENTRY] Blocked by single-account pause state");
+      releaseEntryLock("entry-paused");
+      return;
+    }
 
     // const allowed = await canPlaceTrade(accountId);
 

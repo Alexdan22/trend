@@ -90,6 +90,20 @@ async function pauseAccountsByUser(userId, paused) {
   );
 }
 
+async function setAccountPaused(accountId, paused) {
+  return getDB().collection("accounts").updateOne(
+    { accountId },
+    {
+      $set: {
+        userPaused: paused,
+        status: paused ? "PAUSED" : "ACTIVE",
+        lastUpdatedAt: new Date()
+      }
+    },
+    { upsert: true }
+  );
+}
+
 async function saveTrade(trade) {
   return getDB().collection("trades").updateOne(
     { tradeId: trade.tradeId },
@@ -223,8 +237,8 @@ async function upsertDeployedAccount({
         symbol,
 
         telegramId: null,        // not assigned yet
-        enabled: false,          // hard safety gate
-        userPaused: true,        // paused by default
+        enabled: true,
+        userPaused: false,
 
         status: "DEPLOYED",      // DEPLOYED | ASSIGNED | ACTIVE
         createdAt: new Date()
@@ -347,5 +361,6 @@ module.exports = {
   listAvailableAccounts,
   setAccountEnabled,
   setLotSize,
+  setAccountPaused,
   pauseAccountsByUser
 };
