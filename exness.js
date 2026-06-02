@@ -295,27 +295,28 @@ function selectSnapshotCandles(rec, event) {
   const maxCandles = normalizedEvent === "ENTRY" ? 42 : 96;
   const minExitCandles = 64;
   const exitContextBeforeEntry = 44;
+  const sourceCandles = candles_5m.filter(isValidOhlcCandle);
 
   if (normalizedEvent === "ENTRY" || !rec?.entryTimestamp) {
-    return candles_5m.slice(-maxCandles);
+    return sourceCandles.slice(-maxCandles);
   }
 
-  const entryIndex = candleIndexAtOrBefore(candles_5m, Number(rec.entryTimestamp));
+  const entryIndex = candleIndexAtOrBefore(sourceCandles, Number(rec.entryTimestamp));
 
   if (entryIndex < 0) {
-    return candles_5m.slice(-maxCandles);
+    return sourceCandles.slice(-maxCandles);
   }
 
-  const lastIndex = candles_5m.length - 1;
+  const lastIndex = sourceCandles.length - 1;
   const minWindowStart = Math.max(0, lastIndex - minExitCandles + 1);
   const contextStart = Math.max(0, entryIndex - exitContextBeforeEntry);
   let start = Math.min(minWindowStart, contextStart);
 
-  if (candles_5m.length - start > maxCandles) {
-    start = Math.max(0, candles_5m.length - maxCandles);
+  if (sourceCandles.length - start > maxCandles) {
+    start = Math.max(0, sourceCandles.length - maxCandles);
   }
 
-  return candles_5m.slice(start);
+  return sourceCandles.slice(start);
 }
 
 async function sendTradeChartAlert({
@@ -417,12 +418,40 @@ function getHistoricalCandleVolume(candle) {
   return Number.isFinite(volume) && volume > 0 ? volume : 0;
 }
 
+function isValidMarketPrice(value) {
+  const number = Number(value);
+  return Number.isFinite(number) && number > 0;
+}
+
+function isValidOhlcCandle(candle) {
+  return (
+    isValidMarketPrice(candle?.open) &&
+    isValidMarketPrice(candle?.high) &&
+    isValidMarketPrice(candle?.low) &&
+    isValidMarketPrice(candle?.close) &&
+    Number(candle.high) >= Number(candle.low)
+  );
+}
+
+function logInvalidCandlePrice(tick, priceMid) {
+  const now = Date.now();
+  if (now - lastInvalidCandlePriceLogAt < 60_000) return;
+
+  lastInvalidCandlePriceLogAt = now;
+  console.warn("[TICK] Ignoring invalid price for candle builder", {
+    bid: tick?.bid,
+    ask: tick?.ask,
+    priceMid,
+  });
+}
+
 let lastTickPrice = null;
 let isProcessingTick = false;
 let lastTickTime = Date.now();
 let stagnantTickCount = 0;
 let stagnantSince = null;
 let marketFrozen = false;
+let lastInvalidCandlePriceLogAt = 0;
 let openPairs = {}; // ticket -> metadata
 
 // Prevent newly placed trades from being marked as external
@@ -611,14 +640,27 @@ async function preloadHistoricalM5() {
       // 🔒 Same bucket logic as tick handler
       const bucket = Math.floor(rawTime / 300000) * 300000;
 
-      map.set(bucket, {
+      const candle = {
         time: bucket,
         open: Number(c.open),
         high: Number(c.high),
         low: Number(c.low),
         close: Number(c.close),
         volume: getHistoricalCandleVolume(c),
-      });
+      };
+
+      if (!isValidOhlcCandle(candle)) {
+        console.warn("[HISTORY] Skipping invalid M5 candle", {
+          time: c.time,
+          open: c.open,
+          high: c.high,
+          low: c.low,
+          close: c.close,
+        });
+        continue;
+      }
+
+      map.set(bucket, candle);
     }
 
     candles_5m = Array.from(map.values()).sort((a, b) => a.time - b.time);
@@ -667,14 +709,27 @@ async function backfillHistoricalData() {
     const bucket = Math.floor(new Date(c.time).getTime() / 300000) * 300000;
 
     if (!existingTimes.has(bucket)) {
-      candles_5m.push({
+      const candle = {
         time: bucket,
         open: Number(c.open),
         high: Number(c.high),
         low: Number(c.low),
         close: Number(c.close),
         volume: getHistoricalCandleVolume(c),
-      });
+      };
+
+      if (!isValidOhlcCandle(candle)) {
+        console.warn("[HISTORY] Skipping invalid backfill M5 candle", {
+          time: c.time,
+          open: c.open,
+          high: c.high,
+          low: c.low,
+          close: c.close,
+        });
+        continue;
+      }
+
+      candles_5m.push(candle);
     }
   }
 
@@ -1712,10 +1767,16 @@ async function handleTick(tick) {
       const fiveMinBucket = Math.floor(minuteBucket / 300000) * 300000; // 5m bucket (300000ms)
       const fifteenMinBucket = Math.floor(minuteBucket / 900000) * 900000; // 15m bucket (900000ms)
 
-      const priceMid =
+      const rawPriceMid =
         tick.bid != null && tick.ask != null
           ? (tick.bid + tick.ask) / 2
           : (tick.bid ?? tick.ask ?? null);
+      const priceMid = Number(rawPriceMid);
+
+      if (!isValidMarketPrice(priceMid)) {
+        logInvalidCandlePrice(tick, priceMid);
+        return;
+      }
 
       if (priceMid != null) {
         // 1m candle
