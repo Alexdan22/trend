@@ -27,6 +27,10 @@ async function buildTradeReport(period, now = new Date()) {
   return {
     summary,
     message: formatTelegramReport(summary, aiNarrative),
+    options: {
+      parse_mode: "HTML",
+      disable_web_page_preview: true,
+    },
   };
 }
 

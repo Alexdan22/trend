@@ -222,10 +222,11 @@ async function processTelegramQueue() {
 
         if (!chatId) continue;
 
-        const safeMessage = message.replace(
-          /([\[\]\(\)~`>#+\-=|{}\.!])/g,
-          "\\$1",
-        );
+        const parseMode = sendOptions.parse_mode || sendOptions.parseMode;
+        const safeMessage =
+          parseMode === "MarkdownV2"
+            ? message.replace(/([\[\]\(\)~`>#+\-=|{}\.!])/g, "\\$1")
+            : message;
 
         await withTelegramRetry("MESSAGE", () =>
           sendMessage(chatId, safeMessage, sendOptions),

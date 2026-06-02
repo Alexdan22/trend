@@ -298,9 +298,9 @@ function renderSingleAccountStatus(accountId, account) {
   );
 }
 
-async function sendLongMessage(bot, chatId, text, limit = 3900) {
+async function sendLongMessage(bot, chatId, text, limit = 3900, options = {}) {
   if (text.length <= limit) {
-    return bot.sendMessage(chatId, text);
+    return bot.sendMessage(chatId, text, options);
   }
 
   let remaining = text;
@@ -308,12 +308,12 @@ async function sendLongMessage(bot, chatId, text, limit = 3900) {
   while (remaining.length > limit) {
     const index = remaining.lastIndexOf("\n", limit);
     const splitAt = index > 1000 ? index : limit;
-    await bot.sendMessage(chatId, remaining.slice(0, splitAt));
+    await bot.sendMessage(chatId, remaining.slice(0, splitAt), options);
     remaining = remaining.slice(splitAt).trimStart();
   }
 
   if (remaining) {
-    await bot.sendMessage(chatId, remaining);
+    await bot.sendMessage(chatId, remaining, options);
   }
 }
 
@@ -321,8 +321,8 @@ async function sendManualReport(bot, chatId, period) {
   const targetChatId = reportChatId();
   if (!targetChatId) throw new Error("TELEGRAM_REPORT_CHAT_ID or TELEGRAM_CHAT_ID missing");
 
-  const { message } = await buildTradeReport(period);
-  await sendLongMessage(bot, targetChatId, message);
+  const { message, options = {} } = await buildTradeReport(period);
+  await sendLongMessage(bot, targetChatId, message, 3900, options);
 
   if (String(targetChatId) !== String(chatId)) {
     return bot.sendMessage(chatId, `${period} report sent to the group.`);

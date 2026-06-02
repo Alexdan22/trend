@@ -21,9 +21,66 @@ function money(value) {
   return `${sign}$${Math.abs(number).toFixed(2)}`;
 }
 
+function signedMoney(value) {
+  const number = toNumber(value);
+  const sign = number > 0 ? "+" : number < 0 ? "-" : "";
+  return `${sign}$${Math.abs(number).toFixed(2)}`;
+}
+
 function compactPrice(value) {
   const number = Number(value);
   return Number.isFinite(number) ? number.toFixed(2) : "N/A";
+}
+
+function escapeHtml(value) {
+  return String(value ?? "")
+    .replace(/&/g, "&amp;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;");
+}
+
+function htmlBold(value) {
+  return `<b>${escapeHtml(value)}</b>`;
+}
+
+function htmlCode(value) {
+  return `<code>${escapeHtml(value)}</code>`;
+}
+
+function pad(value, width, align = "left") {
+  const text = String(value ?? "");
+  if (text.length >= width) return text.slice(0, width);
+  const padding = " ".repeat(width - text.length);
+  return align === "right" ? `${padding}${text}` : `${text}${padding}`;
+}
+
+function formatProfitFactor(value) {
+  return value === Infinity ? "INF" : toNumber(value).toFixed(2);
+}
+
+function verdict(summary) {
+  const overall = summary.overall;
+
+  if (!overall.trades) return "QUIET SESSION";
+  if (overall.netPnL > 0 && overall.profitFactor >= 1.4) return "EDGE HOLDING";
+  if (overall.netPnL > 0) return "POSITIVE, THIN EDGE";
+  if (overall.netPnL < 0 && overall.profitFactor < 0.8) return "DEFENSIVE REVIEW";
+  if (overall.netPnL < 0) return "SLIGHTLY NEGATIVE";
+  return "FLAT";
+}
+
+function riskTone(summary) {
+  const overall = summary.overall;
+
+  if (!overall.trades) return "No closed-trade sample yet.";
+  if (overall.maxDrawdown > Math.abs(overall.netPnL) && overall.netPnL > 0) {
+    return "Profit came with a choppy equity path.";
+  }
+  if (overall.profitFactor >= 1.4 && overall.expectancy > 0) {
+    return "Quality looks constructive for this sample.";
+  }
+  if (overall.profitFactor < 1) return "Losses outweighed winners this period.";
+  return "Edge is present but needs more separation.";
 }
 
 function periodLabel(period) {
@@ -389,9 +446,149 @@ function formatTelegramReport(summary, aiNarrative = null) {
   return lines.join("\n").slice(0, 3900);
 }
 
+function formatGroupTableRich(groups, emptyText = "No data yet") {
+  if (!groups.length) return [escapeHtml(emptyText)];
+
+  const rows = [
+    `${pad("Bucket", 14)} ${pad("Trd", 3, "right")} ${pad("Net", 10, "right")} ${pad("WR", 6, "right")} ${pad("PF", 5, "right")}`,
+    `${pad("--------------", 14)} ${pad("---", 3)} ${pad("----------", 10)} ${pad("------", 6)} ${pad("-----", 5)}`,
+  ];
+
+  for (const group of groups.slice(0, 6)) {
+    rows.push(
+      `${pad(group.label, 14)} ${pad(group.trades, 3, "right")} ${pad(
+        signedMoney(group.netPnL),
+        10,
+        "right",
+      )} ${pad(pct(group.winRate), 6, "right")} ${pad(
+        formatProfitFactor(group.profitFactor),
+        5,
+        "right",
+      )}`,
+    );
+  }
+
+  return rows.map(htmlCode);
+}
+
+function shortTradeId(trade) {
+  const id = trade.tradeId || trade.pairId || "";
+  return String(id).slice(-8) || "trade";
+}
+
+function formatTradeLineRich(trade) {
+  return htmlCode(
+    `${pad(trade.side || "?", 4)} ${pad(signedMoney(tradePnl(trade)), 10, "right")} ${pad(
+      compactPrice(trade.entryPrice),
+      8,
+      "right",
+    )} -> ${pad(compactPrice(trade.exitPrice), 8, "right")} ${pad(
+      trade.closingReason || trade.result || "closed",
+      14,
+    )} ${shortTradeId(trade)}`,
+  );
+}
+
+function formatObservationsRich(summary) {
+  if (!summary.insights.length) return ["- No observations yet."];
+  return summary.insights.map((insight) => `- ${escapeHtml(insight)}`);
+}
+
+function fitTelegramLines(lines, limit = 3900) {
+  const output = [];
+  let length = 0;
+
+  for (const line of lines) {
+    const nextLength = length + line.length + 1;
+    if (nextLength > limit) {
+      output.push(escapeHtml("... report trimmed to fit Telegram message limit"));
+      break;
+    }
+
+    output.push(line);
+    length = nextLength;
+  }
+
+  return output.join("\n");
+}
+
+function formatTelegramReportV2(summary, aiNarrative = null) {
+  const overall = summary.overall;
+  const topHours = topGroups(summary.byHour, 2, 1);
+  const weakHours = bottomGroups(summary.byHour, 2, 1);
+  const topEntries = topGroups(summary.byEntryReason, 4, 1);
+  const exitReasons = topGroups(summary.byReason, 6, 1);
+
+  const lines = [
+    htmlBold(`Pullback Engine - ${summary.title}`),
+    htmlCode(summary.range.label),
+    "",
+    htmlBold("EXECUTIVE READ"),
+    `Verdict: ${htmlBold(verdict(summary))}`,
+    `Risk note: ${escapeHtml(riskTone(summary))}`,
+    "",
+    htmlBold("SCORECARD"),
+    `${pad("Trades", 13)} ${htmlBold(overall.trades)}`,
+    `${pad("W / L / BE", 13)} ${htmlBold(
+      `${overall.wins} / ${overall.losses} / ${overall.breakeven}`,
+    )}`,
+    `${pad("Net PnL", 13)} ${htmlBold(signedMoney(overall.netPnL))}`,
+    `${pad("Win Rate", 13)} ${htmlBold(pct(overall.winRate))}`,
+    `${pad("Profit F.", 13)} ${htmlBold(formatProfitFactor(overall.profitFactor))}`,
+    `${pad("Expectancy", 13)} ${htmlBold(`${signedMoney(overall.expectancy)} / trade`)}`,
+    `${pad("Max DD", 13)} ${htmlBold(money(overall.maxDrawdown))}`,
+    `${pad("Avg Hold", 13)} ${htmlBold(`${overall.avgDurationMinutes.toFixed(1)} min`)}`,
+    `${pad("Streak W/L", 13)} ${htmlBold(
+      `${summary.streaks.maxWin} / ${summary.streaks.maxLoss}`,
+    )}`,
+    "",
+    htmlBold("SIDE PERFORMANCE"),
+    ...formatGroupTableRich(summary.bySide, "No side data"),
+    "",
+    htmlBold("EXIT QUALITY"),
+    ...formatGroupTableRich(exitReasons, "No exit data"),
+    "",
+    htmlBold("ENTRY PATTERNS"),
+    ...formatGroupTableRich(topEntries, "No entry reason data yet"),
+    "",
+    htmlBold("TIME WINDOWS"),
+    `Best: ${
+      topHours.length
+        ? topHours.map((group) => `${escapeHtml(group.label)}:00 ${signedMoney(group.netPnL)}`).join(", ")
+        : "No active window yet"
+    }`,
+    `Weak: ${
+      weakHours.length
+        ? weakHours.map((group) => `${escapeHtml(group.label)}:00 ${signedMoney(group.netPnL)}`).join(", ")
+        : "No weak window yet"
+    }`,
+    "",
+    htmlBold("OBSERVATIONS"),
+    ...formatObservationsRich(summary),
+  ];
+
+  if (summary.bestTrades.length || summary.worstTrades.length) {
+    lines.push("", htmlBold("TRADE SPOTLIGHT"));
+
+    if (summary.bestTrades.length) {
+      lines.push("Best:", ...summary.bestTrades.map(formatTradeLineRich));
+    }
+
+    if (summary.worstTrades.length) {
+      lines.push("Worst:", ...summary.worstTrades.map(formatTradeLineRich));
+    }
+  }
+
+  if (aiNarrative) {
+    lines.push("", htmlBold("AI ANALYST"), escapeHtml(aiNarrative));
+  }
+
+  return fitTelegramLines(lines);
+}
+
 module.exports = {
   buildAnalytics,
-  formatTelegramReport,
+  formatTelegramReport: formatTelegramReportV2,
   getPeriodRange,
   localDateParts,
 };
