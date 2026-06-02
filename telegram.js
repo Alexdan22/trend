@@ -14,6 +14,7 @@ const {
   getUserByUserId,
   getAccountById,
   listUsers,
+  listUsersWithoutAccounts,
   getAccountsGroupedByUser,
   getTelegramUsersMap,
 
@@ -33,6 +34,7 @@ if (!token) throw new Error("TELEGRAM_BOT_TOKEN missing");
 const { connectDB } = require("./db");
 
 let bot = null;
+let commandHandlersRegistered = false;
 
 const TELEGRAM_COMMAND_RETRY_LIMIT = Number(
   process.env.TELEGRAM_RETRY_LIMIT || 4,
@@ -219,17 +221,35 @@ async function sendManualReport(bot, chatId, period) {
   return sendLongMessage(bot, chatId, message);
 }
 
-async function initTelegramBot() {
-  if (bot) return bot; // idempotent
+async function initTelegramBot(options = {}) {
+  const { polling = true, commands = polling } = options;
+
+  if (bot) {
+    if (commands) registerCommandHandlers(bot);
+    return bot;
+  }
 
   await connectDB();
   console.log("[DB] MongoDB connected (Telegram)");
 
-  bot = new TelegramBot(token, { polling: true });
+  bot = new TelegramBot(token, { polling });
   installTelegramSendFailsafe(bot);
-  console.log("📲 Telegram bot polling started");
+  console.log(
+    polling
+      ? "[TELEGRAM] Bot polling started"
+      : "[TELEGRAM] Bot initialized for outbound messages",
+  );
 
-  /* ---------- COMMAND HANDLER ---------- */
+  if (commands) registerCommandHandlers(bot);
+
+  return bot;
+}
+
+/* ---------- COMMAND HANDLER ---------- */
+
+function registerCommandHandlers(bot) {
+  if (commandHandlersRegistered) return;
+  commandHandlersRegistered = true;
 
 bot.on("message", async (msg) => {
   if (!msg.text || !msg.text.startsWith("/")) return;
@@ -687,8 +707,6 @@ bot.on("message", async (msg) => {
     return bot.sendMessage(chatId, err.message || "Command failed.");
   }
 });
-
-  return bot;
 }
 
 function getBot() {

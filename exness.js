@@ -2445,7 +2445,11 @@ async function stagedRecovery() {
 // --------------------- SAFE MAIN LOOP (replace your existing startBot) ---------------------
 async function startBot() {
   const { setTimeout: delay } = require("timers/promises");
-  await initTelegramBot();
+  const embedTelegramCommands = process.env.TELEGRAM_EMBED_COMMANDS === "true";
+  await initTelegramBot({
+    polling: embedTelegramCommands,
+    commands: embedTelegramCommands,
+  });
 
   if (!WATCHDOG_INTERVALS.reports) {
     WATCHDOG_INTERVALS.reports = startReportScheduler({ sendTelegram });
