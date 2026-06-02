@@ -34,6 +34,98 @@ const { connectDB } = require("./db");
 
 let bot = null;
 
+const TELEGRAM_COMMAND_RETRY_LIMIT = Number(
+  process.env.TELEGRAM_RETRY_LIMIT || 4,
+);
+const TELEGRAM_COMMAND_RETRY_BASE_MS = Number(
+  process.env.TELEGRAM_RETRY_BASE_MS || 1200,
+);
+const TELEGRAM_COMMAND_RETRY_MAX_MS = Number(
+  process.env.TELEGRAM_RETRY_MAX_MS || 12000,
+);
+
+function sleep(ms) {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+function summarizeTelegramError(error, depth = 0) {
+  if (!error || depth > 2) return "";
+
+  const parts = [];
+  if (error.code) parts.push(`code=${error.code}`);
+  if (error.response?.statusCode) {
+    parts.push(`status=${error.response.statusCode}`);
+  }
+  if (error.message) parts.push(`message=${error.message}`);
+
+  if (Array.isArray(error.errors) && error.errors.length) {
+    const nested = error.errors
+      .slice(0, 3)
+      .map((item) => summarizeTelegramError(item, depth + 1))
+      .filter(Boolean)
+      .join(" | ");
+    if (nested) parts.push(`nested=[${nested}]`);
+  }
+
+  if (error.cause) {
+    const cause = summarizeTelegramError(error.cause, depth + 1);
+    if (cause) parts.push(`cause=[${cause}]`);
+  }
+
+  return parts.join(" ");
+}
+
+function telegramRetryDelay(attempt) {
+  const base =
+    TELEGRAM_COMMAND_RETRY_BASE_MS * 2 ** Math.max(0, attempt - 1);
+  const jitter = Math.floor(Math.random() * 350);
+  return Math.min(TELEGRAM_COMMAND_RETRY_MAX_MS, base + jitter);
+}
+
+function isPermanentTelegramError(error) {
+  const status = Number(error?.response?.statusCode);
+  return [400, 401, 403].includes(status);
+}
+
+async function withTelegramRetry(label, operation) {
+  let lastError = null;
+
+  for (let attempt = 1; attempt <= TELEGRAM_COMMAND_RETRY_LIMIT; attempt++) {
+    try {
+      return await operation();
+    } catch (error) {
+      lastError = error;
+      const summary = summarizeTelegramError(error) || String(error);
+
+      if (
+        isPermanentTelegramError(error) ||
+        attempt === TELEGRAM_COMMAND_RETRY_LIMIT
+      ) {
+        console.warn(
+          `[TELEGRAM ${label}] failed after ${attempt}/${TELEGRAM_COMMAND_RETRY_LIMIT}: ${summary}`,
+        );
+        break;
+      }
+
+      const waitMs = telegramRetryDelay(attempt);
+      console.warn(
+        `[TELEGRAM ${label}] attempt ${attempt}/${TELEGRAM_COMMAND_RETRY_LIMIT} failed, retrying in ${waitMs}ms: ${summary}`,
+      );
+      await sleep(waitMs);
+    }
+  }
+
+  throw lastError;
+}
+
+function installTelegramSendFailsafe(botInstance) {
+  const sendMessage = botInstance.sendMessage.bind(botInstance);
+
+  botInstance.__rawSendMessage = sendMessage;
+  botInstance.sendMessage = (...args) =>
+    withTelegramRetry("COMMAND_MESSAGE", () => sendMessage(...args));
+}
+
 
 
 
@@ -134,6 +226,7 @@ async function initTelegramBot() {
   console.log("[DB] MongoDB connected (Telegram)");
 
   bot = new TelegramBot(token, { polling: true });
+  installTelegramSendFailsafe(bot);
   console.log("📲 Telegram bot polling started");
 
   /* ---------- COMMAND HANDLER ---------- */

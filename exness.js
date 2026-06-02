@@ -131,36 +131,117 @@ const ticketOwnershipMap = new Map(); // ticket -> pairId
 
 const telegramQueue = [];
 let telegramProcessing = false;
+const TELEGRAM_RETRY_LIMIT = Number(process.env.TELEGRAM_RETRY_LIMIT || 4);
+const TELEGRAM_RETRY_BASE_MS = Number(
+  process.env.TELEGRAM_RETRY_BASE_MS || 1200,
+);
+const TELEGRAM_RETRY_MAX_MS = Number(
+  process.env.TELEGRAM_RETRY_MAX_MS || 12000,
+);
+
+function summarizeTelegramError(error, depth = 0) {
+  if (!error || depth > 2) return "";
+
+  const parts = [];
+  if (error.code) parts.push(`code=${error.code}`);
+  if (error.response?.statusCode) {
+    parts.push(`status=${error.response.statusCode}`);
+  }
+  if (error.message) parts.push(`message=${error.message}`);
+
+  if (Array.isArray(error.errors) && error.errors.length) {
+    const nested = error.errors
+      .slice(0, 3)
+      .map((item) => summarizeTelegramError(item, depth + 1))
+      .filter(Boolean)
+      .join(" | ");
+    if (nested) parts.push(`nested=[${nested}]`);
+  }
+
+  if (error.cause) {
+    const cause = summarizeTelegramError(error.cause, depth + 1);
+    if (cause) parts.push(`cause=[${cause}]`);
+  }
+
+  return parts.join(" ");
+}
+
+function telegramRetryDelay(attempt) {
+  const base = TELEGRAM_RETRY_BASE_MS * 2 ** Math.max(0, attempt - 1);
+  const jitter = Math.floor(Math.random() * 350);
+  return Math.min(TELEGRAM_RETRY_MAX_MS, base + jitter);
+}
+
+function isPermanentTelegramError(error) {
+  const status = Number(error?.response?.statusCode);
+  return [400, 401, 403].includes(status);
+}
+
+async function withTelegramRetry(label, operation) {
+  let lastError = null;
+
+  for (let attempt = 1; attempt <= TELEGRAM_RETRY_LIMIT; attempt++) {
+    try {
+      return await operation();
+    } catch (error) {
+      lastError = error;
+      const summary = summarizeTelegramError(error) || String(error);
+
+      if (isPermanentTelegramError(error) || attempt === TELEGRAM_RETRY_LIMIT) {
+        console.warn(
+          `[TELEGRAM ${label}] failed after ${attempt}/${TELEGRAM_RETRY_LIMIT}: ${summary}`,
+        );
+        break;
+      }
+
+      const waitMs = telegramRetryDelay(attempt);
+      console.warn(
+        `[TELEGRAM ${label}] attempt ${attempt}/${TELEGRAM_RETRY_LIMIT} failed, retrying in ${waitMs}ms: ${summary}`,
+      );
+      await delay(waitMs);
+    }
+  }
+
+  throw lastError;
+}
 
 async function processTelegramQueue() {
   if (telegramProcessing) return;
 
   telegramProcessing = true;
 
-  while (telegramQueue.length > 0) {
-    const { message, options } = telegramQueue.shift();
+  try {
+    while (telegramQueue.length > 0) {
+      const { message, options } = telegramQueue.shift();
 
-    try {
-      const bot = getBot();
-      const chatId = process.env.TELEGRAM_CHAT_ID;
+      try {
+        const bot = getBot();
+        const chatId = process.env.TELEGRAM_CHAT_ID;
+        const sendMessage = bot.__rawSendMessage || bot.sendMessage.bind(bot);
 
-      if (!chatId) continue;
+        if (!chatId) continue;
 
-      const safeMessage = message.replace(
-        /([\[\]\(\)~`>#+\-=|{}\.!])/g,
-        "\\$1",
-      );
+        const safeMessage = message.replace(
+          /([\[\]\(\)~`>#+\-=|{}\.!])/g,
+          "\\$1",
+        );
 
-      await bot.sendMessage(chatId, safeMessage, options);
-    } catch (e) {
-      console.warn("❌ Telegram send failed:", e.message);
+        await withTelegramRetry("MESSAGE", () =>
+          sendMessage(chatId, safeMessage, options),
+        );
+      } catch (e) {
+        console.warn(
+          "[TELEGRAM MESSAGE] dropped:",
+          summarizeTelegramError(e) || e.message,
+        );
+      }
+
+      // pacing protection
+      await delay(400);
     }
-
-    // pacing protection
-    await delay(400);
+  } finally {
+    telegramProcessing = false;
   }
-
-  telegramProcessing = false;
 }
 
 async function sendTelegram(message, options = {}) {
@@ -179,11 +260,16 @@ async function sendTelegramPhoto(imageBuffer, caption = "") {
 
     if (!chatId) return;
 
-    await bot.sendPhoto(chatId, imageBuffer, {
-      caption,
-    });
+    await withTelegramRetry("PHOTO", () =>
+      bot.sendPhoto(chatId, imageBuffer, {
+        caption,
+      }),
+    );
   } catch (err) {
-    console.error("[TELEGRAM PHOTO]", err.message);
+    console.error(
+      "[TELEGRAM PHOTO] dropped:",
+      summarizeTelegramError(err) || err.message,
+    );
   }
 }
 
