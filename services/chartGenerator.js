@@ -42,6 +42,8 @@ const LEVEL_LABEL_GAP = 7;
 const LEVEL_LABEL_FONT = "bold 17px Arial";
 
 function toNumber(value) {
+  if (value == null || value === "") return null;
+
   const number = Number(value);
   return Number.isFinite(number) ? number : null;
 }

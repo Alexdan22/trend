@@ -1,0 +1,170 @@
+<?xml version="1.0" encoding="UTF-8" ?>
+<x:xmpmeta xmlns:x="adobe:ns:meta/">
+    <rdf:RDF xmlns:rdf="http://www.w3.org/1999/02/22-rdf-syntax-ns#">
+        <rdf:Description rdf:about="" xmlns="http://namespace.corel.com/Cdr/metadata" xmlns:crl="http://namespace.corel.com/zcf/metadata/1.0/">
+            <FontsUsed>
+                <rdf:Bag />
+            </FontsUsed>
+            <CoreVersion>1500</CoreVersion>
+            <Keywords />
+            <Notes />
+            <Author>user</Author>
+            <Subject />
+            <Copyright />
+            <Revision>5</Revision>
+            <LastAuthor>user</LastAuthor>
+            <Sided />
+            <Folds />
+            <Type />
+            <Industry />
+            <ProductId>0</ProductId>
+            <ProductName>CorelDRAW</ProductName>
+            <AppVersion>2620</AppVersion>
+            <BuildNumber>170</BuildNumber>
+            <Platform>0</Platform>
+            <Locale>1033</Locale>
+            <RiffCompressionRatio>0</RiffCompressionRatio>
+            <EmbeddedOleObjects>0</EmbeddedOleObjects>
+            <FontsEmbedded>0</FontsEmbedded>
+            <Language>1033</Language>
+            <DocID>3e97719a-1c16-4c09-84c9-bd6acb8c58ad</DocID>
+            <NumPages>1</NumPages>
+            <NumLayers>1</NumLayers>
+            <PageWidth>1270000</PageWidth>
+            <PageHeight>4572000</PageHeight>
+            <PageDimensions>5 x 18 in</PageDimensions>
+            <PageSizeName />
+            <PageOrientation>1</PageOrientation>
+            <ResolutionX>300</ResolutionX>
+            <ResolutionY>300</ResolutionY>
+            <Effects>
+                <Perspective>0</Perspective>
+                <Envelope>0</Envelope>
+                <DropShadow>0</DropShadow>
+                <Blend>0</Blend>
+                <Extrude>0</Extrude>
+                <Bevel>0</Bevel>
+                <Contour>0</Contour>
+                <PowerClip>0</PowerClip>
+                <Clone>0</Clone>
+                <Lens>0</Lens>
+                <Transparency>0</Transparency>
+                <Distortion>0</Distortion>
+            </Effects>
+            <Objects>
+                <Total>47</Total>
+                <Group>11</Group>
+                <Curve>35</Curve>
+                <Rect>0</Rect>
+                <Bitmap>12</Bitmap>
+                <Ellipse>0</Ellipse>
+                <MeshFill>0</MeshFill>
+                <Polygon>0</Polygon>
+                <OLE>
+                    <Linked>0</Linked>
+                    <Embedded>0</Embedded>
+                </OLE>
+                <Guideline>0</Guideline>
+                <Symbol>
+                    <Definitions>0</Definitions>
+                    <Instances>0</Instances>
+                </Symbol>
+                <Text>0</Text>
+            </Objects>
+            <CurveInfo>
+                <Subpaths>100</Subpaths>
+                <Nodes>4800</Nodes>
+                <MaxNodes>873</MaxNodes>
+            </CurveInfo>
+            <BitmapInfo>
+                <Types>
+                    <rdf:Bag>
+                        <rdf:li>3</rdf:li>
+                        <rdf:li>4</rdf:li>
+                    </rdf:Bag>
+                </Types>
+                <LinkPaths>
+                    <rdf:Bag />
+                </LinkPaths>
+            </BitmapInfo>
+            <TextInfo>
+                <ParagraphText>0</ParagraphText>
+                <ArtisticText>0</ArtisticText>
+                <Frames>0</Frames>
+                <EmptyFrames>0</EmptyFrames>
+                <Paragraphs>0</Paragraphs>
+                <Lines>0</Lines>
+                <Words>0</Words>
+                <Characters>0</Characters>
+                <DocFormatterId>1500</DocFormatterId>
+                <Languages>
+                    <rdf:Bag />
+                </Languages>
+            </TextInfo>
+            <Styles>
+                <rdf:Bag />
+            </Styles>
+            <Fills>
+                <None>13</None>
+                <Uniform>34</Uniform>
+                <Fountain>0</Fountain>
+                <Texture>0</Texture>
+                <Postscript>0</Postscript>
+                <Hatch>0</Hatch>
+                <Pattern>0</Pattern>
+                <Colors>
+                    <rdf:Bag>
+                        <rdf:li>CMYK255</rdf:li>
+                        <rdf:li>RGB</rdf:li>
+                    </rdf:Bag>
+                </Colors>
+                <Palettes>
+                    <rdf:Bag>
+                        <rdf:li>CMYK Palette</rdf:li>
+                    </rdf:Bag>
+                </Palettes>
+                <SpotColors>
+                    <rdf:Bag />
+                </SpotColors>
+            </Fills>
+            <Outlines>
+                <None>47</None>
+                <Solid>0</Solid>
+                <Dashed>0</Dashed>
+                <Enhanced>0</Enhanced>
+                <BehindFill>0</BehindFill>
+                <ScalePen>0</ScalePen>
+                <Hairline>0</Hairline>
+                <Colors>
+                    <rdf:Bag />
+                </Colors>
+                <Palettes>
+                    <rdf:Bag />
+                </Palettes>
+                <SpotColors>
+                    <rdf:Bag />
+                </SpotColors>
+            </Outlines>
+            <ClipRect bottom="-2286000" left="-635000" right="635000" top="2286000" />
+            <Color>
+                <Profiles>
+                    <Rgb>
+                        <Name>sRGB IEC61966-2.1</Name>
+                    </Rgb>
+                    <Cmyk>
+                        <Name>ISO Coated v2 (ECI)</Name>
+                    </Cmyk>
+                    <Grayscale>
+                        <Name>Dot Gain 15%</Name>
+                    </Grayscale>
+                </Profiles>
+            </Color>
+            <colorMode>1</colorMode>
+            <renderingIntent>1</renderingIntent>
+            <Properties />
+            <crl:Category>
+                <rdf:Alt />
+            </crl:Category>
+        </rdf:Description>
+    </rdf:RDF>
+</x:xmpmeta>

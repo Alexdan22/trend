@@ -14,6 +14,16 @@ const CONFIG = {
   DECAY: 0.8,
   SWING_MEMORY_LIMIT: 30,
   SCORING_TIMEOUT: 15 * 60 * 1000, // 15 min
+  TREND_WINDOW_FILTER: {
+    ENABLED: true,
+    WINDOW_CANDLES: 80,
+    EARLY_WINDOW_CANDLES: 40,
+    EMA_FAST: 20,
+    EMA_SLOW: 50,
+    MIN_CLASSIFY_CANDLES: 20,
+    SLOPE_THRESHOLD: 0.08,
+    CHANGE_THRESHOLD: 0.8,
+  },
 };
 
 // ==============================
@@ -252,6 +262,163 @@ function deriveM15Trend(ctx, { ema50, ema200, atr }) {
   return {
     direction,
     strength: clamp(strength, 0, 100),
+  };
+}
+
+function ema(values, period) {
+  if (values.length < period) return null;
+
+  const k = 2 / (period + 1);
+  let current = values.slice(0, period).reduce((sum, value) => sum + value, 0) / period;
+
+  for (let i = period; i < values.length; i++) {
+    current = values[i] * k + current * (1 - k);
+  }
+
+  return current;
+}
+
+function linearSlope(values) {
+  if (values.length < 2) return 0;
+
+  const n = values.length;
+  const meanX = (n - 1) / 2;
+  const meanY = values.reduce((sum, value) => sum + value, 0) / n;
+  let numerator = 0;
+  let denominator = 0;
+
+  for (let i = 0; i < n; i++) {
+    numerator += (i - meanX) * (values[i] - meanY);
+    denominator += (i - meanX) ** 2;
+  }
+
+  return denominator ? numerator / denominator : 0;
+}
+
+function standardDeviation(values) {
+  if (!values.length) return 0;
+
+  const mean = values.reduce((sum, value) => sum + value, 0) / values.length;
+  const variance =
+    values.reduce((sum, value) => sum + (value - mean) ** 2, 0) / values.length;
+
+  return Math.sqrt(variance);
+}
+
+function classifyTrendWindow(candles) {
+  const config = CONFIG.TREND_WINDOW_FILTER;
+  const closes = (candles || [])
+    .map((candle) => Number(candle.close))
+    .filter(Number.isFinite);
+
+  if (closes.length < config.MIN_CLASSIFY_CANDLES) {
+    return {
+      trend: "UNKNOWN",
+      confidence: 0,
+      reason: "not_enough_candles",
+      candles: closes.length,
+    };
+  }
+
+  const first = closes[0];
+  const last = closes.at(-1);
+  const change = last - first;
+  const slope = linearSlope(closes);
+  const deltas = closes.slice(1).map((close, index) => close - closes[index]);
+  const volatility = standardDeviation(deltas) || 1;
+  const normalizedSlope = slope / volatility;
+  const normalizedChange = change / (volatility * Math.sqrt(closes.length));
+  const emaFast = ema(closes, config.EMA_FAST);
+  const emaSlow = ema(closes, config.EMA_SLOW);
+  const emaSignal =
+    emaFast != null && emaSlow != null ? (emaFast > emaSlow ? 1 : emaFast < emaSlow ? -1 : 0) : 0;
+  const slopeSignal =
+    normalizedSlope > config.SLOPE_THRESHOLD
+      ? 1
+      : normalizedSlope < -config.SLOPE_THRESHOLD
+        ? -1
+        : 0;
+  const changeSignal =
+    normalizedChange > config.CHANGE_THRESHOLD
+      ? 1
+      : normalizedChange < -config.CHANGE_THRESHOLD
+        ? -1
+        : 0;
+  const score = emaSignal + slopeSignal + changeSignal;
+  const trend = score >= 2 ? "BUY" : score <= -2 ? "SELL" : "MIXED";
+
+  return {
+    trend,
+    confidence: Math.min(1, Math.abs(score) / 3),
+    score,
+    candles: closes.length,
+    change,
+    slope,
+    normalizedSlope,
+    normalizedChange,
+    emaSignal,
+    slopeSignal,
+    changeSignal,
+  };
+}
+
+function detectTrendWindowFlip(preWindow, earlyWindow, combinedWindow) {
+  const firstHalf = classifyTrendWindow(preWindow.slice(0, Math.floor(preWindow.length / 2)));
+  const secondHalf = classifyTrendWindow(preWindow.slice(Math.floor(preWindow.length / 2)));
+  const early = classifyTrendWindow(earlyWindow);
+  const full = classifyTrendWindow(combinedWindow);
+  const labels = [firstHalf.trend, secondHalf.trend, early.trend, full.trend];
+  const directional = labels.filter((label) => label === "BUY" || label === "SELL");
+  const hasBothDirections = directional.includes("BUY") && directional.includes("SELL");
+  const secondHalfFlipped =
+    secondHalf.trend !== "MIXED" &&
+    secondHalf.trend !== "UNKNOWN" &&
+    full.trend !== "MIXED" &&
+    full.trend !== "UNKNOWN" &&
+    secondHalf.trend !== full.trend;
+
+  return {
+    firstHalf: firstHalf.trend,
+    secondHalf: secondHalf.trend,
+    early: early.trend,
+    full: full.trend,
+    flipRisk: hasBothDirections || secondHalfFlipped,
+  };
+}
+
+function evaluateTrendWindowFilter(ctx, signal) {
+  const config = CONFIG.TREND_WINDOW_FILTER;
+  const candles = ctx?.candles?.m5 || [];
+  const windowSize = config.WINDOW_CANDLES;
+  const earlySize = config.EARLY_WINDOW_CANDLES;
+  const preWindow = candles.slice(-windowSize);
+  const earlyWindow = candles.slice(-earlySize);
+  const combinedWindow = candles.slice(-(windowSize + earlySize));
+  const trend = classifyTrendWindow(preWindow);
+  const flip = detectTrendWindowFlip(preWindow, earlyWindow, combinedWindow);
+  const aligned = trend.trend === signal;
+  const opposite =
+    (trend.trend === "BUY" && signal === "SELL") ||
+    (trend.trend === "SELL" && signal === "BUY");
+  const mixed = trend.trend === "MIXED" || trend.trend === "UNKNOWN";
+  const allowed = !config.ENABLED || aligned || (mixed && !flip.flipRisk);
+
+  return {
+    enabled: config.ENABLED,
+    allowed,
+    signal,
+    trend: trend.trend,
+    aligned,
+    opposite,
+    mixed,
+    flipRisk: flip.flipRisk,
+    windowCandles: preWindow.length,
+    earlyWindowCandles: earlyWindow.length,
+    confidence: trend.confidence,
+    score: trend.score,
+    normalizedSlope: trend.normalizedSlope,
+    normalizedChange: trend.normalizedChange,
+    flip,
   };
 }
 
@@ -3883,6 +4050,35 @@ function strategyEngine(ctx) {
       });
 
       if (scoreQualified || behavioralQualified) {
+        const trendWindow = evaluateTrendWindowFilter(ctx, state.signal);
+
+        console.log("[TREND WINDOW FILTER]", {
+          allowed: trendWindow.allowed,
+          signal: trendWindow.signal,
+          trend: trendWindow.trend,
+          aligned: trendWindow.aligned,
+          mixed: trendWindow.mixed,
+          opposite: trendWindow.opposite,
+          flipRisk: trendWindow.flipRisk,
+          windowCandles: trendWindow.windowCandles,
+          confidence: Number(trendWindow.confidence || 0).toFixed(2),
+          normalizedSlope: Number(trendWindow.normalizedSlope || 0).toFixed(2),
+          normalizedChange: Number(trendWindow.normalizedChange || 0).toFixed(2),
+          flip: trendWindow.flip,
+        });
+
+        if (!trendWindow.allowed) {
+          console.log("[ENTRY BLOCKED] 80-candle trend transition filter", {
+            signal: state.signal,
+            trend: trendWindow.trend,
+            opposite: trendWindow.opposite,
+            flipRisk: trendWindow.flipRisk,
+          });
+
+          reset();
+          return { action: null };
+        }
+
         console.log("[DIRECT ENTRY] Behavioral execution validated");
 
         // sendPhaseAlert({
@@ -3923,6 +4119,7 @@ function strategyEngine(ctx) {
               : "SCORE",
             behavioralQualified,
             scoreQualified,
+            trendWindow,
             scores: {
               trend: state.lockedScores.trend,
               setup: setupScore,
