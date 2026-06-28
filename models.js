@@ -120,6 +120,22 @@ async function saveTrade(trade) {
   );
 }
 
+async function saveShadowTrade(trade) {
+  return getDB().collection("shadow_trades").updateOne(
+    { tradeId: trade.tradeId },
+    {
+      $set: {
+        ...trade,
+        updatedAt: new Date()
+      },
+      $setOnInsert: {
+        createdAt: new Date()
+      }
+    },
+    { upsert: true }
+  );
+}
+
 
 async function getTradesByUser(userId, from, to) {
   const query = {
@@ -133,6 +149,19 @@ async function getTradesAll(from, to) {
   return getDB().collection("trades").find({
     closedAt: { $gte: from, $lte: to }
   }).toArray();
+}
+
+async function getShadowTradesAll(from, to) {
+  return getDB().collection("shadow_trades").find({
+    closedAt: { $gte: from, $lte: to }
+  }).toArray();
+}
+
+async function loadOpenShadowTrades() {
+  return getDB()
+    .collection("shadow_trades")
+    .find({ state: { $ne: "CLOSED" } })
+    .toArray();
 }
 
 async function acquireReportRun(reportKey, period) {
@@ -348,7 +377,10 @@ module.exports = {
   unassignAccount,
   listUsersWithoutAccounts,
   saveTrade,
+  saveShadowTrade,
   getTradesByUser,
+  getShadowTradesAll,
+  loadOpenShadowTrades,
   acquireReportRun,
   getTelegramUser,
   getTradesAll,

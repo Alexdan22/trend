@@ -55,7 +55,11 @@ const bodyParser = require("body-parser");
 const fs = require("fs");
 const RAW_ORDERS_LOG = "/tmp/raw_order_responses.log";
 const { connectDB } = require("./db");
-const { loadOpenPairs, saveTrade } = require("./models");
+const {
+  loadOpenShadowTrades,
+  saveShadowTrade,
+  saveTrade,
+} = require("./models");
 const { initTelegramBot, getBot } = require("./telegram");
 const { startReportScheduler } = require("./services/reporting/reportScheduler");
 const { initSymbol } = require("./src/core/symbolRegistry");
@@ -66,6 +70,10 @@ const {
   resetStrategyEngine,
 } = require("./src/strategy/strategyEngine");
 const { captureTradeSnapshot } = require("./services/tradeSnapshot");
+const {
+  getLiveSessionDecision,
+  sessionWindowLabel,
+} = require("./services/sessionWindow");
 
 const EXNESS_PORT = process.env.EXNESS_PORT || 5002;
 
@@ -453,6 +461,8 @@ let stagnantSince = null;
 let marketFrozen = false;
 let lastInvalidCandlePriceLogAt = 0;
 let openPairs = {}; // ticket -> metadata
+let openShadowTrades = {}; // tradeId -> simulated metadata
+let shadowTradesRestored = false;
 
 // Prevent newly placed trades from being marked as external
 const recentTickets = new Set();
@@ -905,6 +915,7 @@ function buildTradeSnapshot(rec) {
     partialClosedAt: rec.partialClosedAt,
     partialPnL: rec.partialPnL,
     breakEvenActive: Boolean(rec.breakEvenActive),
+    internalSL: rec.internalSL,
     plannedRisk,
     plannedReward,
     plannedRR: plannedRisk > 0 ? plannedReward / plannedRisk : null,
@@ -948,6 +959,281 @@ async function finalizePair(pairId, reason) {
   delete openPairs[pairId];
 
   console.log(`[PAIR] Finalized ${pairId} | reason=${reason}`);
+}
+
+function tickTimestamp(price) {
+  const timestamp = Number(price?.timestamp);
+  return Number.isFinite(timestamp) ? timestamp : Date.now();
+}
+
+function buildShadowTradeRecord(rec) {
+  const openedAt =
+    rec.openedAt instanceof Date ? rec.openedAt : new Date(rec.openedAt);
+  const closedAt =
+    rec.exitAt instanceof Date
+      ? rec.exitAt
+      : rec.closedAt
+        ? new Date(rec.closedAt)
+        : null;
+  const pnl = Number(rec.realizedPnL ?? 0);
+  const plannedRisk =
+    Math.abs(Number(rec.entryPrice) - Number(rec.sl)) *
+    Number(rec.totalLot || 0) *
+    CONTRACT_SIZE;
+  const plannedReward =
+    Math.abs(Number(rec.tp) - Number(rec.entryPrice)) *
+    Number(rec.totalLot || 0) *
+    CONTRACT_SIZE;
+  const durationSec =
+    closedAt && Number.isFinite(openedAt.getTime())
+      ? Math.max(0, Math.floor((closedAt.getTime() - openedAt.getTime()) / 1000))
+      : null;
+
+  return {
+    tradeId: rec.pairId,
+    accountId: rec.accountId || process.env.METAAPI_ACCOUNT_ID,
+    userId: rec.userId,
+    executionMode: "SHADOW",
+    blockedReason: rec.blockedReason,
+    sessionLabel: rec.sessionLabel,
+    sessionWindow: rec.sessionWindow,
+    side: rec.side,
+    category: rec.category,
+    symbol: rec.symbol || SYMBOL,
+    entryScore: rec.entryScore,
+    entryReason: rec.entryReason,
+    entryMeta: rec.entryMeta,
+    entryPrice: rec.entryPrice,
+    exitPrice: rec.exitPrice,
+    sl: rec.sl,
+    tp: rec.tp,
+    lot: rec.totalLot,
+    lotEach: rec.lotEach,
+    grossPnL: rec.state === PAIR_STATE.CLOSED ? pnl : null,
+    netPnL: rec.state === PAIR_STATE.CLOSED ? pnl : null,
+    openedAt,
+    closedAt,
+    durationSec,
+    state: rec.state,
+    closingReason: rec.closingReason,
+    partialClosed: Boolean(rec.partialClosed),
+    partialExitPrice: rec.partialExitPrice,
+    partialClosedAt: rec.partialClosedAt,
+    partialPnL: rec.partialPnL,
+    breakEvenActive: Boolean(rec.breakEvenActive),
+    internalSL: rec.internalSL,
+    plannedRisk,
+    plannedReward,
+    plannedRR: plannedRisk > 0 ? plannedReward / plannedRisk : null,
+    realizedR: rec.realizedR,
+    result:
+      rec.state === PAIR_STATE.CLOSED
+        ? pnl > 0
+          ? "WIN"
+          : pnl < 0
+            ? "LOSS"
+            : "BE"
+        : null,
+  };
+}
+
+async function persistShadowTrade(rec) {
+  await saveShadowTrade(buildShadowTradeRecord(rec));
+}
+
+async function restoreOpenShadowTrades() {
+  if (shadowTradesRestored) return;
+  shadowTradesRestored = true;
+
+  try {
+    const rows = await loadOpenShadowTrades();
+
+    openShadowTrades = {};
+    for (const row of rows) {
+      if (!row?.tradeId) continue;
+      openShadowTrades[row.tradeId] = {
+        pairId: row.tradeId,
+        accountId: row.accountId,
+        userId: row.userId,
+        side: String(row.side || "").toUpperCase(),
+        category: row.category,
+        symbol: row.symbol || SYMBOL,
+        entryScore: row.entryScore,
+        entryReason: row.entryReason,
+        entryMeta: row.entryMeta,
+        entryPrice: row.entryPrice,
+        sl: row.sl,
+        tp: row.tp,
+        lotEach: row.lotEach,
+        totalLot: row.lot,
+        trades: {
+          PARTIAL: { lot: row.lotEach },
+          TRAILING: { lot: row.lotEach },
+        },
+        breakEvenActive: Boolean(row.breakEvenActive),
+        internalSL: row.internalSL ?? (row.breakEvenActive ? row.entryPrice : null),
+        partialClosed: Boolean(row.partialClosed),
+        partialExitPrice: row.partialExitPrice,
+        partialClosedAt: row.partialClosedAt,
+        partialPnL: row.partialPnL,
+        openedAt: row.openedAt,
+        entryTimestamp: new Date(row.openedAt).getTime(),
+        state: row.state || PAIR_STATE.ACTIVE,
+        closingReason: row.closingReason,
+        blockedReason: row.blockedReason,
+        sessionLabel: row.sessionLabel,
+        sessionWindow: row.sessionWindow,
+      };
+    }
+
+    if (rows.length) {
+      console.log(`[SHADOW] Restored ${rows.length} open shadow trades`);
+    }
+  } catch (err) {
+    console.error("[SHADOW] Failed to restore open shadow trades:", err.message || err);
+  }
+}
+
+async function createShadowTrade({
+  side,
+  totalLot,
+  entryPrice,
+  sl,
+  tp,
+  slDistance,
+  score,
+  entryMeta,
+  sessionDecision,
+}) {
+  const lotEach = Number((Number(totalLot || 0) / 2).toFixed(2));
+
+  if (lotEach < MIN_LOT) {
+    console.log("[SHADOW] Computed lot too small - skipping shadow trade");
+    return null;
+  }
+
+  const timestamp = tickTimestamp(latestPrice);
+  const pairId = `shadow-${Date.now()}`;
+  const rec = {
+    pairId,
+    accountId: process.env.METAAPI_ACCOUNT_ID,
+    executionMode: "SHADOW",
+    blockedReason: "OUTSIDE_LONDON_NY_WINDOW",
+    sessionLabel: sessionDecision.sessionLabel,
+    sessionWindow: sessionDecision.label,
+    side,
+    symbol: SYMBOL,
+    lotEach,
+    totalLot: lotEach * 2,
+    trades: {
+      PARTIAL: { lot: lotEach },
+      TRAILING: { lot: lotEach },
+    },
+    entryPrice,
+    sl,
+    tp,
+    slDistance,
+    breakEvenActive: false,
+    internalSL: null,
+    partialClosed: false,
+    openedAt: new Date(timestamp),
+    entryTimestamp: timestamp,
+    state: PAIR_STATE.ACTIVE,
+    closingReason: null,
+    closedAt: null,
+    entryScore: score,
+    entryReason: entryMeta?.reason || null,
+    entryMeta: entryMeta || null,
+  };
+
+  openShadowTrades[pairId] = rec;
+  await persistShadowTrade(rec);
+
+  console.log(
+    `[SHADOW] Created ${pairId} ${side} entry=${Number(entryPrice).toFixed(
+      2,
+    )} window=${sessionDecision.label}`,
+  );
+
+  return rec;
+}
+
+async function finalizeShadowTrade(pairId, reason) {
+  const rec = openShadowTrades[pairId];
+  if (!rec || rec.state === PAIR_STATE.CLOSED) return;
+
+  rec.state = PAIR_STATE.CLOSED;
+  rec.closingReason = reason;
+  rec.closedAt = rec.exitAt || new Date();
+
+  await persistShadowTrade(rec);
+  delete openShadowTrades[pairId];
+
+  console.log(`[SHADOW] Finalized ${pairId} | reason=${reason}`);
+}
+
+async function processTickForShadowTrades(price) {
+  if (!price || !Object.keys(openShadowTrades).length) return;
+
+  const exitTime = tickTimestamp(price);
+
+  for (const [pairId, rec] of Object.entries(openShadowTrades)) {
+    if (rec.state !== PAIR_STATE.ACTIVE) continue;
+
+    const side = rec.side;
+    const current = side === "BUY" ? price.bid : price.ask;
+    if (!Number.isFinite(Number(current))) continue;
+
+    if (!rec.partialClosed && rec.tp && rec.entryPrice) {
+      const totalDist = Math.abs(rec.tp - rec.entryPrice);
+      const movedDist =
+        side === "BUY" ? current - rec.entryPrice : rec.entryPrice - current;
+
+      if (totalDist > 0 && movedDist > 0 && movedDist / totalDist >= 0.5) {
+        markPartialOutcome(rec, current, exitTime);
+        rec.partialClosed = true;
+        rec.breakEvenActive = true;
+        rec.internalSL = rec.entryPrice;
+        await persistShadowTrade(rec);
+
+        console.log(`[SHADOW] Partial + BE activated for ${pairId}`);
+      }
+    }
+
+    const tpHit =
+      rec.tp &&
+      ((side === "BUY" && current >= rec.tp) ||
+        (side === "SELL" && current <= rec.tp));
+
+    if (tpHit) {
+      markFinalOutcome(rec, "TP_HIT", rec.tp, exitTime);
+      await finalizeShadowTrade(pairId, "TP_HIT");
+      continue;
+    }
+
+    const beHit =
+      rec.breakEvenActive &&
+      rec.internalSL &&
+      ((side === "BUY" && current <= rec.internalSL) ||
+        (side === "SELL" && current >= rec.internalSL));
+
+    if (beHit) {
+      markFinalOutcome(rec, "BREAK_EVEN", rec.internalSL, exitTime);
+      await finalizeShadowTrade(pairId, "BREAK_EVEN");
+      continue;
+    }
+
+    const effectiveSL = rec.internalSL ?? rec.sl;
+    const slHit =
+      effectiveSL &&
+      ((side === "BUY" && current <= effectiveSL) ||
+        (side === "SELL" && current >= effectiveSL));
+
+    if (slHit) {
+      markFinalOutcome(rec, "STOP_LOSS", effectiveSL, exitTime);
+      await finalizeShadowTrade(pairId, "STOP_LOSS");
+    }
+  }
 }
 
 function isEntryLocked() {
@@ -1326,6 +1612,31 @@ async function processStrategyEntry(side, score = null, entryMeta = null) {
     }
 
     const { sl, tp, slDistance } = sltp;
+    const sessionDecision = getLiveSessionDecision(tickTimestamp(latestPrice));
+
+    if (!sessionDecision.allowed) {
+      console.log("[ENTRY] Shadowing signal outside live session", {
+        side,
+        score,
+        session: sessionDecision.sessionLabel,
+        window: sessionDecision.label,
+      });
+
+      await createShadowTrade({
+        side,
+        totalLot,
+        entryPrice: entryRef,
+        sl,
+        tp,
+        slDistance,
+        score,
+        entryMeta,
+        sessionDecision,
+      });
+
+      releaseEntryLock("shadow-entry");
+      return;
+    }
 
     // ---- PLACE ORDER ----
     const prePair = await placePairedOrder(side, totalLot, sl, tp);
@@ -1742,6 +2053,17 @@ async function handleTick(tick) {
     };
 
     lastTickPrice = tickPrice;
+
+    if (Object.keys(openShadowTrades).length > 0) {
+      try {
+        await processTickForShadowTrades(latestPrice);
+      } catch (err) {
+        console.warn(
+          "[TICK] processTickForShadowTrades error:",
+          err.message || err,
+        );
+      }
+    }
 
     // --- Process internal SL/TP/BE/partial logic ---
     if (Object.keys(openPairs).length > 0) {
@@ -2521,6 +2843,8 @@ async function startBot() {
     polling: embedTelegramCommands,
     commands: embedTelegramCommands,
   });
+  await restoreOpenShadowTrades();
+  console.log(`[SESSION] Live order window: ${sessionWindowLabel()}`);
 
   if (!WATCHDOG_INTERVALS.reports) {
     WATCHDOG_INTERVALS.reports = startReportScheduler({ sendTelegram });

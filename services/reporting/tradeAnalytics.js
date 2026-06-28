@@ -494,6 +494,75 @@ function formatObservationsRich(summary) {
   return summary.insights.map((insight) => `- ${escapeHtml(insight)}`);
 }
 
+function formatShadowSummaryRich(summary, shadowSummary, sessionWindow) {
+  if (!shadowSummary) return [];
+
+  const live = summary.overall;
+  const shadow = shadowSummary.overall;
+  const combinedNet = live.netPnL + shadow.netPnL;
+  const combinedTrades = live.trades + shadow.trades;
+
+  const rows = [
+    "",
+    htmlBold("SKIPPED SHADOW"),
+    `Live window: ${htmlBold(sessionWindow || "configured session")}`,
+  ];
+
+  if (!shadow.trades) {
+    rows.push("Closed skipped trades: 0");
+    return rows;
+  }
+
+  rows.push(
+    htmlCode(
+      `${pad("Skipped", 13)} ${pad(shadow.trades, 5, "right")} ${pad(
+        signedMoney(shadow.netPnL),
+        10,
+        "right",
+      )} ${pad(pct(shadow.winRate), 6, "right")} ${pad(
+        formatProfitFactor(shadow.profitFactor),
+        5,
+        "right",
+      )}`,
+    ),
+    htmlCode(
+      `${pad("W / L / BE", 13)} ${pad(
+        `${shadow.wins} / ${shadow.losses} / ${shadow.breakeven}`,
+        24,
+      )}`,
+    ),
+    htmlCode(
+      `${pad("Live+Shadow", 13)} ${pad(combinedTrades, 5, "right")} ${pad(
+        signedMoney(combinedNet),
+        10,
+        "right",
+      )}`,
+    ),
+  );
+
+  const topShadowHours = topGroups(shadowSummary.byHour, 1, 1);
+  const weakShadowHours = bottomGroups(shadowSummary.byHour, 1, 1);
+  if (topShadowHours.length || weakShadowHours.length) {
+    rows.push(
+      `Skipped best/weak: ${
+        topShadowHours.length
+          ? `${escapeHtml(topShadowHours[0].label)}:00 ${signedMoney(
+              topShadowHours[0].netPnL,
+            )}`
+          : "N/A"
+      } / ${
+        weakShadowHours.length
+          ? `${escapeHtml(weakShadowHours[0].label)}:00 ${signedMoney(
+              weakShadowHours[0].netPnL,
+            )}`
+          : "N/A"
+      }`,
+    );
+  }
+
+  return rows;
+}
+
 function fitTelegramLines(lines, limit = 3900) {
   const output = [];
   let length = 0;
@@ -512,8 +581,10 @@ function fitTelegramLines(lines, limit = 3900) {
   return output.join("\n");
 }
 
-function formatTelegramReportV2(summary, aiNarrative = null) {
+function formatTelegramReportV2(summary, aiNarrative = null, options = {}) {
   const overall = summary.overall;
+  const shadowSummary = options.shadowSummary || null;
+  const sessionWindow = options.sessionWindow || null;
   const topHours = topGroups(summary.byHour, 2, 1);
   const weakHours = bottomGroups(summary.byHour, 2, 1);
   const topEntries = topGroups(summary.byEntryReason, 4, 1);
@@ -565,6 +636,7 @@ function formatTelegramReportV2(summary, aiNarrative = null) {
     "",
     htmlBold("OBSERVATIONS"),
     ...formatObservationsRich(summary),
+    ...formatShadowSummaryRich(summary, shadowSummary, sessionWindow),
   ];
 
   if (summary.bestTrades.length || summary.worstTrades.length) {
