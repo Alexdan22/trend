@@ -56,9 +56,11 @@ const fs = require("fs");
 const RAW_ORDERS_LOG = "/tmp/raw_order_responses.log";
 const { connectDB } = require("./db");
 const {
+  finalizePairDB,
   loadOpenShadowTrades,
   saveShadowTrade,
   saveTrade,
+  updatePair,
 } = require("./models");
 const { initTelegramBot, getBot } = require("./telegram");
 const { startReportScheduler } = require("./services/reporting/reportScheduler");
@@ -74,6 +76,21 @@ const {
   getLiveSessionDecision,
   sessionWindowLabel,
 } = require("./services/sessionWindow");
+const {
+  PAIR_STATE,
+  createPairFinalizer,
+  transitionTradeState,
+} = require("./services/tradeLifecycle");
+const {
+  DEFAULT_CATEGORY,
+  EXECUTION_MODE,
+  buildTradeMetadata,
+  snapshotTradeMetadata,
+} = require("./services/tradeMetadata");
+const {
+  canReconcileBrokerTickets,
+  clearMissingPartialTicket,
+} = require("./services/tradeReconciliation");
 
 const EXNESS_PORT = process.env.EXNESS_PORT || 5002;
 
@@ -395,13 +412,6 @@ const ATR_TRIGGER_MULTIPLIER = 1.5; // used to compute dynamic trigger = ATR * m
 let latestPrice = null; // { bid, ask, timestamp }
 let lastTradeMonitorRun = 0;
 let lastStrategyCandle = 0;
-const PAIR_STATE = Object.freeze({
-  CREATED: "CREATED", // object exists, no broker interaction yet
-  ENTRY_IN_PROGRESS: "ENTRY_IN_PROGRESS", // LEG1 placed, LEG2 pending
-  ACTIVE: "ACTIVE", // both legs confirmed
-  CLOSING: "CLOSING", // close requested (SL / CLOSE / SYNC)
-  CLOSED: "CLOSED", // terminal, immutable
-});
 
 const ENTRY_LOCK = {
   locked: false,
@@ -769,42 +779,10 @@ function parseOrderResponse(res) {
 }
 
 async function transitionPairState(rec, nextState, reason = null) {
-  if (!rec || !rec.state) return false;
-
-  // terminal guard
-  if (rec.state === PAIR_STATE.CLOSED) {
-    return false;
-  }
-
-  const allowedTransitions = {
-    [PAIR_STATE.CREATED]: [PAIR_STATE.ENTRY_IN_PROGRESS],
-    [PAIR_STATE.ENTRY_IN_PROGRESS]: [PAIR_STATE.ACTIVE, PAIR_STATE.CLOSING],
-    [PAIR_STATE.ACTIVE]: [PAIR_STATE.CLOSING],
-    [PAIR_STATE.CLOSING]: [PAIR_STATE.CLOSED],
-  };
-
-  const allowed = allowedTransitions[rec.state] || [];
-  if (!allowed.includes(nextState)) {
-    console.warn(
-      `[STATE] Illegal transition ${rec.state} → ${nextState} (${rec.pairId})`,
-    );
-    return false;
-  }
-
-  rec.state = nextState;
-  if (nextState === PAIR_STATE.CLOSING && reason) {
-    rec.closingReason = reason;
-  }
-  if (nextState === PAIR_STATE.CLOSED) {
-    rec.closedAt = Date.now();
-  }
-  const { updatePair } = require("./models");
-  await updatePair(rec.pairId, {
-    state: rec.state,
-    closingReason: rec.closingReason ?? null,
+  return transitionTradeState(rec, nextState, {
+    reason,
+    persist: (update) => updatePair(rec.pairId, update),
   });
-
-  return true;
 }
 
 function calculateTradePnL(side, entryPrice, exitPrice, lot) {
@@ -892,8 +870,8 @@ function buildTradeSnapshot(rec) {
     tradeId: rec.pairId,
     accountId: rec.accountId || process.env.METAAPI_ACCOUNT_ID,
     userId: rec.userId,
+    ...snapshotTradeMetadata(rec, EXECUTION_MODE.LIVE),
     side: rec.side,
-    category: rec.category,
     symbol: rec.symbol || SYMBOL,
     entryScore: rec.entryScore,
     entryReason: rec.entryReason,
@@ -924,42 +902,34 @@ function buildTradeSnapshot(rec) {
   };
 }
 
-async function finalizePair(pairId, reason) {
-  const rec = openPairs[pairId];
-  if (!rec) return;
-
-  // Idempotency guard
-  if (rec.state === PAIR_STATE.CLOSED) return;
-
-  // Force correct lifecycle
-  transitionPairState(rec, PAIR_STATE.CLOSED, reason);
-
-  const partialTicket = rec.trades?.PARTIAL?.ticket;
-  const trailingTicket = rec.trades?.TRAILING?.ticket;
-
-  if (partialTicket) {
-    ticketOwnershipMap.delete(String(partialTicket));
-  }
-  if (trailingTicket) {
-    ticketOwnershipMap.delete(String(trailingTicket));
-  }
-
-  const { finalizePairDB } = require("./models");
-  await finalizePairDB(pairId, reason);
-  try {
-    const snapshot = buildTradeSnapshot(rec);
-    await saveTrade(snapshot);
-  } catch (err) {
-    console.error(
-      `[FINALIZE] Snapshot/save failed for ${pairId}:`,
-      err.message || err,
-    );
-  }
-  // always cleanup local state
-  delete openPairs[pairId];
-
-  console.log(`[PAIR] Finalized ${pairId} | reason=${reason}`);
-}
+const finalizePair = createPairFinalizer({
+  getPair: (pairId) => openPairs[pairId],
+  transition: transitionPairState,
+  finalizePairRecord: finalizePairDB,
+  buildSnapshot: buildTradeSnapshot,
+  saveSnapshot: async (snapshot) => {
+    try {
+      await saveTrade(snapshot);
+    } catch (err) {
+      console.error(
+        `[FINALIZE] Snapshot/save failed for ${snapshot.tradeId}:`,
+        err.message || err,
+      );
+    }
+  },
+  releaseOwnership: (rec) => {
+    const partialTicket = rec.trades?.PARTIAL?.ticket;
+    const trailingTicket = rec.trades?.TRAILING?.ticket;
+    if (partialTicket) ticketOwnershipMap.delete(String(partialTicket));
+    if (trailingTicket) ticketOwnershipMap.delete(String(trailingTicket));
+  },
+  removePair: (pairId) => {
+    delete openPairs[pairId];
+  },
+  onFinalized: (pairId, reason) => {
+    console.log(`[PAIR] Finalized ${pairId} | reason=${reason}`);
+  },
+});
 
 function tickTimestamp(price) {
   const timestamp = Number(price?.timestamp);
@@ -993,12 +963,9 @@ function buildShadowTradeRecord(rec) {
     tradeId: rec.pairId,
     accountId: rec.accountId || process.env.METAAPI_ACCOUNT_ID,
     userId: rec.userId,
-    executionMode: "SHADOW",
+    ...snapshotTradeMetadata(rec, EXECUTION_MODE.SHADOW),
     blockedReason: rec.blockedReason,
-    sessionLabel: rec.sessionLabel,
-    sessionWindow: rec.sessionWindow,
     side: rec.side,
-    category: rec.category,
     symbol: rec.symbol || SYMBOL,
     entryScore: rec.entryScore,
     entryReason: rec.entryReason,
@@ -1055,8 +1022,9 @@ async function restoreOpenShadowTrades() {
         pairId: row.tradeId,
         accountId: row.accountId,
         userId: row.userId,
+        executionMode: row.executionMode || EXECUTION_MODE.SHADOW,
         side: String(row.side || "").toUpperCase(),
-        category: row.category,
+        category: row.category || DEFAULT_CATEGORY,
         symbol: row.symbol || SYMBOL,
         entryScore: row.entryScore,
         entryReason: row.entryReason,
@@ -1114,13 +1082,16 @@ async function createShadowTrade({
 
   const timestamp = tickTimestamp(latestPrice);
   const pairId = `shadow-${Date.now()}`;
+  const tradeMetadata = buildTradeMetadata({
+    executionMode: EXECUTION_MODE.SHADOW,
+    sessionDecision,
+    entryMeta,
+  });
   const rec = {
     pairId,
     accountId: process.env.METAAPI_ACCOUNT_ID,
-    executionMode: "SHADOW",
+    ...tradeMetadata,
     blockedReason: "OUTSIDE_LONDON_NY_WINDOW",
-    sessionLabel: sessionDecision.sessionLabel,
-    sessionWindow: sessionDecision.label,
     side,
     symbol: SYMBOL,
     lotEach,
@@ -1466,7 +1437,14 @@ async function safePlaceMarketOrder(action, lot, sl, tp, legIndex = 0) {
 }
 
 // --------------------- EXECUTION: Paired Order Placement ---------------------
-async function placePairedOrder(side, totalLot, slPrice, tpPrice, riskPercent) {
+async function placePairedOrder(
+  side,
+  totalLot,
+  slPrice,
+  tpPrice,
+  riskPercent,
+  tradeMetadata,
+) {
   try {
     const lotEach = Number((totalLot / 2).toFixed(2));
     if (lotEach < MIN_LOT) {
@@ -1498,6 +1476,7 @@ async function placePairedOrder(side, totalLot, slPrice, tpPrice, riskPercent) {
     // Build pair skeleton in openPairs
     openPairs[pairId] = {
       pairId,
+      ...tradeMetadata,
       side,
       lotEach,
       riskPercent,
@@ -1639,7 +1618,19 @@ async function processStrategyEntry(side, score = null, entryMeta = null) {
     }
 
     // ---- PLACE ORDER ----
-    const prePair = await placePairedOrder(side, totalLot, sl, tp);
+    const liveMetadata = buildTradeMetadata({
+      executionMode: EXECUTION_MODE.LIVE,
+      sessionDecision,
+      entryMeta,
+    });
+    const prePair = await placePairedOrder(
+      side,
+      totalLot,
+      sl,
+      tp,
+      undefined,
+      liveMetadata,
+    );
 
     if (!prePair) {
       console.log("[ENTRY] ❌ Order failed");
@@ -1769,10 +1760,9 @@ async function processTickForOpenPairs(price) {
       if (ageMs >= 5000) {
         if (partialRec?.ticket && !openTickets.has(partialRec.ticket)) {
           console.log(
-            `[PAIR] Partial ticket ${partialRec.ticket} missing for ${pairId} — marking as closed.`,
+            `[PAIR] Partial ticket ${partialRec.ticket} missing for ${pairId} — clearing ticket without claiming a partial outcome.`,
           );
-          rec.trades.PARTIAL.ticket = null;
-          rec.partialClosed = true;
+          clearMissingPartialTicket(rec);
         }
 
         const trailingTicket = rec.trades?.TRAILING?.ticket;
@@ -1849,7 +1839,11 @@ async function processTickForOpenPairs(price) {
             side,
             tpHit,
           });
-          transitionPairState(rec, PAIR_STATE.CLOSING, "TP_HIT");
+          const closingTransition = transitionPairState(
+            rec,
+            PAIR_STATE.CLOSING,
+            "TP_HIT",
+          );
 
           for (const key of ["PARTIAL", "TRAILING"]) {
             const t = rec.trades[key];
@@ -1858,6 +1852,7 @@ async function processTickForOpenPairs(price) {
               rec.trades[key].ticket = null;
             }
           }
+          await closingTransition;
 
           await sendTradeChartAlert({
             event: "TP",
@@ -1867,7 +1862,7 @@ async function processTickForOpenPairs(price) {
           });
 
           // 🧹 FINALIZE AFTER NOTIFICATION
-          finalizePair(pairId, "TP_HIT");
+          await finalizePair(pairId, "TP_HIT");
 
           continue;
         }
@@ -1898,8 +1893,15 @@ async function processTickForOpenPairs(price) {
             `[PAIR] 🔵 BREAK-EVEN HIT → closing trailing leg (${pairId})`,
           );
 
+          const closingTransition = transitionPairState(
+            rec,
+            PAIR_STATE.CLOSING,
+            "BREAK_EVEN",
+          );
+
           await safeClosePosition(trailingRec.ticket, trailingRec.lot);
           rec.trades.TRAILING.ticket = null;
+          await closingTransition;
 
           await sendTradeChartAlert({
             event: "BREAK_EVEN",
@@ -1908,7 +1910,7 @@ async function processTickForOpenPairs(price) {
             exitTime: price.timestamp || Date.now(),
           });
 
-          finalizePair(pairId, "BREAK_EVEN");
+          await finalizePair(pairId, "BREAK_EVEN");
 
           continue;
         }
@@ -1938,7 +1940,11 @@ async function processTickForOpenPairs(price) {
 
           console.log(`[PAIR] ⛔ STOP-LOSS HIT → closing pair (${pairId})`);
 
-          transitionPairState(rec, PAIR_STATE.CLOSING, "STOP_LOSS");
+          const closingTransition = transitionPairState(
+            rec,
+            PAIR_STATE.CLOSING,
+            "STOP_LOSS",
+          );
 
           // Close both legs defensively
           for (const key of ["PARTIAL", "TRAILING"]) {
@@ -1948,6 +1954,7 @@ async function processTickForOpenPairs(price) {
               rec.trades[key].ticket = null;
             }
           }
+          await closingTransition;
 
           await sendTradeChartAlert({
             event: "STOP_LOSS",
@@ -1956,14 +1963,14 @@ async function processTickForOpenPairs(price) {
             exitTime: price.timestamp || Date.now(),
           });
 
-          finalizePair(pairId, "STOP_LOSS");
+          await finalizePair(pairId, "STOP_LOSS");
           continue;
         }
       }
 
       // --- If both trade tickets are gone, cleanup pair ---
       if (!rec.trades.PARTIAL.ticket && !rec.trades.TRAILING.ticket) {
-        finalizePair(pairId, "PAIR_CLOSED");
+        await finalizePair(pairId, "PAIR_CLOSED");
       }
     }
   } catch (err) {
@@ -2292,6 +2299,11 @@ async function syncOpenPairsWithPositions(positions) {
 
     // === RULE: Validate each managed pair and implement WAITING -> adopt-LEG2 logic ===
     for (const [pairId, rec] of Object.entries(openPairs)) {
+      // An explicit exit path owns reconciliation until its idempotent
+      // finalization completes. This prevents sync from reclassifying a leg
+      // that disappeared because the exit path just closed it.
+      if (!canReconcileBrokerTickets(rec)) continue;
+
       // extended grace
       if (rec.openedAt) {
         const ageMs = Date.now() - new Date(rec.openedAt).getTime();
@@ -2405,7 +2417,7 @@ async function syncOpenPairsWithPositions(positions) {
 
           rec.trades.TRAILING.ticket = brokerTicket;
           ticketOwnershipMap.set(String(brokerTicket), pairId); // ✅ OWNERSHIP
-          transitionPairState(rec, PAIR_STATE.ACTIVE);
+          await transitionPairState(rec, PAIR_STATE.ACTIVE);
           console.log(
             `[PAIR-ACTIVE] ${pairId}`,
             JSON.stringify(
@@ -2482,7 +2494,7 @@ async function syncOpenPairsWithPositions(positions) {
             }
 
             if (rec.trades?.TRAILING?.ticket) {
-              transitionPairState(rec, PAIR_STATE.ACTIVE);
+              await transitionPairState(rec, PAIR_STATE.ACTIVE);
               releaseEntryLock("entry-success");
             } else {
               console.warn(
@@ -2523,8 +2535,8 @@ async function syncOpenPairsWithPositions(positions) {
           try {
             await safeClosePosition(partialTicket, rec.trades.PARTIAL.lot);
           } catch (e) {}
-          rec.trades.PARTIAL.ticket = null;
-          rec.partialClosed = true;
+          if (!canReconcileBrokerTickets(rec)) continue;
+          clearMissingPartialTicket(rec);
         }
       }
 
@@ -2552,6 +2564,7 @@ async function syncOpenPairsWithPositions(positions) {
           try {
             await safeClosePosition(trailingTicket, rec.trades.TRAILING.lot);
           } catch (e) {}
+          if (!canReconcileBrokerTickets(rec)) continue;
           rec.trades.TRAILING.ticket = null;
         }
       }
@@ -2560,6 +2573,7 @@ async function syncOpenPairsWithPositions(positions) {
       const pExists = rec.trades.PARTIAL.ticket;
       const tExists = rec.trades.TRAILING.ticket;
       if (!pExists && !tExists) {
+        if (!canReconcileBrokerTickets(rec)) continue;
         if (!rec.firstSyncDone) {
           console.log(
             `[SYNC] Both tickets missing but still in grace → NOT deleting ${pairId}`,
@@ -2570,7 +2584,7 @@ async function syncOpenPairsWithPositions(positions) {
           ticketOwnershipMap.delete(String(trailingTicket));
           ticketOwnershipMap.delete(String(partialTicket));
 
-          finalizePair(pairId, "SYNC_CLOSED");
+          await finalizePair(pairId, "SYNC_CLOSED");
         }
         continue;
       }

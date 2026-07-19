@@ -104,7 +104,14 @@ async function setAccountPaused(accountId, paused) {
   );
 }
 
+function requireTradeId(trade, collectionName) {
+  if (!trade || typeof trade.tradeId !== "string" || !trade.tradeId.trim()) {
+    throw new Error(`${collectionName} persistence requires a non-empty tradeId`);
+  }
+}
+
 async function saveTrade(trade) {
+  requireTradeId(trade, "trades");
   return getDB().collection("trades").updateOne(
     { tradeId: trade.tradeId },
     {
@@ -121,6 +128,7 @@ async function saveTrade(trade) {
 }
 
 async function saveShadowTrade(trade) {
+  requireTradeId(trade, "shadow_trades");
   return getDB().collection("shadow_trades").updateOne(
     { tradeId: trade.tradeId },
     {

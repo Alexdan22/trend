@@ -1,0 +1,28 @@
+{
+  "validatedAt": "2026-07-19T20:11:29.630Z",
+  "mode": "READ_ONLY_PRODUCTION_PREFLIGHT",
+  "indexApplied": false,
+  "collections": {
+    "trades": {
+      "total": 313,
+      "missingTradeId": 0,
+      "duplicateTradeIdGroups": 1,
+      "existingUniqueTradeIdIndex": false,
+      "safeToCreateUniqueIndex": false
+    },
+    "shadow_trades": {
+      "total": 50,
+      "missingTradeId": 0,
+      "duplicateTradeIdGroups": 0,
+      "existingUniqueTradeIdIndex": false,
+      "safeToCreateUniqueIndex": true
+    }
+  },
+  "blocker": {
+    "collection": "trades",
+    "tradeId": "pair-1779426602062",
+    "count": 2,
+    "openedAt": "2026-05-22T05:10:02.582Z",
+    "note": "No historical record was changed. The guarded migration must not be applied until this duplicate is reviewed and resolved under separate authorization."
+  }
+}

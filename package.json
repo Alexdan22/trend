@@ -209,7 +209,9 @@
   },
   "scripts": {
     "telegram:listener": "node telegram-listener.js",
-    "test": "echo \"Error: no test specified\" && exit 1"
+    "db:index:trade-id:validate": "node scripts/ensure-trade-id-indexes.js",
+    "test": "node --test test/tradeLifecycle.test.js test/tradeMetadata.test.js test/tradeIdIndex.test.js",
+    "test:reliability": "node --test test/tradeLifecycle.test.js test/tradeMetadata.test.js test/tradeIdIndex.test.js"
   },
   "keywords": [],
   "author": "",
