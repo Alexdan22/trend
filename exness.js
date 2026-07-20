@@ -91,6 +91,15 @@ const {
   canReconcileBrokerTickets,
   clearMissingPartialTicket,
 } = require("./services/tradeReconciliation");
+const {
+  captureAiSignal,
+  configureAiAnalyst,
+  ingestAiTick,
+  maybeCaptureAiControl,
+  observeAiExit,
+  recordAiSignalDisposition,
+  warmupAiCandles,
+} = require("./services/aiAnalyst");
 
 const EXNESS_PORT = process.env.EXNESS_PORT || 5002;
 
@@ -868,6 +877,7 @@ function buildTradeSnapshot(rec) {
 
   return {
     tradeId: rec.pairId,
+    signalEventId: rec.signalEventId || null,
     accountId: rec.accountId || process.env.METAAPI_ACCOUNT_ID,
     userId: rec.userId,
     ...snapshotTradeMetadata(rec, EXECUTION_MODE.LIVE),
@@ -910,6 +920,25 @@ const finalizePair = createPairFinalizer({
   saveSnapshot: async (snapshot) => {
     try {
       await saveTrade(snapshot);
+      observeAiExit({
+        signalEventId: snapshot.signalEventId,
+        tradeId: snapshot.tradeId,
+        symbol: snapshot.symbol,
+        price: latestPrice,
+        sessionLabel: snapshot.sessionLabel,
+        observedAt: snapshot.closedAt,
+        finalOutcome: {
+          exitPrice: snapshot.exitPrice,
+          closedAt: snapshot.closedAt,
+          durationSec: snapshot.durationSec,
+          closingReason: snapshot.closingReason,
+          result: snapshot.result,
+          netPnL: snapshot.netPnL,
+          realizedR: snapshot.realizedR,
+          partialClosed: snapshot.partialClosed,
+          breakEvenActive: snapshot.breakEvenActive,
+        },
+      });
     } catch (err) {
       console.error(
         `[FINALIZE] Snapshot/save failed for ${snapshot.tradeId}:`,
@@ -961,6 +990,7 @@ function buildShadowTradeRecord(rec) {
 
   return {
     tradeId: rec.pairId,
+    signalEventId: rec.signalEventId || null,
     accountId: rec.accountId || process.env.METAAPI_ACCOUNT_ID,
     userId: rec.userId,
     ...snapshotTradeMetadata(rec, EXECUTION_MODE.SHADOW),
@@ -1020,6 +1050,7 @@ async function restoreOpenShadowTrades() {
       if (!row?.tradeId) continue;
       openShadowTrades[row.tradeId] = {
         pairId: row.tradeId,
+        signalEventId: row.signalEventId || null,
         accountId: row.accountId,
         userId: row.userId,
         executionMode: row.executionMode || EXECUTION_MODE.SHADOW,
@@ -1072,6 +1103,7 @@ async function createShadowTrade({
   score,
   entryMeta,
   sessionDecision,
+  signalEventId = null,
 }) {
   const lotEach = Number((Number(totalLot || 0) / 2).toFixed(2));
 
@@ -1089,6 +1121,7 @@ async function createShadowTrade({
   });
   const rec = {
     pairId,
+    signalEventId,
     accountId: process.env.METAAPI_ACCOUNT_ID,
     ...tradeMetadata,
     blockedReason: "OUTSIDE_LONDON_NY_WINDOW",
@@ -1138,6 +1171,26 @@ async function finalizeShadowTrade(pairId, reason) {
   rec.closedAt = rec.exitAt || new Date();
 
   await persistShadowTrade(rec);
+  const snapshot = buildShadowTradeRecord(rec);
+  observeAiExit({
+    signalEventId: snapshot.signalEventId,
+    tradeId: snapshot.tradeId,
+    symbol: snapshot.symbol,
+    price: latestPrice,
+    sessionLabel: snapshot.sessionLabel,
+    observedAt: snapshot.closedAt,
+    finalOutcome: {
+      exitPrice: snapshot.exitPrice,
+      closedAt: snapshot.closedAt,
+      durationSec: snapshot.durationSec,
+      closingReason: snapshot.closingReason,
+      result: snapshot.result,
+      netPnL: snapshot.netPnL,
+      realizedR: snapshot.realizedR,
+      partialClosed: snapshot.partialClosed,
+      breakEvenActive: snapshot.breakEvenActive,
+    },
+  });
   delete openShadowTrades[pairId];
 
   console.log(`[SHADOW] Finalized ${pairId} | reason=${reason}`);
@@ -1529,8 +1582,10 @@ async function placePairedOrder(
   }
 }
 
-async function processStrategyEntry(side, score = null, entryMeta = null) {
+async function processStrategyEntry(side, score = null, entryMeta = null, aiSignal = null) {
+  const signalEventId = aiSignal?.signalEventId || null;
   if (isEntryLocked()) {
+    recordAiSignalDisposition({ signalEventId, disposition: "ENTRY_LOCKED" });
     console.log("[ENTRY] ⛔ Blocked — entry lock active");
     return;
   }
@@ -1544,6 +1599,7 @@ async function processStrategyEntry(side, score = null, entryMeta = null) {
 
     if (!allowed) {
       console.log("[ENTRY] Blocked by single-account pause state");
+      recordAiSignalDisposition({ signalEventId, disposition: "ACCOUNT_PAUSED" });
       releaseEntryLock("entry-paused");
       return;
     }
@@ -1563,6 +1619,7 @@ async function processStrategyEntry(side, score = null, entryMeta = null) {
     const priceRef = await safeGetPrice(SYMBOL);
 
     if (!priceRef) {
+      recordAiSignalDisposition({ signalEventId, disposition: "PRICE_UNAVAILABLE" });
       releaseEntryLock("price-unavailable");
       return;
     }
@@ -1601,7 +1658,7 @@ async function processStrategyEntry(side, score = null, entryMeta = null) {
         window: sessionDecision.label,
       });
 
-      await createShadowTrade({
+      const shadow = await createShadowTrade({
         side,
         totalLot,
         entryPrice: entryRef,
@@ -1611,6 +1668,18 @@ async function processStrategyEntry(side, score = null, entryMeta = null) {
         score,
         entryMeta,
         sessionDecision,
+        signalEventId,
+      });
+
+      recordAiSignalDisposition({
+        signalEventId,
+        disposition: shadow ? "SHADOW_CREATED" : "SHADOW_SKIPPED",
+        tradeId: shadow?.pairId || null,
+        actualDirection: side,
+        actualEntry: entryRef,
+        actualSL: sl,
+        actualTP: tp,
+        executionMode: shadow ? EXECUTION_MODE.SHADOW : null,
       });
 
       releaseEntryLock("shadow-entry");
@@ -1633,17 +1702,30 @@ async function processStrategyEntry(side, score = null, entryMeta = null) {
     );
 
     if (!prePair) {
+      recordAiSignalDisposition({ signalEventId, disposition: "LIVE_EXECUTION_FAILED" });
       console.log("[ENTRY] ❌ Order failed");
       releaseEntryLock("entry-failed");
       return;
     }
 
     openPairs[prePair.pairId].sl = sl;
+    openPairs[prePair.pairId].signalEventId = signalEventId;
     openPairs[prePair.pairId].tp = tp;
     openPairs[prePair.pairId].slDistance = slDistance;
     openPairs[prePair.pairId].entryScore = score;
     openPairs[prePair.pairId].entryReason = entryMeta?.reason || null;
     openPairs[prePair.pairId].entryMeta = entryMeta || null;
+
+    recordAiSignalDisposition({
+      signalEventId,
+      disposition: "LIVE_CREATED",
+      tradeId: prePair.pairId,
+      actualDirection: side,
+      actualEntry: prePair.entryPrice,
+      actualSL: sl,
+      actualTP: tp,
+      executionMode: EXECUTION_MODE.LIVE,
+    });
 
     // ---- SAVE TO DB ----
     const { savePair } = require("./models");
@@ -1666,6 +1748,7 @@ async function processStrategyEntry(side, score = null, entryMeta = null) {
 
     console.log("[ENTRY] ✔ STRATEGY ENTRY completed");
   } catch (err) {
+    recordAiSignalDisposition({ signalEventId, disposition: "ENTRY_ERROR" });
     console.error("[ENTRY] ❌ Strategy entry error:", err.message);
 
     releaseEntryLock("entry-error");
@@ -2059,6 +2142,8 @@ async function handleTick(tick) {
       timestamp: tickTime,
     };
 
+    ingestAiTick({ bid: tickBid, ask: tickAsk, timestamp: tickTime });
+
     lastTickPrice = tickPrice;
 
     if (Object.keys(openShadowTrades).length > 0) {
@@ -2217,10 +2302,23 @@ async function handleTick(tick) {
             const result = strategyEngine(ctx);
 
             if (result?.action === "ENTER") {
+              const aiSignal = captureAiSignal({
+                symbol: SYMBOL,
+                price: latestPrice,
+                sessionLabel: getLiveSessionDecision(tickTime).sessionLabel,
+                observedAt: tickTime,
+                deterministicContext: {
+                  direction: result.signal,
+                  score: result.score,
+                  reason: result.entry?.reason || null,
+                  entryMeta: result.entry || null,
+                },
+              });
               await processStrategyEntry(
                 result.signal,
                 result.score,
                 result.entry,
+                aiSignal,
               );
 
               resetStrategyEngine();
@@ -2231,6 +2329,13 @@ async function handleTick(tick) {
     } catch (err) {
       console.log("[CANDLE BUILD] error:", err.message || err);
     }
+
+    maybeCaptureAiControl({
+      symbol: SYMBOL,
+      price: latestPrice,
+      sessionDecision: getLiveSessionDecision(tickTime),
+      observedAt: tickTime,
+    });
   } catch (err) {
     console.warn("[TICK] Error in handleTick:", err.message || err);
   }
@@ -2857,6 +2962,7 @@ async function startBot() {
     polling: embedTelegramCommands,
     commands: embedTelegramCommands,
   });
+  configureAiAnalyst({ notify: sendTelegram });
   await restoreOpenShadowTrades();
   console.log(`[SESSION] Live order window: ${sessionWindowLabel()}`);
 
@@ -2979,6 +3085,13 @@ async function startBot() {
       }
       console.log("[METAAPI] ✅ Streaming connection synchronized.");
     }
+
+    warmupAiCandles(
+      (symbol, timeframe, limit) =>
+        account.getHistoricalCandles(symbol, timeframe, undefined, limit),
+      SYMBOL,
+      new Date(),
+    );
 
     // ------------- subscribe AFTER synchronized
     if (typeof connection.subscribeToMarketData === "function") {

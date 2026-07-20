@@ -27,6 +27,7 @@ const {
   getAccountsByUser
 } = require("./models");
 const { buildTradeReport } = require("./services/reporting/reportBuilder");
+const { executeAiOwnerCommand } = require("./services/aiAnalyst/telegramCommands");
 
 
 const token = process.env.TELEGRAM_BOT_TOKEN;
@@ -228,6 +229,12 @@ const OWNER_COMMANDS = [
   { cmd: "/report_daily", desc: "Send today's report to the group" },
   { cmd: "/report_weekly", desc: "Send this week's report to the group" },
   { cmd: "/report_monthly", desc: "Send this month's report to the group" },
+  { cmd: "/ai_why <tradeId>", desc: "Show stored AI review for a trade" },
+  { cmd: "/ai_missed", desc: "Show recent opposed or low-grade signals" },
+  { cmd: "/ai_daily", desc: "Show today's stored AI summary" },
+  { cmd: "/ai_weekly", desc: "Show this week's stored AI summary" },
+  { cmd: "/ai_status", desc: "Show observational analyst status" },
+  { cmd: "/ai_cost", desc: "Show today's stored AI usage cost" },
   { cmd: "/help", desc: "Show this command list" },
 ];
 
@@ -331,7 +338,7 @@ async function sendManualReport(bot, chatId, period) {
   return null;
 }
 
-async function handleOwnerCommand(bot, chatId, telegramId, command) {
+async function handleOwnerCommand(bot, chatId, telegramId, command, args = []) {
   if (!isAuthorizedCommandUser(telegramId)) {
     console.warn(`[TELEGRAM COMMAND] unauthorized user=${telegramId}`);
     return bot.sendMessage(chatId, "Unauthorized.");
@@ -379,6 +386,14 @@ async function handleOwnerCommand(bot, chatId, telegramId, command) {
     case "/report_monthly":
       await bot.sendMessage(chatId, "Building monthly report for the group...");
       return sendManualReport(bot, chatId, "monthly");
+
+    case "/ai_why":
+    case "/ai_missed":
+    case "/ai_daily":
+    case "/ai_weekly":
+    case "/ai_status":
+    case "/ai_cost":
+      return bot.sendMessage(chatId, await executeAiOwnerCommand(command, args));
 
     default:
       return bot.sendMessage(chatId, renderOwnerHelp());
@@ -431,7 +446,7 @@ bot.on("message", async (msg) => {
   );
 
   try {
-    return await handleOwnerCommand(bot, chatId, telegramId, command);
+    return await handleOwnerCommand(bot, chatId, telegramId, command, args);
   } catch (err) {
     console.warn(
       `[TELEGRAM COMMAND] ${command} failed: ${err.message || err}`,

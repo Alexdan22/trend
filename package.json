@@ -149,6 +149,7 @@
     "object-inspect": "^1.13.4",
     "object-keys": "^1.1.1",
     "object.assign": "^4.1.7",
+    "openai": "^6.48.0",
     "own-keys": "^1.0.1",
     "parse-asn1": "^5.1.9",
     "parseqs": "^0.0.6",
@@ -205,12 +206,15 @@
     "which-typed-array": "^1.1.19",
     "ws": "^7.5.10",
     "xmlhttprequest-ssl": "^1.6.3",
-    "yeast": "^0.1.2"
+    "yeast": "^0.1.2",
+    "zod": "^4.4.3"
   },
   "scripts": {
     "telegram:listener": "node telegram-listener.js",
     "db:index:trade-id:validate": "node scripts/ensure-trade-id-indexes.js",
-    "test": "node --test test/tradeLifecycle.test.js test/tradeMetadata.test.js test/tradeIdIndex.test.js",
+    "db:index:ai-analyst:validate": "node scripts/ensure-ai-analyst-collections.js",
+    "test": "node --test test/*.test.js",
+    "test:ai": "node --test test/aiAnalyst*.test.js",
     "test:reliability": "node --test test/tradeLifecycle.test.js test/tradeMetadata.test.js test/tradeIdIndex.test.js"
   },
   "keywords": [],
