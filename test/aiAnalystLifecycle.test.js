@@ -91,7 +91,7 @@ test("signal event, blind persistence, append-only link and comparison are order
   const comparisonText = requests[1].input[1].content[0].text;
   assert.match(comparisonText, /actualDirection/);
   assert.doesNotMatch(comparisonText, /score|indicator|pullback|entryReason|category|outcome/i);
-  assert.match(notifications[0].message, /<b>Bot<\/b> BUY/);
+  assert.match(notifications[0].message, /<b>Bot:<\/b> BUY 📈/);
   assert.doesNotMatch(notifications[0].message, /deterministic pullback|Score|88/);
   assert.deepEqual(notifications[0].options, { parse_mode: "HTML" });
 });
@@ -130,7 +130,8 @@ test("a failed signal can be linked later without mutating its original event", 
 
 test("outcome is append-only and cannot revise the original grade", async () => {
   const repository = new MemoryAiAnalystRepository();
-  const analyst = new IndependentAiMarketAnalyst({ config: config({ telegramEnabled: false }), repository, client: fakeClient([]), chartRenderer: () => Buffer.from("png") });
+  const notifications = [];
+  const analyst = new IndependentAiMarketAnalyst({ config: config(), repository, client: fakeClient([]), notify: async (message) => notifications.push(message), chartRenderer: () => Buffer.from("png") });
   const now = seedTicks(analyst);
   const capture = analyst.captureSignal({ symbol: "X", price: { bid: 2000, ask: 2000.2 }, sessionLabel: "LONDON_WINDOW", observedAt: now });
   analyst.recordDisposition({ signalEventId: capture.signalEventId, disposition: "SHADOW_CREATED", tradeId: "shadow-1", actualDirection: "SELL", actualEntry: 2000, actualSL: 2005, actualTP: 1990, executionMode: "SHADOW" });
@@ -145,6 +146,9 @@ test("outcome is append-only and cannot revise the original grade", async () => 
   assert.equal(repository.documents.ai_signal_comparisons[0].comparison.grade, "C");
   assert.ok(repository.documents.ai_outcome_reviews[0].blindAssessmentHash);
   assert.ok(repository.documents.ai_outcome_reviews[0].comparisonHash);
+  assert.match(notifications.at(-1), /<b>Verdict:<\/b> SUPPORTED/);
+  assert.match(notifications.at(-1), /<b>Lesson:<\/b> wait for confirmation/);
+  assert.doesNotMatch(notifications.at(-1), /false break|break and retest/);
 });
 
 test("capture is non-awaited and worker/API failure never touches execution", async () => {

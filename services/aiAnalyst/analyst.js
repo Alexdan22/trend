@@ -161,7 +161,8 @@ class IndependentAiMarketAnalyst {
         const event = await this.repository.findSignalEvent(signalEventId);
         await this.#notify(formatOutcomeReview({
           tradeId, blind: blind.assessment, comparison: comparison.comparison,
-          botAction: event?.deterministicContext?.direction, finalOutcome: capture.finalOutcome,
+          outcome: outcome.review, botAction: event?.deterministicContext?.direction,
+          finalOutcome: capture.finalOutcome,
         }));
       }
     });

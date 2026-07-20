@@ -12,7 +12,7 @@ function shortenedId(value) {
   return text.length <= 12 ? text : `…${text.slice(-8)}`;
 }
 
-function shortText(value, maxLength = 96) {
+function shortText(value, maxLength = 88) {
   const text = compact(value);
   return text.length <= maxLength ? text : `${text.slice(0, maxLength - 1).trimEnd()}…`;
 }
@@ -22,7 +22,26 @@ function normalizedAction(value) {
   return ["BUY", "SELL", "WAIT"].includes(action) ? action : "UNKNOWN";
 }
 
+function actionIcon(value) {
+  return { BUY: "📈", SELL: "📉", WAIT: "⏸️" }[normalizedAction(value)] || "❔";
+}
+
+function normalizedGrade(value) {
+  const grade = compact(value, "?").toUpperCase();
+  return ["A", "B", "C", "D", "E", "F"].includes(grade) ? grade : "?";
+}
+
+function gradeIcon(value) {
+  const grade = normalizedGrade(value);
+  if (["A", "B"].includes(grade)) return "🟢";
+  if (grade === "C") return "🟡";
+  if (["D", "E"].includes(grade)) return "🟠";
+  if (grade === "F") return "🔴";
+  return "❔";
+}
+
 function confidence(value) {
+  if (value == null || value === "") return "n/a";
   const number = Number(value);
   return Number.isFinite(number) ? `${Math.max(0, Math.min(100, Math.round(number)))}%` : "n/a";
 }
@@ -39,30 +58,45 @@ function deterministicOutcome(finalOutcome = {}) {
   return "UNKNOWN";
 }
 
+function resultIcon(value) {
+  return { WIN: "🟢", LOSS: "🔴", BREAKEVEN: "⚪" }[value] || "❔";
+}
+
 function primaryRisk(blind = {}) {
   return Array.isArray(blind.risks) ? blind.risks[0] : blind.risks;
 }
 
+function primaryLesson(outcome = {}) {
+  return Array.isArray(outcome.lessons) ? outcome.lessons[0] : outcome.lessons;
+}
+
 function formatSignalReview({ key, blind = {}, comparison = {}, botAction = null }) {
+  const bot = normalizedAction(botAction);
+  const ai = normalizedAction(blind.action);
+  const grade = normalizedGrade(comparison.grade);
   return [
-    `<b>AI SIGNAL</b> <code>${escapeHtml(shortenedId(key))}</code>`,
+    `🧠 <b>AI SIGNAL REVIEW</b> · <code>${escapeHtml(shortenedId(key))}</code>`,
     "",
-    `<b>Bot</b> ${escapeHtml(normalizedAction(botAction))} &#183; <b>Blind AI</b> ${escapeHtml(normalizedAction(blind.action))}`,
-    `<b>Grade</b> ${escapeHtml(comparison.grade || "?")} &#183; <b>Confidence</b> ${escapeHtml(confidence(blind.confidence))}`,
-    `<b>Primary risk</b> ${escapeHtml(shortText(primaryRisk(blind)))}`,
-    `<b>Better setup</b> ${escapeHtml(shortText(blind.bestAvailableSetup))}`,
+    `🤖 <b>Bot:</b> ${escapeHtml(bot)} ${actionIcon(bot)}  |  👁 <b>AI:</b> ${escapeHtml(ai)} ${actionIcon(ai)}`,
+    `${gradeIcon(grade)} <b>Grade:</b> ${escapeHtml(grade)}  |  🎯 <b>Confidence:</b> ${escapeHtml(confidence(blind.confidence))}`,
+    `⚠️ <b>Risk:</b> ${escapeHtml(shortText(primaryRisk(blind)))}`,
+    `💡 <b>Better:</b> ${escapeHtml(shortText(blind.bestAvailableSetup))}`,
   ].join("\n");
 }
 
-function formatOutcomeReview({ tradeId, blind = {}, comparison = {}, botAction = null, finalOutcome = {} }) {
+function formatOutcomeReview({ tradeId, blind = {}, comparison = {}, outcome = {}, botAction = null, finalOutcome = {} }) {
+  const result = deterministicOutcome(finalOutcome);
+  const bot = normalizedAction(botAction);
+  const ai = normalizedAction(blind.action);
+  const grade = normalizedGrade(comparison.grade);
   return [
-    `<b>AI OUTCOME</b> <code>${escapeHtml(shortenedId(tradeId))}</code>`,
+    `📌 <b>AI OUTCOME REVIEW</b> · <code>${escapeHtml(shortenedId(tradeId))}</code>`,
     "",
-    `<b>Result</b> ${escapeHtml(deterministicOutcome(finalOutcome))}`,
-    `<b>Bot</b> ${escapeHtml(normalizedAction(botAction))} &#183; <b>Blind AI</b> ${escapeHtml(normalizedAction(blind.action))}`,
-    `<b>Grade</b> ${escapeHtml(comparison.grade || "?")} &#183; <b>Confidence</b> ${escapeHtml(confidence(blind.confidence))}`,
-    `<b>Primary risk</b> ${escapeHtml(shortText(primaryRisk(blind)))}`,
-    `<b>Better setup</b> ${escapeHtml(shortText(blind.bestAvailableSetup))}`,
+    `${resultIcon(result)} <b>Result:</b> ${escapeHtml(result)}`,
+    `🤖 <b>Bot:</b> ${escapeHtml(bot)} ${actionIcon(bot)}  |  👁 <b>AI:</b> ${escapeHtml(ai)} ${actionIcon(ai)}`,
+    `${gradeIcon(grade)} <b>Original grade:</b> ${escapeHtml(grade)}`,
+    `🧭 <b>Verdict:</b> ${escapeHtml(compact(outcome.thesisValidation).toUpperCase())}`,
+    `💭 <b>Lesson:</b> ${escapeHtml(shortText(primaryLesson(outcome)))}`,
   ].join("\n");
 }
 
@@ -77,6 +111,6 @@ function formatAiStatus(status) {
 }
 
 module.exports = {
-  deterministicOutcome, escapeHtml, formatAiStatus, formatOutcomeReview, formatSignalReview,
-  shortText, shortenedId,
+  actionIcon, deterministicOutcome, escapeHtml, formatAiStatus, formatOutcomeReview, formatSignalReview,
+  gradeIcon, normalizedGrade, resultIcon, shortText, shortenedId,
 };
