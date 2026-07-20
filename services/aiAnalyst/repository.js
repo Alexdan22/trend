@@ -256,7 +256,7 @@ async function inspectOrMigrateAiCollections(db, { apply = false } = {}) {
       if (IMMUTABLE_COLLECTIONS.includes(name)) {
         const missingIntegrity = await collection.countDocuments({
           $or: [
-            { schemaVersion: { $type: "missing" } },
+            { schemaVersion: { $exists: false } },
             { createdAt: { $not: { $type: "date" } } },
             { canonicalHash: { $not: { $type: "string" } } },
           ],

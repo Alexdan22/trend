@@ -14,6 +14,9 @@ class FakeCollection {
     this.createIndexCalls = [];
   }
   async countDocuments(query = {}) {
+    if (JSON.stringify(query).includes('"$type":"missing"')) {
+      throw new Error("'missing' is not a legal MongoDB type name");
+    }
     if (!query.$or) return this.documents.length;
     return this.documents.filter((document) => !document.schemaVersion || !(document.createdAt instanceof Date) || typeof document.canonicalHash !== "string").length;
   }
