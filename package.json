@@ -227,5 +227,8 @@
   "bugs": {
     "url": "https://github.com/Alexdan22/trend/issues"
   },
-  "homepage": "https://github.com/Alexdan22/trend#readme"
+  "homepage": "https://github.com/Alexdan22/trend#readme",
+  "devDependencies": {
+    "mongodb-memory-server": "^11.2.0"
+  }
 }

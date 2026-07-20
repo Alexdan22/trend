@@ -21,7 +21,11 @@ class MongoAiAnalystRepository {
   async insert(name, document) {
     if (!IMMUTABLE_COLLECTIONS.includes(name)) throw new Error(`AI insert-only repository rejected collection ${name}`);
     const persisted = stamp(document);
-    await this.collection(name).insertOne(persisted);
+    const insertionCopy = { ...persisted };
+    const { acknowledged, insertedId } = await this.collection(name).insertOne(insertionCopy);
+    if (!acknowledged || insertedId == null) {
+      throw new Error(`AI immutable insert was not acknowledged for collection ${name}`);
+    }
     return persisted;
   }
 

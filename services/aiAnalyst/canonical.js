@@ -2,7 +2,7 @@ const crypto = require("crypto");
 
 function normalize(value) {
   if (value instanceof Date) return value.toISOString();
-  if (Buffer.isBuffer(value)) return { $binarySha256: sha256(value) };
+  if (Buffer.isBuffer(value)) return { $binarySha256: sha256(value), subType: 0 };
   if (value?._bsontype === "Binary" && value.buffer) {
     return { $binarySha256: sha256(Buffer.from(value.buffer)), subType: value.sub_type ?? 0 };
   }
