@@ -157,7 +157,13 @@ class IndependentAiMarketAnalyst {
         comparisonHash: comparison.canonicalHash, originalGrade: comparison.comparison.grade,
         review: result.parsed, analysisRunId: result.runId,
       });
-      if (this.config.telegramEnabled && this.notify) await this.#notify(formatOutcomeReview({ tradeId, outcome: outcome.review }));
+      if (this.config.telegramEnabled && this.notify) {
+        const event = await this.repository.findSignalEvent(signalEventId);
+        await this.#notify(formatOutcomeReview({
+          tradeId, blind: blind.assessment, comparison: comparison.comparison,
+          botAction: event?.deterministicContext?.direction, finalOutcome: capture.finalOutcome,
+        }));
+      }
     });
     if (!queued) this.outcomeKeys.delete(outcomeKey);
     return queued;
@@ -220,9 +226,10 @@ class IndependentAiMarketAnalyst {
       comparison: result.parsed, analysisRunId: result.runId,
     });
     if (this.config.telegramEnabled && this.notify) {
-      const event = await this.repository.findSignalEvent(signalEventId);
-      const deterministicContext = event?.deterministicContext || {};
-      await this.#notify(formatSignalReview({ key: tradeId || signalEventId, blind: blind.assessment, comparison: comparison.comparison, deterministicContext }));
+      await this.#notify(formatSignalReview({
+        key: tradeId || signalEventId, blind: blind.assessment,
+        comparison: comparison.comparison, botAction: actualDirection,
+      }));
     }
   }
 
@@ -261,7 +268,7 @@ class IndependentAiMarketAnalyst {
     return { snapshotId, charts };
   }
 
-  async #notify(message) { try { await this.notify(message); } catch (_) {} }
+  async #notify(message) { try { await this.notify(message, { parse_mode: "HTML" }); } catch (_) {} }
   async #recordPrerequisite(signalEventId, tradeId, stage, message) {
     await this.repository.insertAnalysisRun({
       runId: `airun-${crypto.randomUUID()}`, schemaVersion: this.config.schemaVersion,

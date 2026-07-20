@@ -53,10 +53,10 @@ async function telegramNotifier(enabled) {
   const chatId = process.env.TELEGRAM_REPORT_CHAT_ID || process.env.TELEGRAM_CHAT_ID;
   if (!chatId) throw new Error("Telegram smoke requested but no report chat is configured");
   let remaining = 2;
-  return async (message) => {
+  return async (message, options = {}) => {
     if (remaining <= 0) return;
     remaining--;
-    await getBot().sendMessage(chatId, message);
+    await getBot().sendMessage(chatId, message, options);
   };
 }
 

@@ -107,3 +107,22 @@ test("canonical hashes are stable across key order and exclude storage identifie
   const binaryB = withCanonicalHash({ schemaVersion: "v1", png: new Binary(Buffer.from("png")) });
   assert.equal(binaryA.canonicalHash, binaryB.canonicalHash);
 });
+
+test("canonical persistence recursively omits undefined object properties deterministically", () => {
+  const input = {
+    schemaVersion: "v1", optional: undefined,
+    nested: { kept: 1, optional: undefined, deeper: { kept: true, optional: undefined } },
+    values: [{ kept: "x", optional: undefined }, undefined],
+  };
+  const persisted = withCanonicalHash(input);
+  const equivalent = withCanonicalHash({
+    schemaVersion: "v1", nested: { deeper: { kept: true }, kept: 1 }, values: [{ kept: "x" }, null],
+  });
+  assert.equal(Object.hasOwn(input, "optional"), true);
+  assert.equal(Object.hasOwn(input.nested, "optional"), true);
+  assert.equal(Object.hasOwn(persisted, "optional"), false);
+  assert.equal(Object.hasOwn(persisted.nested, "optional"), false);
+  assert.equal(Object.hasOwn(persisted.nested.deeper, "optional"), false);
+  assert.deepEqual(persisted.values, [{ kept: "x" }, null]);
+  assert.equal(persisted.canonicalHash, equivalent.canonicalHash);
+});

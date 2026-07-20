@@ -61,7 +61,7 @@ test("signal event, blind persistence, append-only link and comparison are order
   const requests = [];
   const notifications = [];
   const analyst = new IndependentAiMarketAnalyst({
-    config: config(), repository, client: fakeClient(requests), notify: async (message) => notifications.push(message),
+    config: config(), repository, client: fakeClient(requests), notify: async (message, options) => notifications.push({ message, options }),
     chartRenderer: () => Buffer.from("png"), now: () => new Date(Date.UTC(2026, 0, 2, 12)),
   });
   const observedAt = seedTicks(analyst);
@@ -91,8 +91,9 @@ test("signal event, blind persistence, append-only link and comparison are order
   const comparisonText = requests[1].input[1].content[0].text;
   assert.match(comparisonText, /actualDirection/);
   assert.doesNotMatch(comparisonText, /score|indicator|pullback|entryReason|category|outcome/i);
-  assert.match(notifications[0], /Deterministic bot context \(not sent to AI\)/);
-  assert.match(notifications[0], /deterministic pullback/);
+  assert.match(notifications[0].message, /<b>Bot<\/b> BUY/);
+  assert.doesNotMatch(notifications[0].message, /deterministic pullback|Score|88/);
+  assert.deepEqual(notifications[0].options, { parse_mode: "HTML" });
 });
 
 test("every non-trade disposition remains persisted under signalEventId", async () => {

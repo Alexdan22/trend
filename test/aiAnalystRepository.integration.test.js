@@ -6,7 +6,7 @@ const { Binary, MongoClient, ObjectId } = require("mongodb");
 
 const { canonicalJson, sha256 } = require("../services/aiAnalyst/canonical");
 const {
-  IMMUTABLE_COLLECTIONS,
+  AiCollectionValidationError, AiDocumentValidationError, IMMUTABLE_COLLECTIONS,
   MongoAiAnalystRepository,
   inspectOrMigrateAiCollections,
 } = require("../services/aiAnalyst/repository");
@@ -66,7 +66,11 @@ test("Mongo repository inserts immutable artifacts through mutable top-level cop
     ["ai_signal_events", "insertSignalEvent", {
       schemaVersion: "schema-v1", signalEventId: "signal-integration", eventType: "SIGNAL",
       observedAt: occurredAt, symbol: "XAUUSDm", sessionLabel: "NY_WINDOW",
-      nested: { occurredAt, bytes: nestedBytes, binary: nestedBinary },
+      eventKey: undefined,
+      nested: {
+        occurredAt, bytes: nestedBytes, binary: nestedBinary, omitted: undefined,
+        deeper: { kept: "yes", omitted: undefined }, values: [{ kept: 1, omitted: undefined }, undefined],
+      },
     }],
     ["ai_signal_trade_links", "insertSignalTradeLink", {
       schemaVersion: "schema-v1", signalEventId: "signal-integration", linkVersion: 1,
@@ -135,10 +139,62 @@ test("Mongo repository inserts immutable artifacts through mutable top-level cop
   assert.equal(storedEvent.nested.occurredAt.toISOString(), occurredAt.toISOString());
   assert.deepEqual(binaryBuffer(storedEvent.nested.bytes), nestedBytes);
   assert.deepEqual(binaryBuffer(storedEvent.nested.binary), Buffer.from("nested-bson"));
+  assert.equal(Object.hasOwn(documents[0][2], "eventKey"), true);
+  assert.equal(Object.hasOwn(documents[0][2].nested, "omitted"), true);
+  assert.equal(Object.hasOwn(storedEvent, "eventKey"), false);
+  assert.equal(Object.hasOwn(storedEvent.nested, "omitted"), false);
+  assert.equal(Object.hasOwn(storedEvent.nested.deeper, "omitted"), false);
+  assert.equal(Object.hasOwn(storedEvent.nested.values[0], "omitted"), false);
+  assert.equal(storedEvent.nested.values[1], null);
 
   const storedChart = await db.collection("ai_market_charts").findOne({ snapshotId: "snapshot-integration" });
   assert.deepEqual(binaryBuffer(storedChart.png), chartPng);
   assert.equal(storedChart.pngSha256, sha256(chartPng));
+
+  const secondWithoutKey = await repository.insertSignalEvent(Object.freeze({
+    schemaVersion: "schema-v1", signalEventId: "signal-without-key-2", eventType: "SIGNAL",
+    eventKey: undefined, observedAt: new Date("2026-07-18T10:00:00Z"), symbol: "XAUUSDm", sessionLabel: "LONDON_WINDOW",
+  }));
+  const noKeyEvents = await db.collection("ai_signal_events").find({ signalEventId: { $in: ["signal-integration", "signal-without-key-2"] } }).toArray();
+  assert.equal(noKeyEvents.length, 2);
+  assert.ok(noKeyEvents.every((event) => !Object.hasOwn(event, "eventKey")));
+  assert.equal(Object.hasOwn(secondWithoutKey, "eventKey"), false);
+  assert.ok(noKeyEvents.every((event) => sha256(canonicalJson(event)) === event.canonicalHash));
+
+  const validKey = "CONTROL:XAUUSDm:1784304000000";
+  await repository.insertSignalEvent(Object.freeze({
+    schemaVersion: "schema-v1", signalEventId: "control-valid-key-1", eventType: "CONTROL",
+    eventKey: validKey, observedAt: new Date("2026-07-18T10:30:00Z"), symbol: "XAUUSDm", sessionLabel: "LONDON_WINDOW",
+  }));
+  await assert.rejects(
+    repository.insertSignalEvent(Object.freeze({
+      schemaVersion: "schema-v1", signalEventId: "control-valid-key-2", eventType: "CONTROL",
+      eventKey: validKey, observedAt: new Date("2026-07-18T11:00:00Z"), symbol: "XAUUSDm", sessionLabel: "LONDON_WINDOW",
+    })),
+    (error) => error?.code === 11000,
+  );
+
+  for (const [label, eventKey] of [["null", null], ["empty", ""], ["invalid", "not valid?"]]) {
+    await assert.rejects(
+      repository.insertSignalEvent(Object.freeze({
+        schemaVersion: "schema-v1", signalEventId: `invalid-${label}`, eventType: "SIGNAL",
+        eventKey, observedAt: new Date("2026-07-18T12:00:00Z"), symbol: "XAUUSDm", sessionLabel: "LONDON_WINDOW",
+      })),
+      (error) => error instanceof AiDocumentValidationError && error.field === "eventKey",
+    );
+  }
+  for (const [label, eventKey] of [["null", null], ["empty", ""]]) {
+    await assert.rejects(
+      db.collection("ai_signal_events").insertOne({
+        schemaVersion: "schema-v1", signalEventId: `direct-invalid-${label}`, eventType: "SIGNAL",
+        eventKey, createdAt: new Date(), canonicalHash: "a".repeat(64),
+      }),
+      (error) => error?.code === 121,
+    );
+  }
+  const eventKeyIndex = (await db.collection("ai_signal_events").indexes()).find((index) => index.name === "uniq_eventKey");
+  assert.equal(eventKeyIndex.sparse, undefined);
+  assert.deepEqual(eventKeyIndex.partialFilterExpression, { eventKey: { $type: "string" } });
 
   const duplicateInput = Object.freeze({
     schemaVersion: "schema-v1", signalEventId: "signal-integration", eventType: "SIGNAL",
@@ -152,4 +208,24 @@ test("Mongo repository inserts immutable artifacts through mutable top-level cop
   assert.ok(Object.isFrozen(duplicateInput));
   assert.equal(canonicalJson(duplicateInput), duplicateBefore);
   assert.equal(await db.collection("ai_signal_events").countDocuments({ signalEventId: "signal-integration" }), 1);
+
+  const legacyDb = client.db("ai-analyst-legacy-event-key-test");
+  await legacyDb.createCollection("ai_signal_events");
+  await legacyDb.collection("ai_signal_events").createIndex({ eventKey: 1 }, { unique: true, sparse: true, name: "uniq_eventKey" });
+  await legacyDb.collection("ai_signal_events").insertOne({
+    schemaVersion: "schema-v1", signalEventId: "legacy-null-key", eventType: "SIGNAL", eventKey: null,
+    createdAt: new Date(), canonicalHash: "a".repeat(64),
+  });
+  const legacyPreflight = await inspectOrMigrateAiCollections(legacyDb, { apply: false });
+  const legacyRow = legacyPreflight.collections.find((row) => row.name === "ai_signal_events");
+  assert.equal(legacyPreflight.safe, false);
+  assert.ok(legacyRow.violations.some((violation) => violation.type === "INVALID_EVENT_KEY" && violation.count === 1));
+  assert.deepEqual(legacyRow.indexReplacements, ["uniq_eventKey"]);
+  await assert.rejects(
+    inspectOrMigrateAiCollections(legacyDb, { apply: true }),
+    (error) => error instanceof AiCollectionValidationError,
+  );
+  const unchangedLegacyIndex = (await legacyDb.collection("ai_signal_events").indexes()).find((index) => index.name === "uniq_eventKey");
+  assert.equal(unchangedLegacyIndex.sparse, true);
+  assert.equal(unchangedLegacyIndex.partialFilterExpression, undefined);
 });

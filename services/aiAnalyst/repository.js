@@ -1,5 +1,7 @@
 const { Binary } = require("mongodb");
-const { withCanonicalHash } = require("./canonical");
+const { omitUndefinedProperties, withCanonicalHash } = require("./canonical");
+
+const EVENT_KEY_PATTERN = /^[A-Za-z0-9][A-Za-z0-9._:/-]{0,199}$/;
 
 const IMMUTABLE_COLLECTIONS = Object.freeze([
   "ai_signal_events", "ai_signal_trade_links", "ai_market_snapshots", "ai_market_charts",
@@ -8,8 +10,29 @@ const IMMUTABLE_COLLECTIONS = Object.freeze([
 const OPERATIONAL_COLLECTIONS = Object.freeze(["ai_usage_budgets", "ai_analyst_runtime"]);
 const ALL_COLLECTIONS = Object.freeze([...IMMUTABLE_COLLECTIONS, ...OPERATIONAL_COLLECTIONS]);
 
-function stamp(document, now = new Date()) {
-  return withCanonicalHash({ ...document, createdAt: document.createdAt || now });
+class AiDocumentValidationError extends Error {
+  constructor(collection, field, message) {
+    super(`AI ${collection} rejected ${field}: ${message}`);
+    this.name = "AiDocumentValidationError";
+    this.collection = collection;
+    this.field = field;
+  }
+}
+
+function validEventKey(value) {
+  return typeof value === "string" && EVENT_KEY_PATTERN.test(value);
+}
+
+function validateImmutableDocument(name, document) {
+  if (name === "ai_signal_events" && Object.hasOwn(document, "eventKey") && !validEventKey(document.eventKey)) {
+    throw new AiDocumentValidationError(name, "eventKey", "must be an absent field or a valid non-empty string");
+  }
+}
+
+function stamp(name, document, now = new Date()) {
+  const clean = omitUndefinedProperties({ ...document, createdAt: document.createdAt || now });
+  validateImmutableDocument(name, clean);
+  return withCanonicalHash(clean);
 }
 
 function duplicateKey(error) { return error?.code === 11000; }
@@ -20,7 +43,7 @@ class MongoAiAnalystRepository {
 
   async insert(name, document) {
     if (!IMMUTABLE_COLLECTIONS.includes(name)) throw new Error(`AI insert-only repository rejected collection ${name}`);
-    const persisted = stamp(document);
+    const persisted = stamp(name, document);
     const insertionCopy = { ...persisted };
     const { acknowledged, insertedId } = await this.collection(name).insertOne(insertionCopy);
     if (!acknowledged || insertedId == null) {
@@ -164,7 +187,7 @@ class MemoryAiAnalystRepository {
     this.runtime = null;
   }
   async insert(name, document) {
-    const persisted = stamp(document);
+    const persisted = stamp(name, document);
     this.documents[name].push(persisted);
     return persisted;
   }
@@ -209,12 +232,13 @@ const COLLECTION_VALIDATOR = Object.freeze({
     required: ["schemaVersion", "createdAt", "canonicalHash"],
     properties: {
       schemaVersion: { bsonType: "string" }, createdAt: { bsonType: "date" }, canonicalHash: { bsonType: "string", pattern: "^[a-f0-9]{64}$" },
+      eventKey: { bsonType: "string", minLength: 1, maxLength: 200, pattern: EVENT_KEY_PATTERN.source },
     },
   },
 });
 
 const INDEXES = Object.freeze({
-  ai_signal_events: [[{ signalEventId: 1 }, { unique: true, name: "uniq_signalEventId" }], [{ eventKey: 1 }, { unique: true, sparse: true, name: "uniq_eventKey" }], [{ observedAt: 1 }, { name: "observedAt" }]],
+  ai_signal_events: [[{ signalEventId: 1 }, { unique: true, name: "uniq_signalEventId" }], [{ eventKey: 1 }, { unique: true, partialFilterExpression: { eventKey: { $type: "string" } }, name: "uniq_eventKey" }], [{ observedAt: 1 }, { name: "observedAt" }]],
   ai_signal_trade_links: [[{ signalEventId: 1, linkVersion: 1 }, { unique: true, name: "uniq_signal_link_version" }], [{ tradeId: 1 }, { sparse: true, name: "tradeId" }]],
   ai_market_snapshots: [[{ snapshotId: 1 }, { unique: true, name: "uniq_snapshotId" }], [{ signalEventId: 1, snapshotType: 1 }, { unique: true, name: "uniq_event_snapshot_type" }]],
   ai_market_charts: [[{ snapshotId: 1, timeframe: 1 }, { unique: true, name: "uniq_snapshot_timeframe" }]],
@@ -237,9 +261,9 @@ class AiCollectionValidationError extends Error {
 async function duplicateGroupsForSpec(collection, keys, options) {
   if (!options?.unique) return [];
   const fields = Object.keys(keys);
-  const match = options.sparse
+  const match = options.partialFilterExpression || (options.sparse
     ? Object.fromEntries(fields.map((field) => [field, { $exists: true }]))
-    : {};
+    : {});
   return collection.aggregate([
     { $match: match },
     { $group: { _id: Object.fromEntries(fields.map((field) => [field, `$${field}`])), count: { $sum: 1 } } },
@@ -248,15 +272,31 @@ async function duplicateGroupsForSpec(collection, keys, options) {
   ]).toArray();
 }
 
+function indexSpecMatches(index, keys, options) {
+  return JSON.stringify(index?.key || null) === JSON.stringify(keys)
+    && Boolean(index?.unique) === Boolean(options?.unique)
+    && Boolean(index?.sparse) === Boolean(options?.sparse)
+    && JSON.stringify(index?.partialFilterExpression || null) === JSON.stringify(options?.partialFilterExpression || null);
+}
+
+function replaceableLegacyIndex(index, keys, options) {
+  return options?.name === "uniq_eventKey"
+    && JSON.stringify(index?.key || null) === JSON.stringify(keys)
+    && index?.unique === true
+    && index?.sparse === true
+    && !index?.partialFilterExpression;
+}
+
 async function inspectOrMigrateAiCollections(db, { apply = false } = {}) {
   const existing = new Set((await db.listCollections({}, { nameOnly: true }).toArray()).map((row) => row.name));
   const report = { apply, safe: true, collections: [] };
   for (const name of ALL_COLLECTIONS) {
-    const row = { name, exists: existing.has(name), count: 0, indexes: [], violations: [], action: apply ? "UNCHANGED" : "PREFLIGHT" };
+    const row = { name, exists: existing.has(name), count: 0, indexes: [], indexReplacements: [], violations: [], action: apply ? "UNCHANGED" : "PREFLIGHT" };
     if (row.exists) {
       const collection = db.collection(name);
       row.count = await collection.countDocuments({});
-      row.indexes = (await collection.indexes()).map((index) => index.name);
+      const currentIndexes = await collection.indexes();
+      row.indexes = currentIndexes.map((index) => index.name);
       if (IMMUTABLE_COLLECTIONS.includes(name)) {
         const missingIntegrity = await collection.countDocuments({
           $or: [
@@ -267,9 +307,18 @@ async function inspectOrMigrateAiCollections(db, { apply = false } = {}) {
         });
         if (missingIntegrity) row.violations.push({ type: "MISSING_INTEGRITY_FIELDS", count: missingIntegrity });
       }
+      if (name === "ai_signal_events") {
+        const invalidEventKeys = await collection.countDocuments({ eventKey: { $exists: true, $not: EVENT_KEY_PATTERN } });
+        if (invalidEventKeys) row.violations.push({ type: "INVALID_EVENT_KEY", count: invalidEventKeys });
+      }
       for (const [keys, options] of INDEXES[name] || []) {
         const duplicates = await duplicateGroupsForSpec(collection, keys, options);
         if (duplicates.length) row.violations.push({ type: "DUPLICATE_UNIQUE_KEY", index: options.name, groups: duplicates });
+        const current = currentIndexes.find((index) => index.name === options.name);
+        if (current && !indexSpecMatches(current, keys, options)) {
+          if (replaceableLegacyIndex(current, keys, options)) row.indexReplacements.push(options.name);
+          else row.violations.push({ type: "INDEX_SPEC_MISMATCH", index: options.name });
+        }
       }
     }
     report.collections.push(row);
@@ -286,6 +335,7 @@ async function inspectOrMigrateAiCollections(db, { apply = false } = {}) {
         await db.command({ collMod: name, validator: COLLECTION_VALIDATOR, validationLevel: "strict", validationAction: "error" });
         row.action = "VALIDATOR_APPLIED";
       }
+      for (const indexName of row.indexReplacements) await db.collection(name).dropIndex(indexName);
       for (const [keys, options] of INDEXES[name] || []) await db.collection(name).createIndex(keys, options);
       row.indexes = (await db.collection(name).indexes()).map((index) => index.name);
     }
@@ -294,6 +344,7 @@ async function inspectOrMigrateAiCollections(db, { apply = false } = {}) {
 }
 
 module.exports = {
-  AiCollectionValidationError, ALL_COLLECTIONS, IMMUTABLE_COLLECTIONS, INDEXES, MemoryAiAnalystRepository,
-  MongoAiAnalystRepository, OPERATIONAL_COLLECTIONS, duplicateKey, inspectOrMigrateAiCollections,
+  AiCollectionValidationError, AiDocumentValidationError, ALL_COLLECTIONS, EVENT_KEY_PATTERN,
+  IMMUTABLE_COLLECTIONS, INDEXES, MemoryAiAnalystRepository, MongoAiAnalystRepository,
+  OPERATIONAL_COLLECTIONS, duplicateKey, inspectOrMigrateAiCollections, validEventKey,
 };
